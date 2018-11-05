@@ -1,0 +1,9 @@
+# Project & temporary folders
+/.idea/
+/__pycache__/
+
+# temporary files
+*-checkpoint.ipynb
+
+# Hidden files
+.directory
