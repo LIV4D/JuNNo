@@ -80,14 +80,17 @@ import io
 import pandas as pd
 import time
 from scipy.sparse import spmatrix
+import multiprocessing as mp
+import queue
+import threading
 
-from ..j_utils.j_log import log, Process
+from ..j_utils.j_log import log, Process, float_to_str
 
 from ..j_utils.function import not_optional_args, to_callable, identity_function, match_params
 from ..j_utils.parallelism import parallel_exec, intime_generator
 from ..j_utils.math import interval, cartesian
+from ..j_utils.collections import if_none, AttributeDict
 import weakref
-from .data_augmentation import DataAugmentation
 
 
 class AbstractDataSet(metaclass=ABCMeta):
@@ -127,19 +130,225 @@ class AbstractDataSet(metaclass=ABCMeta):
         if not isinstance(parent_datasets, list):
             parent_datasets = [parent_datasets]
 
-        self._generators_count = 0
         self._parents = parent_datasets
         self._pk = DataSetColumn('pk', (), pk_type, self)
 
-    def __str__(self):
-        return self._name
-
+    #   ---   Dataset properties   ---
     def __len__(self):
         return self.size
 
+    @property
+    def size(self):
+        """
+        Return the size of the dataset (value of the first dimension of every columns)
+        """
+        return -1
+
+    def __getitem__(self, item):
+        if isinstance(item, slice) or isinstance(item, int):
+            item = (item, None)
+        if isinstance(item, tuple):
+            if isinstance(item[0], int):
+                return self.read_one(row=item[0], columns=item[1])
+            elif isinstance(item[0], slice):
+                return self.read(item[0].start, item[0].stop, columns=item[1])
+        raise NotImplementedError
+
+    @property
+    def dataset_name(self):
+        return self._name
+
+    @property
+    def dataset_fullname(self):
+        fullname = self._name
+        n = self
+        while len(n._parents) == 1:
+            fullname = n._parent.dataset_name + '_' + fullname
+            n = n._parent
+        return fullname
+
+    #   ---   Data direct access   ---
+    def read(self, start: int = None, end: int = None, columns=None, extract=True, n=None):
+        if start is None:
+            start = 0
+        if end is None:
+            end = self.size
+        elif end < 0:
+            end -= self.size
+        elif end < start:
+            end = start + 1
+        if end > self.size:
+            raise ValueError('%i is not a valid index: dataset size is %i' % (end, self.size))
+
+        d = self
+        if n is not None:
+            d = d.subgen(n)
+
+        gen = d.generator(end - start, start=start, columns=columns)
+        r = next(gen)
+
+        if not extract:
+            return r
+        if columns is None:
+            return {c_name: c_data for c_name, c_data in r.items()}
+        elif isinstance(columns, list):
+            return [r[_] for _ in self.interpret_columns(columns)]
+        else:
+            return r[columns]
+
+    def gen_read(self, id, n=1, columns=None, gen_context=None, clear_weakref=False):
+        if gen_context is not None:
+            gen = gen_context.generator(self, start=id, end=id+n, n=n, columns=columns)
+        else:
+            gen = self.generator(start=id, end=id+n, n=n, columns=columns)
+        r = gen.next()
+        gen.clean()
+        if clear_weakref:
+            r.clear_dataset()
+            return r
+
+        return r, gen
+
+    def read_one(self, row=0, columns=None, extract=True):
+        """
+        Read a specific element of a dataset. If extract is True, the result will depend on the form of columns.
+        Thus, if columns is None, read_one(i) will return a dictionnary a the i-th value of all the dataset's columns,
+              if columns is a list, read_one will organize the values in a list in the same order as in columns
+        finally if columns is a string, only the element at this position and column will be returned.
+        :param row: Row of the wanted elements
+        :param columns: Columns of the wanted elements (None mean all of them)
+        :param extract: If true, the data is extracted from the DataSetResult.
+        """
+        r = self.read(start=row, end=row + 1, columns=columns, extract=False)
+
+        if not extract:
+            return r
+        if columns is None:
+            return {c_name: c_data[0] for c_name, c_data in r.items()}
+        elif isinstance(columns, list):
+            return [r[_][0] for _ in self.interpret_columns(columns)]
+        else:
+            return r[columns][0]
+
+    #   ---   Generators   ---
+    def generator(self, n=1, start=None, end=None, columns=None, determinist=True, parallel_exec=False):
+        """Creates a generator which iterate through data.
+
+        :param n:  Number of element to return (maximum) by iteration
+        :param start: index from which the generator will start reading data
+        :param columns: list of columns to read
+        :type columns: None or list of str or list of :class:`DataSetColumn`
+        :type start: int
+        :type n: int
+
+        :return The generator which loops start at from_id and does n iterations.
+        :rtype: generator
+        """
+        return DataSetSmartGenerator(dataset=self, n=n, start_id=start, end_id=end, columns=columns,
+                                     determinist=determinist, parallel_exec=parallel_exec)
+
+    @abstractmethod
+    def _generator(self, gen_context):
+        pass
+
+    def _setup_determinist(self):
+        pass
+
+    #   ---   Columns   ---
+    def interpret_columns(self, columns, to_column_name=True):
+        """Returns a list of columns name
+
+        :param columns: None, list of :class:`DataSetColumn` or str, str or :class:`DataSetColumn`. \
+        If None, the method returns the columns' name of the current dataset.
+        :return: list of columns name
+        :rtype: list
+        """
+
+        if columns is None:
+            columns = self._columns.copy()
+        elif not isinstance(columns, list):
+            columns = [columns]
+        else:
+            columns = columns.copy()
+
+        for c_id, c in enumerate(columns):
+            if isinstance(c, DataSetColumn):
+                if c.dataset is not self:
+                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
+                if to_column_name:
+                    columns[c_id] = c.name
+            elif isinstance(c, str):
+                if c != 'pk' and not c in self.columns_name():
+                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
+                if not to_column_name:
+                    columns[c_id] = self.column_by_name(c)
+        return columns
+
+    def column_by_name(self, name, raise_on_unknown=True):
+        if name == 'pk':
+            return self.pk
+        for c in self._columns:
+            if c.name == name:
+                return c
+        if raise_on_unknown:
+            raise (ValueError('Unknown column %s in dataset %s' % (name, self._name)))
+        return None
+
+    def column_index(self, name):
+        for c_id, c in enumerate(self._columns):
+            if c.name == name:
+                return c_id
+        return -1
+
+    def columns_name(self):
+        return [_.name for _ in self._columns]
+
+    @property
+    def columns(self):
+        r = AttributeDict()
+        for c in self._columns:
+            r[c.name] = c
+        return r
+
+    @property
+    def pk(self):
+        return self._pk
+
+    def copy_columns(self, dataset=None):
+        if dataset is None:
+            dataset = self
+        return [DataSetColumn(_.name, _.shape, _.dtype, dataset) for _ in self._columns]
+
+    def add_column(self, name, shape, dtype):
+        self._columns.append(DataSetColumn(name=name, shape=shape, dtype=dtype, dataset=self))
+
+    #   ---   Dataset Hierarchy   ---
+    @property
+    def parent_datasets(self):
+        return self._parents
+
+    @property
+    def _parent(self):
+        return self._parents[0] if len(self._parents) else None
+
+    @property
+    def parent_dataset(self):
+        return self._parent
+
+    @property
+    def root_dataset(self):
+        root = self
+        while root.parent_dataset is not None:
+            root = root.parent_dataset
+        return root
+
+    #   ---   Representation functions   ---
+    def __str__(self):
+        return self._name
+
     def __repr__(self):
         s = 'Dataset: %s' % str(self)
-        for column in self.columns:
+        for column in self._columns:
             s += '\n\t'+str(column)
         return s
 
@@ -165,7 +374,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
             columns_name = []
             columns_description = []
-            for c in dataset.columns:
+            for c in dataset._columns:
                 columns_name.append(c.name)
                 c_name = c.name + ';' + c.sql_type
                 if len(c.shape) > 0:
@@ -177,7 +386,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     context['gen_id'] += 1
                     context['result'] = next(context['generator'])
                 elif context['gen_id'] != row:
-                    context['generator'] = dataset.generator(from_id=row)
+                    context['generator'] = dataset.generator(start=row)
                     context['gen_id'] = row
                     context['result'] = next(context['generator'])
 
@@ -192,207 +401,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return w
 
-    def generator(self, n=1, from_id=0, columns=None, determinist=True, intime=False):
-        """Creates a generator which iterate through data.
-
-        :param n:  Number of element to return (maximum) by iteration
-        :param from_id: index from which the generator will start reading data
-        :param columns: list of columns to read
-        :type columns: None or list of str or list of :class:`DataSetColumn`
-        :type from_id: int
-        :type n: int
-
-        :return The generator which loops start at from_id and does n iterations.
-        :rtype: generator
-        """
-        self._generators_count += 1
-        gen = self._build_generator(n=n, from_id=from_id, columns=columns, determinist=determinist,
-                                    generator_id=self._generators_count-1)
-        return gen if not intime else intime_generator(gen)
-
-    def _build_generator(self, n, from_id, columns, determinist, generator_id):
-        return DataSetSmartGenerator(dataset=self, n=n, start_id=from_id, columns=columns,
-                                     determinist=determinist, generator_id=generator_id)
-
-    @abstractmethod
-    def _generator(self, gen_context):
-        pass
-
-    def interpret_columns(self, columns, to_column_name=True):
-        """Returns a list of columns name
-
-        :param columns: None, list of :class:`DataSetColumn` or str, str or :class:`DataSetColumn`. \
-        If None, the method returns the columns' name of the current dataset.
-        :return: list of columns name
-        :rtype: list
-        """
-
-        if columns is None:
-            columns = self.columns.copy()
-        elif not isinstance(columns, list):
-            columns = [columns]
-        else:
-            columns = columns.copy()
-
-        for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
-                if c.dataset is not self:
-                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                if to_column_name:
-                    columns[c_id] = c.name
-            elif isinstance(c, str):
-                if c != 'pk' and not c in self.columns_name():
-                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                if not to_column_name:
-                    columns[c_id] = self.column_by_name(c)
-        return columns
-
-    def read(self, start: int=None, end:int=None, columns=None, extract=True, n=None):
-        if start is None:
-            start = 0
-        if end is None:
-            end = self.size
-        elif end < 0:
-            end -= self.size
-        elif end < start:
-            end = start+1
-        if end > self.size:
-            raise ValueError('%i is not a valid index: dataset size is %i' % (end, self.size))
-
-        d = self
-        if n is not None:
-            d = d.subgen(n)
-
-        gen = d.generator(end-start, from_id=start, columns=columns)
-        r = next(gen)
-
-        if not extract:
-            return r
-        if columns is None:
-            return {c_name: c_data for c_name, c_data in r.items()}
-        elif isinstance(columns, list):
-            return [r[_] for _ in self.interpret_columns(columns)]
-        else:
-            return r[columns]
-
-    def gen_read(self, id, n=1, columns=None, gen_context=None, gen_id=-1, clear_weakref=False):
-        if gen_context is not None:
-            gen = gen_context.generator(self, from_id=id, n=n, columns=columns, gen_id=gen_id)
-        else:
-            gen = self.generator(from_id=id, n=n, columns=columns)
-        r = gen.next()
-        gen.clean()
-        if clear_weakref:
-            r.clear_dataset()
-            return r
-
-        return r, gen
-
-    def read_one(self, row, columns=None, extract=True):
-        """
-        Read a specific element of a dataset. If extract is True, the result will depend on the form of columns.
-        Thus, if columns is None, read_one(i) will return a dictionnary a the i-th value of all the dataset's columns,
-              if columns is a list, read_one will organize the values in a list in the same order as in columns
-        finally if columns is a string, only the element at this position and column will be returned.
-        :param row: Row of the wanted elements
-        :param columns: Columns of the wanted elements (None mean all of them)
-        :param extract: If true, the data is extracted from the DataSetResult.
-        """
-        r = self.read(start=row, end=row + 1, columns=columns, extract=False)
-
-        if not extract:
-            return r
-        if columns is None:
-            return {c_name: c_data[0] for c_name, c_data in r.items()}
-        elif isinstance(columns, list):
-            return [r[_][0] for _ in self.interpret_columns(columns)]
-        else:
-            return r[columns][0]
-
-    def __getitem__(self, item):
-        if isinstance(item, slice) or isinstance(item, int):
-            item = (item, None)
-        if isinstance(item, tuple):
-            if isinstance(item[0], int):
-                return self.read_one(row=item[0], columns=item[1])
-            elif isinstance(item[0], slice):
-                return self.read(item[0].start, item[0].stop, columns=item[1])
-        raise NotImplementedError
-
-    @property
-    def size(self):
-        """
-        Return the size of the dataset (value of the first dimension of every columns)
-        """
-        return -1
-
-    def column_by_name(self, name, raise_on_unknown=True):
-        if name == 'pk':
-            return self.pk
-        for c in self.columns:
-            if c.name == name:
-                return c
-        if raise_on_unknown:
-            raise(ValueError('Unknown column %s in dataset %s' % (name, self._name)))
-        return None
-
-    def column_index(self, name):
-        for c_id, c in enumerate(self.columns):
-            if c.name == name:
-                return c_id
-        return -1
-
-    def columns_name(self):
-        return [_.name for _ in self._columns]
-
-    @property
-    def columns(self):
-        return self._columns
-
-    def copy_columns(self, dataset=None):
-        if dataset is None:
-            dataset = self
-        return [DataSetColumn(_.name, _.shape, _.dtype, dataset) for _ in self._columns]
-
-    def add_column(self, name, shape, dtype):
-        self._columns.append(DataSetColumn(name=name, shape=shape, dtype=dtype, dataset=self))
-
-    @property
-    def pk(self):
-        return self._pk
-
-    @property
-    def parent_datasets(self):
-        return self._parents
-
-    @property
-    def _parent(self):
-        return self._parents[0] if len(self._parents) else None
-
-    @property
-    def parent_dataset(self):
-        return self._parent
-
-    @property
-    def root_dataset(self):
-        root = self
-        while root.parent_dataset is not None:
-            root = root.parent_dataset
-        return root
-
-    @property
-    def dataset_name(self):
-        return self._name
-
-    @property
-    def dataset_fullname(self):
-        fullname = self._name
-        n = self
-        while len(n._parents) == 1:
-            fullname = n._parent.dataset_name + '_' + fullname
-            n = n._parent
-        return fullname
-
+    #   ---   Export   ---
     def sql_write(self, database_path, table_name, start=0, end=0, n=10,
                   compress_img=True, include_pk=False, replace_table=False, show_progression=True, compress_format='png'):
         """Write the current dataset in a SQLite file.
@@ -430,7 +439,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         compress = []
         if compress_img:
-            compress = [c.name for c in self.columns if len(c.shape) == 3 and c.shape[0] in (1, 3)]
+            compress = [c.name for c in self._columns if len(c.shape) == 3 and c.shape[0] in (1, 3)]
 
         columns = self.columns_name()
 
@@ -439,7 +448,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         if end <= 0:
             end += self.size
 
-        data_gen = self.generator(from_id=start)
+        data_gen = self.generator(start=start)
         i_global = start
 
         def array2bytes(array, format):
@@ -547,7 +556,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         gen_columns = columns.copy()
         if column_for_filename is not 'pk' and column_for_filename not in gen_columns:
             gen_columns.append(column_for_filename)
-        data_gen = self.generator(from_id=start, columns=gen_columns)
+        data_gen = self.generator(start=start, columns=gen_columns)
 
         if folder_path[-1] != '/':
             folder_path += '/'
@@ -622,6 +631,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         elif metadata_format is 'json':
             dataframe.to_json(folder_path+'meta.json')
 
+    #   ---   Operations   ---
     def subset(self, start=0, end=None, name='subset', *args):
         start, end = interval(self.size, start, end, args)
         return DataSetSubset(self, start, end, name=name)
@@ -632,7 +642,7 @@ class AbstractDataSet(metaclass=ABCMeta):
     def as_cache(self, n=1, start=0, end=None, name=None):
         start, end = interval(self.size, start, end)
         data = DataSetResult.create_empty(dataset=self, n=end - start, start_id=start, columns=self.columns_name())
-        gen = self.generator(n=n, from_id=start)
+        gen = self.generator(n=n, start=start)
 
         if name is None:
             label = self._name
@@ -682,6 +692,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                 elif ratio >= 1:
                     l = round(ratio)
                     ratio = l / self.size
+                else:
+                    raise NotImplementedError('Datasets ratio must be a positive number')
                 d[name] = self.subset(offset, offset+l, name=name)
                 offset += l
                 cummulative_ratio += ratio
@@ -699,16 +711,23 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return d
 
-    def concat(self, mapping=None, **kwargs):
-        """"Returns a :class:`DataSetConcatMap` object which will generate a concatenation
+    def concat(self, **kwargs):
+        """"Map columns name or concatenate two columns according to kwargs (keys are created columns,
+        and values are either names of column to map or lists of column names to concatenate).
+
+        If a column is not mentioned kwargs values, it is kept with the same name (unlike ```map()```).
         """
-        if mapping is not None:
-            kwargs.update(mapping)
-
         from .datasets_core import DataSetMap
-        return DataSetMap(self, kwargs)
+        return DataSetMap(self, kwargs, keep_all_columns=True)
 
-    map = concat
+    def map(self, **kwargs):
+        """"Map columns name or concatenate two columns according to kwargs (keys are created columns,
+        and values are either names of column to map or lists of column names to concatenate).
+
+        If a column is not mentioned kwargs values, it is discarded (unlike ```concat()```).
+        """
+        from .datasets_core import DataSetMap
+        return DataSetMap(self, kwargs, keep_all_columns=False)
 
     def shuffle(self, nb_subgenerator=0, parallel=True, rnd=None, name='shuffle'):
         from .datasets_core import DataSetShuffle
@@ -725,7 +744,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                               keep_original=keep_original, name=name)
 
     def join(self, datasets, verbose=False, parallel=False, **kwargs):
-        for c in self.columns:
+        for c in self._columns:
             if c.name in kwargs:
                 kwargs[c.name+'1'] = kwargs[c.name]
             kwargs[c.name] = c
@@ -780,6 +799,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param kwargs:
         :return:
         """
+        from .data_augmentation import DataAugmentation
 
         dict_params = kwargs
         dict_params['use_geom_func'] = geom_trans
@@ -807,8 +827,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetAugmentedData(self, columns=columns, n=N_augmented,
                                     da_engine=da_engine, keep_original=keep_original, column_transform=column_transform)
 
-    def patches(self, columns=None, patch_shape=(128, 128), stride=(0, 0), ignore_borders=False, mask=None, center_pos=False,
-                name='patch'):
+    def patches(self, columns=None, patch_shape=(128, 128), stride=(0, 0), ignore_borders=False, mask=None,
+                center_pos=False, name='patch'):
         """Generate patches from specific columns.
 
             :param columns: Columns from which patches will be extracted.
@@ -980,15 +1000,6 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetUnPatch(self, patch_mix=patch_mix, columns=columns, n_patches=n_patches,
                               restore_columns=restore_columns, columns_shape=columns_shape)
 
-    def __getattr__(self, item):
-        if item.startswith('_'):
-            return getattr(super(AbstractDataSet, self), item)
-        c = self.column_by_name(item)
-        if c is not None:
-            return c
-
-        return getattr(super(AbstractDataSet, self), item)
-
 
 ########################################################################################################################
 class DataSetColumn:
@@ -1004,6 +1015,12 @@ class DataSetColumn:
         self._dtype = dtype
         if dtype == str:
             self._dtype = 'O'
+
+    def __getstate__(self):
+        return self._name, self._shape, self._dtype
+
+    def __setstate__(self, state):
+        self._name, self._shape, self._dtype = state
 
     @property
     def shape(self):
@@ -1068,21 +1085,21 @@ class DataSetResult:
         :type dataset: AbstractDataSet
         """
         self._dataset = None
-        if dataset is not None:
-            self._dataset = weakref.ref(dataset)
         self._data_dict = data_dict
         self._columns = columns
         self._start_id = start_id
         self._size = size
 
-        self._last_in = ('pk', True)
+        self.affiliate_dataset(dataset)
+        self._trace = DataSetResult.Trace(self)
 
         self._ipywidget = None
 
-    def __del__(self):
-        for data in self._data_dict.values():
-            if data.flags['OWNDATA']:
-                del data
+    def __getstate__(self):
+        return self._data_dict, self._columns, self._start_id, self.size, self._trace
+
+    def __setstate__(self, state):
+        self._data_dict, self._columns, self._start_id, self._size, self._trace = state
 
     @staticmethod
     def create_empty(n, start_id, columns=None, dataset=None, assign=None):
@@ -1192,15 +1209,20 @@ class DataSetResult:
             return self._dataset()
         return None
 
+    def affiliate_dataset(self, dataset):
+        self._dataset = weakref.ref(dataset)
+        for c in self._columns:
+            c._dataset = weakref.ref(dataset)
+
     def clear_dataset(self):
         self._dataset = None
         for c in self._columns:
             c._dataset = None
 
-    def affiliate_dataset(self, dataset):
-        self._dataset = weakref.ref(dataset)
-        for c in self._columns:
-            c._dataset = weakref.ref(dataset)
+    def __del__(self):
+        for data in self._data_dict.values():
+            if data.flags['OWNDATA']:
+                del data
 
     @property
     def start_id(self):
@@ -1228,6 +1250,10 @@ class DataSetResult:
 
     @property
     def mem_size(self):
+        """
+        Amount of memory used to store this DataSetResult in bytes. (Does not include shared memory)
+        :rtype: int
+        """
         b = 0
         for data in self._data_dict.values():
             if data.flags['OWNDATA']:
@@ -1236,10 +1262,18 @@ class DataSetResult:
 
     @property
     def total_mem_size(self):
+        """
+        Total amount of memory used to store this DataSetResult in bytes. (Includes shared memory)
+        :rtype: int
+        """
         b = 0
         for data in self._data_dict.values():
             b += data.nbytes
         return b
+
+    @property
+    def trace(self):
+        return self._trace
 
     @property
     def columns(self):
@@ -1247,11 +1281,6 @@ class DataSetResult:
 
     def __len__(self):
         return self._size
-
-    # def __getattr__(self, item):
-    #     if item in self._data_dict:
-    #         return self._data_dict[item]
-    #     return getattr(super(DataSetResult, self), item)
 
     def __setitem__(self, key, value):
         simple_id = isinstance(key, int)
@@ -1332,9 +1361,7 @@ class DataSetResult:
             raise NotImplementedError
 
     def __contains__(self, item):
-        if item != self._last_in[0]:
-            self._last_in = (item, item in self._data_dict)
-        return self._last_in[1]
+        return item in self._data_dict
 
     def columns_name(self):
         """
@@ -1355,6 +1382,144 @@ class DataSetResult:
         self._size = n
         return self
 
+    class Trace:
+        def __init__(self, r):
+            self._dataset_name = r.dataset.dataset_name[:]
+            self._parent_traces = {}
+
+            self._start_date = time.time()
+            self._end_date = None
+            self._n = r.dataset.size
+
+            self._mem_size = r.mem_size
+            self._total_mem_size = r.total_mem_size
+
+        def computation_ended(self):
+            self._end_date = time.time()
+
+        def affiliate_parent_trace(self, trace):
+            if trace.dataset_name not in self._parent_traces:
+                self._parent_traces[trace.dataset_name] = []
+            self._parent_traces[trace.dataset_name].append(trace)
+
+        def __repr__(self):
+            return 'Trace(%s)' % self.dataset_name
+
+        def __str__(self):
+            return self.trace2str()
+
+        def __call__(self, *args, **kwargs):
+            print(self.trace2str())
+
+        def print(self):
+            print(self.trace2str())
+
+        def trace2str(self, total_time=None):
+            s = ''
+            if total_time is None:
+                total_time = self.total_exec_time
+            for t in self.all_parent_traces():
+                s += t.trace2str(total_time)
+            s += '-- %s --\n' % self.dataset_name
+
+            if total_time:
+                s += '\t exec time: %s s, %s%% (total: %s s, %s%%)\n' \
+                     % (float_to_str(self.exec_time, '.2f'),
+                        float_to_str(self.exec_time / total_time * 100, '.1f'),
+                        float_to_str(self.total_exec_time, '.2f'),
+                        float_to_str(self.total_exec_time / total_time * 100, '.1f'))
+                s += '\t mem usage: %s kB\n' % float_to_str(self.memory_allocated / 1000, '.1f')
+                s += '\t mem shared: %s kB\n' % float_to_str(self.shared_memory / 1000, '.1f')
+            else:
+                s += 'Not executed yet'
+            s += '\n'
+            return s
+
+        @property
+        def dataset_name(self):
+            return self._dataset_name
+
+        @property
+        def start_date(self):
+            return self._start_date
+
+        @property
+        def end_date(self):
+            return self._end_date
+
+        @property
+        def total_exec_time(self):
+            if self._end_date is None:
+                return None
+            return self._end_date - self._start_date
+
+        @property
+        def exec_time(self):
+            if self._parent_traces:
+                return self.total_exec_time - self.traces_total_time(self.all_parent_traces())
+            return self.total_exec_time
+
+        @property
+        def memory_allocated(self):
+            return self._mem_size
+
+        @property
+        def shared_memory(self):
+            return self._total_mem_size - self._mem_size
+
+        @property
+        def total_memory(self):
+            return self._total_mem_size
+
+        @property
+        def parent_traces(self):
+            return self._parent_traces
+
+        def all_parent_traces(self, recursive=False):
+            traces = []
+
+            if recursive:
+                def recursive_search(trace):
+                    for trace_list in trace._parent_traces.values():
+                        for t in trace_list:
+                            traces.append(t)
+                            recursive_search(t)
+                recursive_search(self)
+            else:
+                for t in self._parent_traces.values():
+                    traces += t
+            return traces
+
+        def dataset_traces(self, dataset_name, recursive=False):
+            if dataset_name not in self._parent_traces:
+                return 0
+            if recursive:
+                traces = []
+
+                def recursive_search(trace):
+                    for trace_list in trace._parent_traces.values():
+                        if trace_list.dataset_name == dataset_name:
+                            for t in trace_list:
+                                traces.append(t)
+                        else:
+                            for t in trace_list:
+                                recursive_search(t)
+
+                recursive_search(self)
+            else:
+                traces = self._parent_traces[dataset_name]
+            return traces
+
+        @staticmethod
+        def traces_total_time(traces, parallel_time=True):
+            if not traces:
+                return 0
+            if parallel_time:
+                #Todo: check not continuous execution
+                return max([_.end_date for _ in traces]) - min([_.start_date for _ in traces])
+            else:
+                return sum(_.total_exec_time for _ in traces)
+
 
 ########################################################################################################################
 class DataSetSmartGenerator:
@@ -1363,78 +1528,38 @@ class DataSetSmartGenerator:
     """
 
     class Context:
-        def __init__(self, n, id, columns, children, dataset, generator_id, determinist):
-            self.children = children
-            self.n = n
-            self.id = id
+        def __init__(self, n, id, end_id, columns, dataset, determinist, parallel):
             self.start_n = n
             self.start_id = id
+            self.end_id = end_id
             self.columns = columns
             self.dataset = dataset
             self.determinist = determinist
-            self.parallelized = False
-            self.parallel_exec = False
-            self.generator_id = generator_id
-            self.shared = dict()
+            self.parallel = parallel
+
             self._copy = {}
             self._r = None
+            self.n = n
+            self.id = id
 
-            self._mem = 0
-            self._mem_shared = 0
-
-        def generator(self, dataset, from_id=None, n=None, columns=None, gen_id=-1, shared_id=0):
-            if from_id is None:
-                from_id = self.id
+        def generator(self, dataset, start=None, end=None, n=None, columns=None, parallel=False):
+            if start is None:
+                start = self.id
+            if end is None:
+                end = min(self.end_id, dataset.size)
             if n is None:
                 n = self.n
             if columns is None:
                 columns = self.columns
 
-            force_new = False
-            if gen_id == -1:
-                gen_id = 0
-                force_new = True
+            gen = dataset.generator(start=start, end=end, n=n, columns=columns,
+                                    determinist=self.determinist, parallel_exec=parallel)
 
-            if not force_new and gen_id in self.children and shared_id in self.children[gen_id]:
-                gen = self.children[gen_id][shared_id]
-                gen.clean()
-                gen.context.id = from_id
-                gen.context.start_id = from_id
-                gen.context.n = n
-                gen.context.start_n = n
-                gen.context.columns = columns
-                gen._generator = dataset._generator(gen.context)
-            else:
-                gen = dataset._build_generator(from_id=from_id, n=n, columns=columns, determinist=self.determinist,
-                                               generator_id=self.generator_id)
-                shared = None
-                if gen_id in self.children and self.children[gen_id].values():
-                    shared = next(iter(self.children[gen_id].values()))._context.shared
-                if not gen_id in self.children:
-                    self.children[gen_id] = dict()
-                self.children[gen_id][shared_id] = gen
-
-                if shared is not None:
-                    gen._context.shared = shared
-
-            gen.context.parallelized = self.parallelized or self.parallel_exec
             return gen
-
-        def affiliate_gen(self, gen, id=0, update=False):
-            if id in self.children:
-                g = self.children[id]
-                if not update:
-                    gen._last_timing = g._last_timing
-                    gen._timing += g._timing
-                    gen._exec_count += g._exec_count
-                g.clean()
-                self.children[id] = gen
-            else:
-                self.children[id] = gen
 
         def create_result(self, result_only=False, as_weakref=True):
             n = min(self.n, self.dataset.size - self.id)
-            c = {} if self._copy is None else self._copy
+            c = if_none(self._copy, {})
             self._r = DataSetResult.create_empty(dataset=self.dataset, columns=self.columns,
                                                  n=n, start_id=self.id, assign=c)
             self._mem = self._r.mem_size
@@ -1449,78 +1574,190 @@ class DataSetSmartGenerator:
                 return self.id, n, r
 
         def is_last(self):
-            return self.id + self.n >= self.dataset.size
+            return self.id + self.n >= self.end_id
 
         def ended(self):
-            return self.id >= self.dataset.size
+            return self.id >= self.end_id
 
         def lite_copy(self):
             r = copy(self)
             r._r = None
             return r
 
-    def __init__(self, dataset: AbstractDataSet, n, start_id, generator_id, columns=None, determinist=True):
-        self._children_generator = {}
+        @property
+        def id_length(self):
+            return self.end_id-self.start_id
 
+    def __init__(self, dataset: AbstractDataSet, n, start_id, end_id, columns=None, determinist=True, parallel_exec=False):
         if columns is None:
             columns = dataset.columns_name()
         else:
             columns = dataset.interpret_columns(columns)
 
-        self._context = DataSetSmartGenerator.Context(n=n, id=start_id, columns=columns,
+        if parallel_exec and isinstance(parallel_exec, bool):
+            parallel_exec = 'process'
+
+        if start_id is None:
+            start_id = 0
+        else:
+            start_id %= dataset.size
+
+        if end_id is None:
+            end_id = dataset.size
+        elif end_id != 0:
+            end_id %= dataset.size
+            if end_id == 0:
+                end_id = dataset.size
+
+        self._context = DataSetSmartGenerator.Context(n=n, id=start_id, end_id=end_id, columns=columns,
                                                       dataset=dataset,
-                                                      children=self._children_generator,
-                                                      generator_id=generator_id,
-                                                      determinist=determinist)
+                                                      determinist=determinist,
+                                                      parallel=parallel_exec)
 
-        self._timing = 0
-        self._last_timing = 0
-        self._exec_count = 0
+        self._generator_setup = False
+        self._generator = None
 
-        self._generator = dataset._generator(self._context)
+        self._generator_queue = None
+        self._generator_process = None
+        self.__warn_limit_copy = False
+
+    def __del__(self):
+        self.clean()
 
     def __next__(self):
         return self.next()
 
-    def next(self, copy=None, limit=None):
+    def next(self, copy=None, limit=None, r=None):
+        affiliated_result = r
+        r = None
+
         if self.ended():
             raise StopIteration
-
-        self._context._copy = copy
+        self.setup()
 
         if limit is None:
             limit = self._context.start_n
-        self._context.n = min(self.dataset.size - self.current_id, limit)
+        self._context.n = min(self.end_id - self.current_id, limit)
 
-        t = time.time()
+        if self._asynchronous_exec:
+            if (limit is not None) and not self.__warn_limit_copy:
+                log.warn("%s's generator is executed asynchronously, data sharing and size limit will be ignored."
+                         % self.dataset.dataset_name)
 
-        r = next(self._generator)
-        if isinstance(r, weakref.ref):
-            r = r()
+            return self.poll(timeout=None, copy=copy, r=affiliated_result)
 
-        self._last_timing = time.time()-t
+        else:
+            # Setup context
+            self._context._copy = copy
 
-        self._timing += self._last_timing
-        self._context._copy = None
-        self._context._r = None
+            # Compute next sample
+            r = next(self._generator)
+            if isinstance(r, weakref.ref):
+                r = r()
+            r.trace.computation_ended()
+
+            # Clean context
+            self._context._copy = None
+            self._context._r = None
+            self.context.id += self.n
+
+            if affiliated_result:
+                affiliated_result.trace.affiliate_parent_trace(r.trace)
+
+            if self.ended():
+                self.clean()
+
+            return r
+
+    def poll(self, timeout=0, copy=None, r=None):
+        """
+        Wait for data to be generated and returns it or returns None if timeout is reached.
+        :param timeout: Number of second to wait (must be a positive number). If None, wait indefinitely.
+        :param r: If specified, affiliate the generated result to r.
+        :return : The generated DataSetResult or None
+        """
+        affiliated_result = r
+        r = None
+        if self.ended():
+            raise StopIteration
+        self.setup()
+
+        if not self._asynchronous_exec:
+            return self.next(r=r)
+
+        if timeout == 0:
+            try:
+                r = self._generator_queue.get_nowait()
+            except queue.Empty:
+                return None
+        else:
+            try:
+                r = self._generator_queue.get(block=True, timeout=timeout)
+            except queue.Empty:
+                return None
+
+        if r is None:
+            self._context.id = self.end_id
+            raise StopIteration
+
+        self._context.n = min(self.end_id - self.current_id, self._context.start_n)
+
+        if copy is not None:
+            for c, d in copy.items():
+                np.copyto(d, r[c])
+
+        r.affiliate_dataset(self.dataset)
+        if affiliated_result:
+            affiliated_result.trace.affiliate_parent_trace(r.trace)
+
         self.context.id += self.n
-        self._exec_count += 1
+        if self.ended():
+            self.clean()
+            if self.n > r.size:
+                r.truncate(self.n)
+
         return r
 
     def __iter__(self):
         while True:
             yield self.next()
 
-    def __del__(self):
-        self.clean()
+    def setup(self):
+        if self._generator_setup:
+            return
+        if self._context.determinist:
+            self.dataset._setup_determinist()
+        self._generator_setup = True
+
+        if self.parallel_exec:
+            self._generator_queue = mp.Queue(1)
+
+            if self.parallel_exec=='process':
+                process = mp.Process(target=parallel_generator_exec, args=(self,),
+                                                     name='%s.generator' % self.dataset.dataset_name)
+            else:
+                process = threading.Thread(target=parallel_generator_exec, args=(self,),
+                                                           name='%s.generator' % self.dataset.dataset_name)
+
+            process.start()
+
+            self._generator_process = process
+        else:
+            self.init_generator()
+
+    def init_generator(self):
+        self._generator = self.dataset._generator(self._context)
 
     def clean(self):
-        for children in self._children_generator.values():
-            for child in children.values():
-                child.clean()
-
         self._generator = None
         self._context._r = None
+        if self._generator_process:
+            if self._generator_process.is_alive():
+                self._generator_process.terminate()
+            self._generator_process = None
+        if self._generator_queue:
+            del self._generator_queue
+            self._generator_queue = None
 
     def is_last(self):
         return self.context.is_last()
@@ -1549,55 +1786,44 @@ class DataSetSmartGenerator:
         return self._context.start_id
 
     @property
+    def end_id(self):
+        return self._context.end_id
+
+    @property
+    def parallel_exec(self):
+        return self._context.parallel
+
+    @property
+    def _asynchronous_exec(self):
+        # When a generator is executed in parallel, an exact copy of it is pickled and is executed synchronously in an
+        # other thread or process. This property will return True for the original generator and False for its copy.
+        return self._generator_process is not None
+
+    @property
     def context(self):
         return self._context
 
-    def mean_exec_time(self):
-        return self._timing / self._exec_count
 
-    def exec_time(self):
-        t = self.total_exec_time()
-        children_exec_time = []
-        for children in self._children_generator.values():
-            for child in children.values():
-                children_exec_time.append(child.total_exec_time())
-        if self.context.parallel_exec:
-            t -= max(children_exec_time)
-        else:
-            t -= sum(children_exec_time)
-        return t
+def parallel_generator_exec(smart_generator):
+    try:
+        # Setup generator
+        smart_generator.init_generator()
+        queue = smart_generator._generator_queue
 
-    def total_exec_time(self):
-        return self._timing
+        # Run generator
+        for r in smart_generator:
+            # Sending the result in the queue
+            queue.put(r)
+    except Exception as e:
+        queue.put(e)
 
-    def memory_allocated(self):
-        return self._context._mem
-
-    def shared_memory(self):
-        return self._context._mem_shared
-
-    def trace(self, total_time=None):
-        s = ''
-        if total_time is None:
-            total_time = self.total_exec_time()
-        for children in self._children_generator.values():
-            for child in children.values():
-                s += child.trace(total_time)
-        s += '-- %s --\n' % self.dataset.dataset_name
-
-        if total_time:
-            s += '\t exec time: %.2f s, %.1f%% (total: %.2f s, %.1f%%)\n' \
-                 % (self.exec_time(), self.exec_time()/total_time*100,
-                    self.total_exec_time(), self.total_exec_time()/total_time*100)
-            s += '\t mem usage: %.1f kB\n' % (self.memory_allocated() / 1000)
-            s += '\t mem shared: %.1f kB\n' % (self.shared_memory() / 1000)
-        else:
-            s += 'Not executed yet'
-        s += '\n'
-        return s
+    # Sending end notification
+    queue.put(None)
+    queue.close()
 
 
 ########################################################################################################################
+
 ########################################################################################################################
 class NumPyDataSet(AbstractDataSet):
     def __init__(self, name='NumPyDataSet', pk=None, **kwargs):
@@ -1644,11 +1870,12 @@ class DataSetSubset(AbstractDataSet):
         self.start, self.end = interval(dataset.size, start, end)
 
     def _generator(self, gen_context):
-        i = gen_context.start_id + self.start
-        gen = gen_context.generator(self._parent, from_id=i)
+        first_id = gen_context.start_id + self.start
+        last_id = gen_context.end_id + self.start
+        gen = gen_context.generator(self._parent, start=first_id, end=last_id)
         while not gen_context.ended():
             i, n, r = gen_context.create_result()
-            yield gen.next(copy={c: r()[c] for c in gen_context.columns}, limit=n)
+            yield gen.next(copy={c: r()[c] for c in gen_context.columns})
 
     @property
     def size(self):
@@ -1676,8 +1903,7 @@ class DataSetSubgen(AbstractDataSet):
 
     def _generator(self, gen_context):
         max_n = min(self.n, gen_context.n)
-        parent_gen = gen_context.generator(self._parent, n=max_n, from_id=gen_context.start_id,
-                                           columns=gen_context.columns)
+        parent_gen = gen_context.generator(self._parent, n=max_n)
 
         while not gen_context.ended():
             i_global, N, weakref = gen_context.create_result()
@@ -1685,7 +1911,7 @@ class DataSetSubgen(AbstractDataSet):
 
             for i in range(0, N, max_n):
                 n = min(N-i, max_n)
-                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']}, limit=n)
+                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']})
 
             r = None
             yield weakref

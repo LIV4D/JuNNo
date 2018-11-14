@@ -41,6 +41,20 @@ def second_to_str(time_s):
         return '%s:%s:%s' % (h, m, s)
 
 
+def float_to_str(number, format='f'):
+    s = (('%'+format) % number).split('.')
+    n = ''
+    for i, _ in enumerate(reversed(s[0])):
+        n = _ + n
+        if i % 3 == 2:
+            n = ' '+n
+    n = n+','
+    for i, _ in enumerate(s[1]):
+        n = n+_
+        if i % 3 == 2:
+            n = n+' '
+    return n
+
 ########################################################################################################################
 real_stdout = sys.stdout
 real_stderr = sys.stderr
