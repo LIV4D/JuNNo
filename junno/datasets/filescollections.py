@@ -124,8 +124,8 @@ class FilesCollection(AbstractDataSet):
                 if 'data' in r:
                     sample = self._read_files(path)
                     if sample is not None:
-                        if len(self.data.shape):
-                            shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.data.shape)]
+                        if len(self.columns.data.shape):
+                            shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
                             r[i, 'data'][[slice(_) for _ in shape]] = sample[[slice(_) for _ in shape]]
                         else:
                             r[i, 'data'] = sample

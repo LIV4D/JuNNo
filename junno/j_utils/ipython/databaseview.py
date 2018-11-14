@@ -4,7 +4,7 @@ from IPython import get_ipython
 import traceback
 
 from ..math import dimensional_split
-from ..log_module import log
+from ..j_log import log
 from .customwidgets import ToolBar, RichLabel, HierarchyBar, VSpace, TinyLoading, HSpace
 from .import_js import import_js, AutoImportDOMWidget
 

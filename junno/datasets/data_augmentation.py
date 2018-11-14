@@ -76,7 +76,7 @@ class DataSetAugmentedData(AbstractDataSet):
             for i in range(n):
                 # Read appropriate result
                 if (i + i_global) % self.N_aug == 0 or result is None:
-                    result = next(gen)
+                    result = gen.next(r=r)
                 # Compute augmented data
                 seed = i+i_global
                 if not gen_context.determinist:

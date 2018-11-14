@@ -648,3 +648,15 @@ class Tree:
                 return self._node.node_by_name(item) is not None
             else:
                 return item in self._node
+
+
+########################################################################################################################
+class AttributeDict(OrderedDict):
+    def __getattr__(self, item):
+        if item in self:
+            return self[item]
+        raise AttributeError('%s is unknown' % item)
+
+    def __iter__(self):
+        for v in self.values():
+            yield v

@@ -97,7 +97,7 @@ class DataSetReshape(AbstractDataSet):
             global_i, n, weakref = gen_context.create_result()
             r = weakref()
 
-            result = gen.next(copy={_: r[:, _] for _ in copied_columns}, limit=n)
+            result = gen.next(copy={_: r[:, _] for _ in copied_columns}, limit=n, r=r)
 
             # Reshape data
             for c in reshaped_columns:
@@ -247,7 +247,7 @@ class DataSetPatches(AbstractDataSet):
         self._post_process_function = post_process
 
         self._patches_function = patches_function
-        self._static_kwargs = {c.name + '_shape': c.shape for c in self.columns}
+        self._static_kwargs = {c.name + '_shape': c.shape for c in self._columns}
         self._static_kwargs['patch_shapes'] = list({_[1] for _ in self._patched_columns.values()})
         self._static_kwargs['img_shape'] = img_shape
         self._saved_patch_center = None
@@ -373,7 +373,7 @@ class DataSetPatches(AbstractDataSet):
                     if center_i == 0 or result is None:
                         try:
                             gen_current_index = gen.current_id
-                            result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns})
+                            result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
                         except StopIteration:
                             log.error('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
                                        %(self._parent, i_global, i_global/n, gen_current_index))
@@ -392,7 +392,7 @@ class DataSetPatches(AbstractDataSet):
                             gen = gen_context.generator(self._parent, n=1, from_id=img_id, columns=gen_columns)
                         try:
                             gen_current_index = gen.current_id
-                            result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns})
+                            result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
                         except StopIteration:
                             log.error('Reading from %s failed (i_global=%i, img_id=%i, gen_id=%i, result.start_id=%i)'
                                        % (self._parent, i_global, img_id, gen_current_index, result.start_id) )
@@ -473,6 +473,7 @@ class DataSetUnPatch(AbstractDataSet):
         # Find DataSetPatches ancestor
         self._patch_dataset = dataset
         while self._patch_dataset is not None and not isinstance(self._patch_dataset, DataSetPatches):
+            from .datasets_core import DataSetShuffle
             if isinstance(self._patch_dataset, DataSetShuffle):
                 raise ValueError('Impossible to unpatch %s once it has been shuffled!' % dataset)
             self._patch_dataset = self._patch_dataset.parent_dataset
@@ -603,7 +604,7 @@ class DataSetUnPatch(AbstractDataSet):
                         gen = gen_context.generator(self.parent_dataset, n=self.n_patches, from_id=start_patch+i_patch,
                                                     columns=gen_columns)
                     n_patches = min(self.n_patches, n_patch-i_patch)
-                    result = gen.next(limit=n_patches)
+                    result = gen.next(limit=n_patches, r=r)
 
                     # Apply patch
                     for i_patches in range(n_patches):

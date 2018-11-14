@@ -8,15 +8,27 @@ from ..j_utils.function import match_params, not_optional_args
 
 ########################################################################################################################
 class DataSetMap(AbstractDataSet):
-    def __init__(self, dataset, mapping, name='mapping'):
+    def __init__(self, dataset, mapping, keep_all_columns=True, name='mapping'):
         """
         :type dataset: AbstractDataSets
         """
         super(DataSetMap, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
 
+        mapped_cols = set()
         for column, real_columns in mapping.items():
             if isinstance(real_columns, str):
                 mapping[column] = [real_columns]
+                mapped_cols.add(real_columns)
+            elif isinstance(real_columns, (list, tuple)):
+                mapped_cols.update(real_columns)
+            else:
+                raise ValueError('Invalid mapping value: %s.\n '
+                                 'Valid value are column name for mapping and list or tuple for concatenation.'
+                                 % real_columns)
+
+        if keep_all_columns:
+            for c in set(dataset.columns_name())-mapped_cols:
+                mapping[c] = [c]
 
         self.concatenation_map = mapping
         for column, real_columns in mapping.items():
@@ -51,7 +63,7 @@ class DataSetMap(AbstractDataSet):
             _, N, weakref = gen_context.create_result()
             r = weakref()
             gen.next(copy={c_parent: r[c_name][:, i:i+n] if n > 0 else r[:, c_name]
-                           for c_parent, (c_name, i, n) in columns_map.items()}, limit=N)
+                           for c_parent, (c_name, i, n) in columns_map.items()}, limit=N, r=r)
             r = None
             yield weakref
 
@@ -123,9 +135,7 @@ class DataSetShuffle(AbstractDataSet):
                 it += 1
 
         # Check for parallel execution
-        parallel = False
-        if not gen_context.parallelized and gen_context.n > 1:
-            parallel = self.parallel
+        parallel = self.parallel
 
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
@@ -150,7 +160,7 @@ class DataSetShuffle(AbstractDataSet):
                     gen_context.parallel_exec = False
                     for i, id in enumerate(seq):
                         gen = gen_context.generator(self._parent, from_id=id, n=1)
-                        gen.next(copy={c: r[i:i+1, c] for c in r.columns_name()})
+                        gen.next(copy={c: r[i:i+1, c] for c in r.columns_name()}, r=r)
                         gen.clean()
             else:
                 # Read data from sub-generators
@@ -176,7 +186,7 @@ class DataSetShuffle(AbstractDataSet):
                 # else:
                 for i in range(n):
                     sub_gen_id, sample_id = random_sequence[i+i_global]
-                    result = sub_gen[sub_gen_id].next(copy={c: r[i:i+1, c] for c in columns})
+                    result = sub_gen[sub_gen_id].next(copy={c: r[i:i+1, c] for c in columns}, r=r)
                     if result.start_id != sample_id:
                         print('result.start_id: %i != sample_id: %i' % (result.start_id, sample_id))
             r = None
@@ -371,7 +381,7 @@ class DataSetJoin(AbstractDataSet):
         reverse_columns_map[self._pk_foreign_col[0]][self._pk_foreign_col[1]] = 'pk'
 
         # Check parallel execution
-        parallel = self.parallel and not gen_context.parallelized
+        parallel = self.parallel
 
         if parallel:
             def read_from_dataset(dataset_info):
@@ -419,7 +429,7 @@ class DataSetJoin(AbstractDataSet):
                     # Reading generators
                     for gen_id, gen in enumerate(generators):
                         gen[0].next(copy={c: r[i:i+1, reverse_columns_map[gen_id][c]] for c in gen[0].columns
-                                          if c in reverse_columns_map[gen_id]})
+                                          if c in reverse_columns_map[gen_id]}, r=r)
 
                     # Updating generator index
                     for gen in generators:
@@ -428,7 +438,7 @@ class DataSetJoin(AbstractDataSet):
             yield weakref
 
     def subset(self, start=0, end=None, *args):
-        from  copy import deepcopy
+        from copy import deepcopy
         if len(args) == 1:
             start = 0
             end = args[0]
@@ -538,7 +548,7 @@ class DataSetConcatenate(AbstractDataSet):
         parent_gen = None
 
         def read_from_parent(result, global_i, n):
-            r = parent_gen.next(copy={c: result[global_i:global_i + n, c] for c in copy_cols}, limit=n)
+            r = parent_gen.next(copy={c: result[global_i:global_i + n, c] for c in copy_cols}, limit=n, r=r)
             for i in range(n):
                 result[global_i+i, 'pk'] = parent_gen.dataset.dataset_name + '|' + str(r[i, 'pk'])
                 for c in default_cols:
@@ -758,7 +768,7 @@ class DataSetApply(AbstractDataSet):
                     # Retreive data, store f results in f_results
                     if result is None:
                         result = parent_gen.next(copy={c: r[i:i+1, c] for c in r.columns_name() if c not in self._apply_columns},
-                                                 limit=1)
+                                                 limit=1, r=r)
                         kwargs.update({_: result[0, _] for _ in self._f_columns})
                         f_results = {}
                         for c in r.columns_name():
@@ -802,7 +812,7 @@ class DataSetApply(AbstractDataSet):
             else:
                 # Batch wise (n=1)
                 result = parent_gen.next(copy={c: r[c] for c in r.columns_name() if c not in self._apply_columns},
-                                         limit=n)
+                                         limit=n, r=r)
                 kwargs.update({_: result[_] for _ in self._f_columns})
                 f_results = {}
                 for c in r.columns_name():

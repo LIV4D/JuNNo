@@ -15,7 +15,7 @@ if(fullscreenPanel === null){
     fullscreenPanel.style.zIndex = 10;
 
     fullscreenPanel.onmousedown = function(e){
-        var x = e.x / fullscreenPanel.clientWidth, 
+        var x = e.x / fullscreenPanel.clientWidth,
         y = (e.y-100) / (fullscreenPanel.clientHeight-100);
         //console.log(e.offsetX, fullscreenPanel.clientWidth, x, e.offsetY, fullscreenPanel.clientHeight, y);
         if( x<0.05 || x>0.95 || y<0.05 || y>0.95) 
@@ -53,6 +53,7 @@ if(fullscreenPanel === null){
     content.appendChild(htmlContent);
     
     var imgViewerContent = document.createElement('div');
+    imgViewerContent.setAttribute('id', 'fullscreenPanel_imgViewerContent');
     imgViewerContent.style.width = '90%';
     imgViewerContent.style.height = '90%';
     imgViewerContent.style.x = '0';
@@ -61,11 +62,11 @@ if(fullscreenPanel === null){
     content.appendChild(imgViewerContent);
     
     var imgViewer = ImageViewer(imgViewerContent);
-    
+
     var style = document.createElement('style');
     document.head.appendChild(style);
     style = style.sheet;
-    
+
     style.insertRule(` #fullscreenPanel_content img {
             display: block
             max-width: 80%;
@@ -79,6 +80,7 @@ if(fullscreenPanel === null){
     document.getElementById('site').appendChild(fullscreenPanel);
 }else{
     var content = document.getElementById('fullscreenPanel_content');
+    var imgViewerContent = document.getElementById('fullscreenPanel_imgViewerContent');
 }
 
 IPython.FullscreenView = {
