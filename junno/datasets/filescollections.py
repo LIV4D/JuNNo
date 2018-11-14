@@ -101,6 +101,7 @@ class FilesCollection(AbstractDataSet):
                 break
 
         self._files = np.array(files_list, dtype='str')
+        self._files.sort()
 
     @property
     def files(self):

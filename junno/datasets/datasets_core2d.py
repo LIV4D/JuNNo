@@ -91,7 +91,7 @@ class DataSetReshape(AbstractDataSet):
                 copied_columns.append(c)
                 parent_columns.add(c)
 
-        gen = gen_context.generator(self._parent, n=gen_context.n, from_id=i_global, columns=list(parent_columns))
+        gen = gen_context.generator(self._parent, columns=list(parent_columns))
 
         while not gen_context.ended():
             global_i, n, weakref = gen_context.create_result()
@@ -286,6 +286,10 @@ class DataSetPatches(AbstractDataSet):
         if center_pos:
             self._columns.append(DataSetColumn('center_pos', (2,), dtype=int, dataset=self))
 
+    def _setup_determinist(self):
+        if not self._cache_center:
+            self._saved_patch_center = self.generate_all_patches_center()
+
     def generate_all_patches_center(self):
         centers = [0]
         def store_result(c):
@@ -327,7 +331,6 @@ class DataSetPatches(AbstractDataSet):
         return np_array
 
     def _generator(self, gen_context):
-        i_global = gen_context.start_id
         columns = gen_context.columns
 
         center_pos = 'center_pos' in columns
@@ -342,18 +345,18 @@ class DataSetPatches(AbstractDataSet):
         gen_columns = list(gen_columns)
 
         if not self._cache_center:
-            gen = gen_context.generator(self._parent, n=1, from_id=i_global//self._n, columns=gen_columns)
+            gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
+                                        start=gen_context.start_id//self._n, end=gen_context.end_id//self._n)
         else:
-            gen = gen_context.generator(self._parent, n=1, from_id=self._saved_patch_center[i_global, 0],
-                                        columns=gen_columns)
+            gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
+                                        start=self._saved_patch_center[gen_context.start_id, 0],
+                                        end=self._saved_patch_center[gen_context.end_id, 0])
 
         if not self.is_patch_invariant() and not self._cache_center:
             if gen_context.determinist:
                 saved_centers = self._saved_patch_center
             else:
-                if not 'saved_centers' in gen_context.shared:
-                    gen_context.shared['saved_centers'] = [None] * self.parent_dataset.size
-                saved_centers = gen_context.shared['saved_centers']
+                saved_centers = [None] * self.parent_dataset.size
         else:
             saved_centers = None
 
@@ -379,25 +382,27 @@ class DataSetPatches(AbstractDataSet):
                                        %(self._parent, i_global, i_global/n, gen_current_index))
                             raise StopIteration('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
                                                %(self._parent, i_global, i_global/n, gen_current_index) )
+                    gen_current_index = result.start_id
                     if self.is_patch_invariant():
-                        center = self._saved_patch_center[center_i, 1:]
+                        center = saved_centers[center_i, 1:]
                     else:
                         if saved_centers[gen_current_index] is None:
                             saved_centers[gen_current_index] = self.generate_one_patches_center(result)
                         center = saved_centers[gen_current_index][center_i, 1:]
                 else:
-                    img_id, center_x, center_y = self._saved_patch_center[i+i_global]
+                    img_id, center_x, center_y = saved_centers[i+i_global]
                     while result is None or img_id != result.start_id:
                         if img_id != gen.current_id:
-                            gen = gen_context.generator(self._parent, n=1, from_id=img_id, columns=gen_columns)
+                            gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns,
+                                                        end=saved_centers[gen_context.end_id, 0])
                         try:
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
                         except StopIteration:
                             log.error('Reading from %s failed (i_global=%i, img_id=%i, gen_id=%i, result.start_id=%i)'
-                                       % (self._parent, i_global, img_id, gen_current_index, result.start_id) )
+                                       % (self._parent, i_global, img_id, gen_current_index, result.start_id))
                             raise StopIteration('Reading from %s failed (i_global=%i, img_id=%i, gen_id=%i, result.start_id=%i)'
-                                                % (self._parent, i_global, img_id, gen_current_index, result.start_id) )
+                                                % (self._parent, i_global, img_id, gen_current_index, result.start_id))
                         center_i = -1
                     center = (center_x, center_y)
                     center_i += 1
@@ -601,8 +606,8 @@ class DataSetUnPatch(AbstractDataSet):
                 while i_patch < n_patch:
                     # Read patch
                     if gen is None or gen.current_id != start_patch+i_patch:
-                        gen = gen_context.generator(self.parent_dataset, n=self.n_patches, from_id=start_patch+i_patch,
-                                                    columns=gen_columns)
+                        gen = gen_context.generator(self.parent_dataset, n=self.n_patches, columns=gen_columns,
+                                                    start=start_patch + i_patch, end=self.parent_dataset.size)
                     n_patches = min(self.n_patches, n_patch-i_patch)
                     result = gen.next(limit=n_patches, r=r)
 

@@ -66,7 +66,8 @@ class DataSetAugmentedData(AbstractDataSet):
         if self.column_transform:
             if 'transformation' not in self._parent.columns_name() and 'transformation' in columns_parent:
                 columns_parent.remove('transformation')
-        gen = gen_context.generator(self._parent, n=1, from_id=i_global // self.N_aug, columns=columns_parent)
+        gen = gen_context.generator(self._parent, n=1, columns=columns_parent,
+                                    start=gen_context.start_id // self.N_aug, end=gen_context.end_id // self.N_aug)
         result = None
 
         while not gen_context.ended():
