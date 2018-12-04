@@ -69,26 +69,23 @@ The module is composed of the classes:
 """
 from abc import ABCMeta, abstractmethod
 import numpy as np
-import cv2
+import base64
+import enum
 from functools import partial
-from copy import deepcopy, copy
+from copy import copy
 from os.path import dirname, exists, join, splitext, basename
 from os import makedirs
-from sys import getsizeof
-import PIL.Image as Image
-import io
 import pandas as pd
 import time
-from scipy.sparse import spmatrix
 import multiprocessing as mp
 import queue
 import threading
 
 from ..j_utils.j_log import log, Process, float_to_str
 
-from ..j_utils.function import not_optional_args, to_callable, identity_function, match_params
+from ..j_utils.function import not_optional_args, to_callable, optional_args
 from ..j_utils.parallelism import parallel_exec, intime_generator
-from ..j_utils.math import interval, cartesian
+from ..j_utils.math import interval
 from ..j_utils.collections import if_none, AttributeDict
 import weakref
 
@@ -131,7 +128,14 @@ class AbstractDataSet(metaclass=ABCMeta):
             parent_datasets = [parent_datasets]
 
         self._parents = parent_datasets
-        self._pk = DataSetColumn('pk', (), pk_type, self)
+        self._pk = DSColumn('pk', (), pk_type, self)
+
+        self._sample = None
+
+    def __getstate__(self):
+        d = self.__dict__
+        d['_sample'] = None
+        return d
 
     #   ---   Dataset properties   ---
     def __len__(self):
@@ -237,13 +241,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param n:  Number of element to return (maximum) by iteration
         :param start: index from which the generator will start reading data
         :param columns: list of columns to read
-        :type columns: None or list of str or list of :class:`DataSetColumn`
+        :type columns: None or list of str or list of :class:`DSColumn`
         :type start: int
         :type n: int
 
         :return The generator which loops start at from_id and does n iterations.
         :rtype: generator
         """
+        self.clear_sample()
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, end_id=end, columns=columns,
                                      determinist=determinist, parallel_exec=parallel_exec)
 
@@ -272,7 +277,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             columns = columns.copy()
 
         for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 if c.dataset is not self:
                     raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
                 if to_column_name:
@@ -317,10 +322,10 @@ class AbstractDataSet(metaclass=ABCMeta):
     def copy_columns(self, dataset=None):
         if dataset is None:
             dataset = self
-        return [DataSetColumn(_.name, _.shape, _.dtype, dataset) for _ in self._columns]
+        return [DSColumn(_.name, _.shape, _.dtype, dataset) for _ in self._columns]
 
     def add_column(self, name, shape, dtype):
-        self._columns.append(DataSetColumn(name=name, shape=shape, dtype=dtype, dataset=self))
+        self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self))
 
     #   ---   Dataset Hierarchy   ---
     @property
@@ -401,9 +406,20 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return w
 
+    #   ---   Sample   ---
+    @property
+    def sample(self):
+        if self._sample is None:
+            self._sample = self.read_one()
+        return self._sample
+
+    def clear_sample(self):
+        del self._sample
+        self._sample = None
+
     #   ---   Export   ---
     def sql_write(self, database_path, table_name, start=0, end=0, n=10,
-                  compress_img=True, include_pk=False, replace_table=False, show_progression=True, compress_format='png'):
+                  compress_img=True, include_pk=False, replace_table=False, show_progression=True, compress_format='.png'):
         """Write the current dataset in a SQLite file.
 
         The method retranscribes the internal relation of the current dataset (rows and columns) in a SQLite logic. If the filepath
@@ -457,11 +473,9 @@ class AbstractDataSet(metaclass=ABCMeta):
                 array = array.reshape(array.shape[:-1])
             if not str(array.dtype).startswith('uint') and np.max(array) <= 1. and np.min(array) >= 0.:
                 array *= 255.
-            output = io.BytesIO()
-            img = Image.fromarray(array.astype(dtype=np.uint8))
-            img.save(output, format)
-            contents = output.getvalue()
-            return contents
+
+            import cv2
+            return cv2.imencode(format, array)[1]
 
         def format_type(r, c):
             if c in compress:
@@ -528,7 +542,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             columns = self.columns_name()
             if column_for_filename in columns:
                 columns.remove(column_for_filename)
-        elif isinstance(columns, str) or isinstance(columns, DataSetColumn):
+        elif isinstance(columns, str) or isinstance(columns, DSColumn):
             columns = [columns]
             single_column = True
         if isinstance(columns, list):
@@ -536,7 +550,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 if isinstance(columns, str):
                     if columns not in self.columns_name():
                         raise ValueError('Unknown column %s.' % columns)
-                elif isinstance(columns, DataSetColumn):
+                elif isinstance(columns, DSColumn):
                     if columns.dataset is not self:
                         raise ValueError('%s is not a column of this dataset.' % columns.name)
                     columns[c_id] = c.name
@@ -607,6 +621,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                         array *= 255
 
                     img_folder_path = join(folder_path, column_name) if not single_column else folder_path
+
+                    import cv2
                     if compress_img:
                         path = join(img_folder_path, filename+'.'+compress_format)
                         cv2.imwrite(path, array)
@@ -633,13 +649,16 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     #   ---   Operations   ---
     def subset(self, start=0, end=None, name='subset', *args):
+        from .datasets_core import DataSetSubset
         start, end = interval(self.size, start, end, args)
         return DataSetSubset(self, start, end, name=name)
 
     def subgen(self, n=1, name='subgen'):
+        from .datasets_core import DataSetSubgen
         return DataSetSubgen(self, n=n, name=name)
 
     def as_cache(self, n=1, start=0, end=None, name=None):
+        from .datasets_core import NumPyDataSet
         start, end = interval(self.size, start, end)
         data = DataSetResult.create_empty(dataset=self, n=end - start, start_id=start, columns=self.columns_name())
         gen = self.generator(n=n, start=start)
@@ -656,7 +675,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 gen.next(copy=data[i:i+l], limit=l)
                 p.update(n)
 
-        dataset = NumPyDataSet(name=name, **data)
+        dataset = NumPyDataSet(data, name=name)
         dataset._parents = [self]
         return dataset
 
@@ -757,7 +776,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 if _[0] is self:
                     found_self = True
                     break
-            elif isinstance(_, DataSetColumn):
+            elif isinstance(_, DSColumn):
                 if _.dataset is self:
                     found_self = True
                     break
@@ -856,23 +875,23 @@ class AbstractDataSet(metaclass=ABCMeta):
                 patch_shape = (patch_shape, patch_shape)
 
             if not isinstance(columns, list):
-                if isinstance(columns, DataSetColumn):
+                if isinstance(columns, DSColumn):
                     columns = columns.name
                 patches_def[columns] = (columns, patch_shape)
             else:
                 for c_id, c in enumerate(columns):
-                    if isinstance(c, DataSetColumn):
+                    if isinstance(c, DSColumn):
                         c = c.name
                     patches_def[c] = (c, patch_shape)
         else:
             if not isinstance(patch_shape, dict):
                 raise ValueError('If columns is not defined, patch_shape should be a dictionary of patch shapes.')
             for c, patch_def in patch_shape.items():
-                if isinstance(c, DataSetColumn):
+                if isinstance(c, DSColumn):
                     c = c.name
                 parent_c = c
                 if isinstance(patch_def, tuple) and not isinstance(patch_def[0], int):
-                    parent_c = patch_def[0].name if isinstance(patch_def[0], DataSetColumn) else patch_def[0]
+                    parent_c = patch_def[0].name if isinstance(patch_def[0], DSColumn) else patch_def[0]
                     patch_def = patch_def[1]
                 if isinstance(patch_def, int):
                     patch_def = (patch_def, patch_def)
@@ -953,22 +972,22 @@ class AbstractDataSet(metaclass=ABCMeta):
                 patch_shape = (patch_shape, patch_shape)
 
             if not isinstance(columns, list):
-                if isinstance(columns, DataSetColumn):
+                if isinstance(columns, DSColumn):
                     columns = columns.name
                 patches_def[columns] = (columns, patch_shape)
             for c_id, c in enumerate(columns):
-                if isinstance(c, DataSetColumn):
+                if isinstance(c, DSColumn):
                     c = c.name
                 patches_def[c] = (c, patch_shape)
         else:
             if not isinstance(patch_shape, dict):
                 raise ValueError('If columns is not defined, patch_shape should be a dictionary of patch shapes.')
             for c, patch_def in patch_shape.items():
-                if isinstance(c, DataSetColumn):
+                if isinstance(c, DSColumn):
                     c = c.name
                 parent_c = c
                 if isinstance(patch_def, tuple) and not isinstance(patch_def[0], int):
-                    parent_c = patch_def[0].name if isinstance(patch_def[0], DataSetColumn) else patch_def[0]
+                    parent_c = patch_def[0].name if isinstance(patch_def[0], DSColumn) else patch_def[0]
                     patch_def = patch_def[1]
                 if isinstance(patch_def, int):
                     patch_def = (patch_def, patch_def)
@@ -1002,11 +1021,11 @@ class AbstractDataSet(metaclass=ABCMeta):
 
 
 ########################################################################################################################
-class DataSetColumn:
+class DSColumn:
     """
     Store information of a column of a DataSet
     """
-    def __init__(self, name, shape, dtype, dataset=None):
+    def __init__(self, name, shape, dtype, dataset=None, datatype=None):
         self._name = name
         self._shape = shape
         self._dataset = None
@@ -1015,6 +1034,16 @@ class DataSetColumn:
         self._dtype = dtype
         if dtype == str:
             self._dtype = 'O'
+
+        self._format_export = None
+        self._format_display = None
+        if datatype is not None:
+            self._datatype = datatype
+        elif dataset is None:
+            self._datatype = DSColumn.DataType.UNKNOWN
+        else:
+            self._datatype = DSColumn.DataType.infer_type(self._dataset.sample[name])
+        self.fullscreen_display = DSColumn.DataType.default_fullscreen_display(self._datatype)
 
     def __getstate__(self):
         return self._name, self._shape, self._dtype
@@ -1039,7 +1068,12 @@ class DataSetColumn:
         return self._dtype
 
     @property
+    def datatype(self):
+        return self._datatype
+
+    @property
     def sql_type(self):
+        # TODO: Remove this property
         if self.shape != ():
             return 'array'
         if 'int' in str(self.dtype):
@@ -1049,7 +1083,6 @@ class DataSetColumn:
         elif str(self.dtype) in ('str', 'O'):
             return 'TEXT'
         return 'UNKNOWN'
-
 
     @property
     def name(self):
@@ -1071,6 +1104,107 @@ class DataSetColumn:
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
+
+    @property
+    def format_display(self):
+        if self._format_display is None:
+            return self.default_display_export
+        else:
+            return self._format_export
+
+    @format_display.setter
+    def format_display(self, f):
+        if f is None or callable(f):
+            self._format_display = f
+
+    def format_html(self, x, thumbnail):
+        datatype = self.datatype
+        DT = DSColumn.DataType
+
+        if datatype is DT.IMAGE:
+            import cv2
+            if x.ndim == 3:
+                x = x.transpose((1, 2, 0))
+            if thumbnail:
+                h, w = x.shape[:2]
+                ratio = h / w
+                mindim = min(thumbnail[0] * ratio, thumbnail[1])
+                thumbnail_size = (round(mindim / ratio), round(mindim))
+                x = cv2.resize(x, thumbnail_size, interpolation=cv2.INTER_AREA)
+
+            png = base64.b64encode(cv2.imencode('.png', x)[1])[2:-1]
+
+        elif datatype is DT.INTEGER:
+            return '<p> %i </p>' % x[0]
+        elif datatype is DT.FLOAT:
+            return '<p> %.4f </p>' % x[0]
+        elif datatype is DT.TEXT:
+            return '<p> %s </p>' % x[0]
+        else:
+            return '<p> %s </p>' % repr(x)
+
+    @property
+    def format_export(self):
+        if self._format_export is None:
+            return DSColumn.default_format_export
+        return self._format_export
+
+    @format_export.setter
+    def format_export(self, f):
+        if f is None or callable(f):
+            self._format_export = f
+
+    def default_format_export(self, x):
+        DT = DSColumn.DataType
+        if self.datatype is DT.IMAGE:
+            if 'int' in x.dtype:
+                if x.min() < 0 or x.max() > 255:
+                    x -= x.min()
+                    x /= 255*x.max()
+            elif 'float' in x.dtype:
+                if x.min() < 0 or x.max() > 1:
+                    x -= x.min()
+                    x /= x.max()
+        return x
+
+    def default_display_export(self, x):
+        return self.format_export(x)
+
+    @enum.unique
+    class DataType(enum):
+        CUSTOM = -1
+        UNKNOWN = 0
+        ARRAY = 1       # Array of Numbers
+        INTEGER = 2     # Single integer
+        NUMBER = 3      # Single float number
+        TEXT = 4        # Single text
+        IMAGE = 5       # Single or mutliple images
+
+        @staticmethod
+        def infer_type(x):
+            if x.shape == ():
+                if 'int' in x.dtype:
+                    return DSColumn.DataType.INTEGER
+                elif 'float' in x.dtype:
+                    return DSColumn.DataType.NUMBER
+                elif x.dtype == 'str':
+                    return DSColumn.DataType.TEXT
+                elif x.dtype == 'O':
+                    if isinstance(x[0], str):
+                        return DSColumn.DataType.TEXT
+                    else:
+                        return DSColumn.DataType.UNKNOWN
+            elif 'int' in x.dtype or 'float' in x.dtype or x.dtype in ('bool',):
+                if x.ndim in (2, 3) and x.shape[-2:].min() >= 3:
+                    return DSColumn.DataType.IMAGE
+                else:
+                    return DSColumn.DataType.ARRAY
+            return DSColumn.DataType.UNKNOWN
+
+        @staticmethod
+        def default_fullscreen_display(datatype):
+            DT = DSColumn.DataType
+            return datatype in (DT.IMAGE,)
 
 
 ########################################################################################################################
@@ -1120,7 +1254,7 @@ class DataSetResult:
             else:
                 columns = columns.copy()
             for c in columns:
-                if not isinstance(c, DataSetColumn):
+                if not isinstance(c, DSColumn):
                     raise ValueError(
                         'When creating a dataset result without specifying a dataset, columns list should only'
                         'contains valid columns.')
@@ -1152,7 +1286,7 @@ class DataSetResult:
         :param data: a dictionary where each column uses a different key
         :return:
         """
-        columns = [DataSetColumn(name=name, shape=d.shape[1:], dtype=d.dtype) for name, d in data.items()]
+        columns = [DSColumn(name=name, shape=d.shape[1:], dtype=d.dtype) for name, d in data.items()]
 
         n = None
         for d in data.values():
@@ -1162,7 +1296,7 @@ class DataSetResult:
                 raise ValueError("Error when creating DataSetResult from data: some columns don't share the same length.")
 
         if 'pk' not in [_.name for _ in columns]:
-            columns.insert(0, DataSetColumn(name='pk', shape=(), dtype=np.uint16))
+            columns.insert(0, DSColumn(name='pk', shape=(), dtype=np.uint16))
             data['pk'] = np.arange(n, dtype=np.uint16)
 
         return DataSetResult(data_dict=data, columns=columns, start_id=0, size=n)
@@ -1301,8 +1435,11 @@ class DataSetResult:
                 for v_name, v in value.items():
                     if v_name in self._data_dict:
                         d = v if simple_id else v[:length]
+
+                        from scipy.sparse import spmatrix
                         if isinstance(d, spmatrix):
                             d = d.toarray()
+
                         self._data_dict[v_name][start:stop] = d
             elif isinstance(value, list):
                 try:
@@ -1823,99 +1960,3 @@ def parallel_generator_exec(smart_generator):
 
 
 ########################################################################################################################
-
-########################################################################################################################
-class NumPyDataSet(AbstractDataSet):
-    def __init__(self, name='NumPyDataSet', pk=None, **kwargs):
-        super(NumPyDataSet, self).__init__(name=name, pk_type=np.int32 if pk is None else pk.dtype)
-
-        size = -1
-        for name, array in kwargs.items():
-            if size != -1:
-                assert size == array.shape[0]
-            else:
-                size = array.shape[0]
-            self.add_column(name, array.shape[1:], array.dtype)
-
-        self._size = size
-        self._offset = 0
-        self.data = kwargs
-        self._pk_data = pk
-
-    @property
-    def size(self):
-        return self._size
-
-    def _generator(self, gen_context):
-        while not gen_context.ended():
-            i, n, weakref = gen_context.create_result()
-            r = weakref()
-            r[:] = {_: self.data[_][i:i+n] for _ in r.columns_name()}
-            r[:, 'pk'] = np.arange(start=i, stop=n+i) if self._pk_data is None else self._pk_data[i:i+n]
-            r = None
-            yield weakref
-
-    def as_cached(self):
-        return self
-
-
-########################################################################################################################
-class DataSetSubset(AbstractDataSet):
-    def __init__(self, dataset, start=0, end=None, name='subset'):
-        """
-        :type dataset: AbstractDataSets
-        """
-        super(DataSetSubset, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
-        self._columns = dataset.copy_columns(self)
-        self.start, self.end = interval(dataset.size, start, end)
-
-    def _generator(self, gen_context):
-        first_id = gen_context.start_id + self.start
-        last_id = gen_context.end_id + self.start
-        gen = gen_context.generator(self._parent, start=first_id, end=last_id)
-        while not gen_context.ended():
-            i, n, r = gen_context.create_result()
-            yield gen.next(copy={c: r()[c] for c in gen_context.columns})
-
-    @property
-    def size(self):
-        return self.end - self.start
-
-    def subset(self, start=0, end=None, *args):
-        if len(args) == 1:
-            start = 0
-            end = args[0]
-        elif len(args) == 2:
-            start = args[0]
-            end = args[1]
-        return DataSetSubset(self._parent, start+self.start, min(self.start+end, self.end))
-
-
-########################################################################################################################
-class DataSetSubgen(AbstractDataSet):
-    def __init__(self, dataset, n=1, name='subgen'):
-        """
-        :type dataset: AbstractDataSets
-        """
-        super(DataSetSubgen, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
-        self._columns = dataset.copy_columns(self)
-        self.n = n
-
-    def _generator(self, gen_context):
-        max_n = min(self.n, gen_context.n)
-        parent_gen = gen_context.generator(self._parent, n=max_n)
-
-        while not gen_context.ended():
-            i_global, N, weakref = gen_context.create_result()
-            r = weakref()
-
-            for i in range(0, N, max_n):
-                n = min(N-i, max_n)
-                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']})
-
-            r = None
-            yield weakref
-
-    @property
-    def size(self):
-        return self.parent_dataset.size

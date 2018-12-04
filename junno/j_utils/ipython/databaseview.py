@@ -9,8 +9,8 @@ from .customwidgets import ToolBar, RichLabel, HierarchyBar, VSpace, TinyLoading
 from .import_js import import_js, AutoImportDOMWidget
 
 from io import BytesIO
-from PIL import Image
 import numpy as np
+import cv2
 import base64
 
 
@@ -134,8 +134,6 @@ class SimpleDatabaseView(AutoImportDOMWidget):
             img = img.transpose((1, 2, 0))
             if img.shape[2] == 1:
                 img = img[:, :, 0]
-            elif img.shape[2] == 3:
-                img = img[:, :, ::-1]
 
         if normalize_img is None:
             normalize_img = img
@@ -149,7 +147,6 @@ class SimpleDatabaseView(AutoImportDOMWidget):
             img = img - np.min(normalize_img)
             img = img / (np.max(normalize_img) - np.min(normalize_img)) * 255.
 
-        output = BytesIO()
         if thumbnail is not None:
             if keep_ratio:
                 if len(img.shape) == 2:
@@ -159,13 +156,8 @@ class SimpleDatabaseView(AutoImportDOMWidget):
                 ratio = h / w
                 mindim = min(thumbnail[0] * ratio, thumbnail[1])
                 thumbnail = (round(mindim / ratio), round(mindim))
-
-            img = Image.fromarray(img.astype(dtype=np.uint8))
-            img.thumbnail(thumbnail, Image.ANTIALIAS)
-        else:
-            img = Image.fromarray(img.astype(dtype=np.uint8))
-        img.save(output, 'png')
-        return base64.b64encode(output.getvalue())
+            img = cv2.resize(img, thumbnail, interpolation=cv2.INTER_AREA)
+        return base64.b64encode(cv2.imencode('.png', img)[1])[2:-1]
 
     def reset(self):
         self.clear_cache_data = True

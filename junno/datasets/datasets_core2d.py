@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 
-from .dataset import AbstractDataSet, DataSetColumn, DataSetResult
+from .dataset import AbstractDataSet, DSColumn, DataSetResult
 from ..j_utils.function import identity_function, not_optional_args, match_params
 from ..j_utils.parallelism import parallel_exec
 from ..j_utils.j_log import log
@@ -33,7 +33,7 @@ class DataSetReshape(AbstractDataSet):
 
         self._reshaped_columns = {}
         for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 columns[c_id] = c.name
                 c = c.name
             if isinstance(c, str):
@@ -63,7 +63,7 @@ class DataSetReshape(AbstractDataSet):
 
         self._label_columns = []
         for c in label_columns:
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 c = c.name
             if isinstance(c, str):
                 if c not in columns:
@@ -199,13 +199,13 @@ class DataSetPatches(AbstractDataSet):
             parent_column = column
             if isinstance(patch_def[0], int):
                 patch_shape = patch_def
-            elif isinstance(patch_def[0], str) or isinstance(patch_def[0], DataSetColumn):
+            elif isinstance(patch_def[0], str) or isinstance(patch_def[0], DSColumn):
                 parent_column = patch_def[0]
                 patch_shape = patch_def[1]
             else:
                 raise NotImplementedError('Patch definition should be either (column, (path_shape)) or (patch_shape).')
 
-            if isinstance(parent_column, DataSetColumn):
+            if isinstance(parent_column, DSColumn):
                 if parent_column.dataset is not self.parent_dataset:
                     raise ValueError('%s is not a column of the parent dataset %s' % (parent_column.name, self.parent_dataset))
                 parent_column = parent_column.name
@@ -238,7 +238,7 @@ class DataSetPatches(AbstractDataSet):
                     self._columns.remove(c)
 
             column_shape = parent_c.shape[:-2] + patch_shape
-            c = DataSetColumn(name=column, shape=column_shape, dtype=parent_c.dtype)
+            c = DSColumn(name=column, shape=column_shape, dtype=parent_c.dtype)
             self._columns.append(c)
 
         # Initialize patch function
@@ -284,7 +284,7 @@ class DataSetPatches(AbstractDataSet):
         self._cache_center = cache_center
 
         if center_pos:
-            self._columns.append(DataSetColumn('center_pos', (2,), dtype=int, dataset=self))
+            self._columns.append(DSColumn('center_pos', (2,), dtype=int, dataset=self))
 
     def _setup_determinist(self):
         if not self._cache_center:
@@ -540,8 +540,8 @@ class DataSetUnPatch(AbstractDataSet):
                         del self._columns[self.column_index(c)]
                     parent_column = self.patch_dataset.parent_dataset.column_by_name(own_column)
                     self._unpatched_columns[own_column] = list(child_columns.keys())
-                    self._columns.append(DataSetColumn(name=own_column, dtype=parent_column.dtype, dataset=self,
-                                                       shape=patch_layer_shape+parent_column.shape[-2:]))
+                    self._columns.append(DSColumn(name=own_column, dtype=parent_column.dtype, dataset=self,
+                                                  shape=patch_layer_shape+parent_column.shape[-2:]))
         else:
             # Dataset will assemble patches into separated columns
             if columns is None:

@@ -1,9 +1,116 @@
 import numpy as np
+import pandas as pd
 
-from .dataset import AbstractDataSet, DataSetColumn, DataSetResult
+from .dataset import AbstractDataSet, DSColumn, DataSetResult
 from ..j_utils.parallelism import parallel_exec
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
+from ..j_utils.math import interval
+
+
+########################################################################################################################
+class NumPyDataSet(AbstractDataSet):
+    def __init__(self, data_dict, name='NumPyDataSet', pk=None):
+        super(NumPyDataSet, self).__init__(name=name, pk_type=np.int32 if pk is None else pk.dtype)
+
+        size = -1
+        for name, array in data_dict.items():
+            if size != -1:
+                assert size == array.shape[0]
+            else:
+                size = array.shape[0]
+            self.add_column(name, array.shape[1:], array.dtype)
+
+        self._size = size
+        self._offset = 0
+        self.data = data_dict
+        self._pk_data = pk
+
+    @property
+    def size(self):
+        return self._size
+
+    def _generator(self, gen_context):
+        while not gen_context.ended():
+            i, n, weakref = gen_context.create_result()
+            r = weakref()
+            r[:] = {_: self.data[_][i:i+n] for _ in r.columns_name()}
+            r[:, 'pk'] = np.arange(start=i, stop=n+i) if self._pk_data is None else self._pk_data[i:i+n]
+            r = None
+            yield weakref
+
+    def as_cached(self):
+        return self
+
+
+########################################################################################################################
+class HDFStoreDataSet(AbstractDataSet):
+    def __init__(self, path, name='HDFStoreDataSet'):
+        self.store = pd.HDFStore(path, mode='r')
+        super(HDFStoreDataSet, self).__init__(name=name, pk_type=np.int32)
+
+
+
+########################################################################################################################
+class DataSetSubset(AbstractDataSet):
+    def __init__(self, dataset, start=0, end=None, name='subset'):
+        """
+        :type dataset: AbstractDataSets
+        """
+        super(DataSetSubset, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
+        self._columns = dataset.copy_columns(self)
+        self.start, self.end = interval(dataset.size, start, end)
+
+    def _generator(self, gen_context):
+        first_id = gen_context.start_id + self.start
+        last_id = gen_context.end_id + self.start
+        gen = gen_context.generator(self._parent, start=first_id, end=last_id)
+        while not gen_context.ended():
+            i, n, r = gen_context.create_result()
+            yield gen.next(copy={c: r()[c] for c in gen_context.columns})
+
+    @property
+    def size(self):
+        return self.end - self.start
+
+    def subset(self, start=0, end=None, *args):
+        if len(args) == 1:
+            start = 0
+            end = args[0]
+        elif len(args) == 2:
+            start = args[0]
+            end = args[1]
+        return DataSetSubset(self._parent, start+self.start, min(self.start+end, self.end))
+
+
+########################################################################################################################
+class DataSetSubgen(AbstractDataSet):
+    def __init__(self, dataset, n=1, name='subgen'):
+        """
+        :type dataset: AbstractDataSets
+        """
+        super(DataSetSubgen, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
+        self._columns = dataset.copy_columns(self)
+        self.n = n
+
+    def _generator(self, gen_context):
+        max_n = min(self.n, gen_context.n)
+        parent_gen = gen_context.generator(self._parent, n=max_n)
+
+        while not gen_context.ended():
+            i_global, N, weakref = gen_context.create_result()
+            r = weakref()
+
+            for i in range(0, N, max_n):
+                n = min(N-i, max_n)
+                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']})
+
+            r = None
+            yield weakref
+
+    @property
+    def size(self):
+        return self.parent_dataset.size
 
 
 ########################################################################################################################
@@ -225,7 +332,7 @@ class DataSetJoin(AbstractDataSet):
         dataset_tuples = []
         datasets_list = []
         for dataset in datasets:
-            if isinstance(dataset, DataSetColumn):
+            if isinstance(dataset, DSColumn):
                 join_column = dataset.name
                 dataset = dataset.dataset
             elif isinstance(dataset, tuple):
@@ -246,7 +353,7 @@ class DataSetJoin(AbstractDataSet):
             pk = datasets_list[0].pk
 
         for name, column in kwargs.items():
-            if isinstance(column, DataSetColumn):
+            if isinstance(column, DSColumn):
                 kwargs[name] = (datasets_list.index(column.dataset), column.name)
 
         #  ---  READING AND SIMPLIFYING DATASETS  ---
@@ -495,7 +602,7 @@ class DataSetConcatenate(AbstractDataSet):
 
         # -- Setup dataset --
         super(DataSetConcatenate, self).__init__(name=name, parent_datasets=datasets, pk_type=str)
-        self._columns = [DataSetColumn(name, shape, dtype, self) for name, (shape, dtype) in columns.items()]
+        self._columns = [DSColumn(name, shape, dtype, self) for name, (shape, dtype) in columns.items()]
         self._columns_default = columns_default
 
         self._datasets_start_index = []
@@ -652,7 +759,7 @@ class DataSetApply(AbstractDataSet):
                     c_dtype = _.dtype
 
                 # Apply column
-                own_columns.append(DataSetColumn(c, c_shape, c_dtype, self))
+                own_columns.append(DSColumn(c, c_shape, c_dtype, self))
                 self._columns_parent[c] = parent_c
             self._apply_col_dict[own_c] = parent_c
             self._apply_columns += own_c

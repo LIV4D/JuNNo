@@ -19,7 +19,7 @@ import numpy as np
 from scipy.interpolate import RectBivariateSpline
 
 from ..j_utils.function import match_params
-from .dataset import AbstractDataSet, DataSetColumn
+from .dataset import AbstractDataSet, DSColumn
 
 
 ########################################################################################################################
@@ -37,7 +37,7 @@ class DataSetAugmentedData(AbstractDataSet):
         if not isinstance(columns, list):
             columns = [columns]
         for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 columns[c_id] = c.name
 
         self.column_transform = column_transform
