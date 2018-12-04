@@ -1,0 +1,147 @@
+/***************************************
+*             AXIS FORMAT              *
+ ***************************************/
+
+.ChartArea2D .axis .domain{
+    fill: none;
+    stroke: #111;
+    stroke-width: 1;
+}
+
+.ChartArea2D .axis .tick line{
+    stroke: #222;
+    stroke-width: 1;
+}
+
+.ChartArea2D .axisTitleText{
+    font-size: 15px;
+    fill: #111;
+}
+
+.ChartArea2D .axisUnitText{
+    font-size: 10px;
+    fill: #333;
+}
+
+
+/***************************************
+ *            CHART LINE               *
+ ***************************************/
+
+.serieLine{
+    stroke: #111;
+    opacity: 0.4;
+    stroke-width: 0.5;
+}
+
+.serieLine.hovered{
+    opacity: 0.9;
+    stroke-width: 1.5; 
+}
+
+.serieLine.disabled{
+    opacity: 0.2;
+    stroke-width: 0.5; 
+}
+
+.serieLine.selected{
+    opacity: 1;
+    stroke-width: 2;
+    z-index: 2;
+}
+
+.serieArea{
+    opacity: 0.2;
+}
+.serieArea.hovered{
+    opacity: 0.8;
+}
+
+.AreaLineChart .serieLine{
+    stroke-width: 1;
+    stroke: #222;
+}
+
+
+/***************************************
+ *            OVERLAY                  *
+ ***************************************/
+
+.ChronologicalOverlay .vLine{
+    stroke: #111;
+    stroke-width: 1;
+}
+
+/***************************************
+ *           SCATTER PLOT              *
+ ***************************************/
+
+.chartDot{
+    opacity: 0.6;
+}
+
+.chartDot.hovered{
+    opacity: 1;
+}
+
+
+/***************************************
+*             CURSOR FORMAT              *
+ ***************************************/
+
+.SimpleLineChart .vCursor{
+    stroke: #222;
+    stroke-width: 0.2;
+}
+
+
+.SimpleLineChart .circleCursor{
+    stroke: #222;
+    stroke-width: 2;
+    fill: white;
+}
+
+
+/***************************************
+*             BACKGROUND               *
+ ***************************************/
+
+.areaBackground{
+    fill: none;
+}
+
+
+.areaBackground .backgroundLabel{
+    fill: #eee;
+    font-size: 200px;
+    font-weight: bold;
+}
+
+
+/***************************************
+*          CONTEXT CHART               *
+ ***************************************/
+
+.ContextLineChart .yaxis .tick{
+    visibility: hidden;
+}
+
+.ContextLineChart .xaxis text{
+    font-size: 10px;
+}
+
+.ContextLineChart .chartLine{
+    stroke: #333;
+    stroke-width: 1;
+}
+
+.ContextLineChart .cursor{
+    stroke: #333;
+    stroke-width: 2;
+}
+
+.ContextLineChart .brush .extent {
+  stroke: #fff;
+  fill-opacity: .125;
+  shape-rendering: crispEdges;
+}
