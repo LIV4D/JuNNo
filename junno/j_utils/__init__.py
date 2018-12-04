@@ -1,1 +1,0 @@
-from .j_log import log, Process
