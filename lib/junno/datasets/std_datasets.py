@@ -68,17 +68,17 @@ def cifar10_datasets(true_label=False):
                 y[i*n_file:(i+1)*n_file] = label
             p.step = i+1
         if true_label:
-            d['train'] = NumPyDataSet(x=x, y=y, labels=np.vectorize(true_label.get)(y))
+            d['train'] = NumPyDataSet(dict(x=x, y=y, labels=np.vectorize(true_label.get)(y)))
         else:
-            d['train'] = NumPyDataSet(x=x, y=y)
+            d['train'] = NumPyDataSet(dict(x=x, y=y))
 
         # Read test data
         with tar.extractfile(prefix+'test_batch') as f_data:
             x, y = retreive_data_from_file(f_data)
         if true_label:
-            d['test'] = NumPyDataSet(x=x, y=y, labels=np.vectorize(true_label.get)(y))
+            d['test'] = NumPyDataSet(dict(x=x, y=y, labels=np.vectorize(true_label.get)(y)))
         else:
-            d['test'] = NumPyDataSet(x=x, y=y)
+            d['test'] = NumPyDataSet(dict(x=x, y=y))
 
     return d
 
@@ -97,7 +97,7 @@ def mnist_datasets(shuffle_train=False):
 
         def to_dataset(data_xy):
             x = np.reshape(data_xy[0], (data_xy[0].shape[0], 1, 28, 28))
-            return NumPyDataSet(x=x, y=data_xy[1])
+            return NumPyDataSet(dict(x=x, y=data_xy[1]))
 
         d = {}
         if shuffle_train:

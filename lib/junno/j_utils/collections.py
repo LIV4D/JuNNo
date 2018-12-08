@@ -17,6 +17,29 @@ def cast_to_list(l):
 def is_dict(d):
     return isinstance(d, (dict, OrderedDict))
 
+def is_collection_of(o, t, c=None, recursive=False):
+    if c is None or isinstance(o, c):
+        try:
+            for _ in o:
+                if recursive:
+                    if not istypeof_or_listof(_, t, recursive=True):
+                        return False
+                else:
+                    if not isinstance(_, t):
+                        return False
+                return True
+        except TypeError:
+            return False
+    return False
+
+def istypeof_or_collectionof(o, t, c=None, recursive=False):
+    if isinstance(o, t):
+        return True
+    return is_collection_of(o, t, c, recursive)
+
+def istypeof_or_listof(o, t, recursive=False):
+    return istypeof_or_collectionof(o, t, c=list, recursive=recursive)
+
 
 def recursive_dict_update(destination, origin):
     for n, v in origin.items():
@@ -40,6 +63,14 @@ def if_none(v, default=None):
     if default is None:
         return v is None
     return default if v is None else v
+
+def if_else(v, cond, default=None):
+    return v if cond(v) else default
+
+def if_not(v, default=None):
+    if default is None:
+        return True if not v else False
+    return default if not v else v
 
 
 ########################################################################################################################
@@ -660,3 +691,202 @@ class AttributeDict(OrderedDict):
     def __iter__(self):
         for v in self.values():
             yield v
+
+
+########################################################################################################################
+class IntRange:
+    def __init__(self, *args, start=None, end=None):
+        if len(args) in (1, 2):
+            if len(args) == 1:
+                self._ranges = [(args[0], args[0]+1)]
+            else:
+                self._ranges = [tuple(args)]
+        elif start is None and end is None:
+            self._ranges = []
+        else:
+            if start is None:
+                start = float('inf')
+            elif end is None:
+                end = -float('inf')
+            self._ranges = [(start, end)]
+
+    def __str__(self):
+        return ' '.join('[%s; %s[' %(str(r[0]), str(r[1])) for r in self._ranges)
+
+    def __repr__(self):
+        return 'IntRange(%s)' % str(self)
+
+    @property
+    def start(self):
+        return self._ranges[0][0]
+
+    @property
+    def end(self):
+        return self._ranges[-1][1]
+
+    def copy(self):
+        r = IntRange()
+        r._ranges = self._ranges[:]
+        return r
+
+    def sub_ranges(self):
+        return [IntRange(start=_[0], end=_[1]) for _ in self._ranges]
+
+    def __contains__(self, item):
+        ranges1 = IntRange.as_range(item).sub_ranges()
+        ranges0 = self.sub_ranges()
+
+        i0 = 0
+        i1 = 0
+        while i0 < len(ranges0) and i1 < len(ranges1):
+            if ranges0[i0].start > ranges1[i1].start:
+                return False
+            if ranges0[i0].end < ranges1[i1].end:
+                i0 += 1
+            else:
+                i1 += 1
+
+        return ranges0[i0].end > ranges1[i1].end
+
+    def __iadd__(self, other):
+        r1 = IntRange.as_range(other).sub_ranges()
+        r0 = self.sub_ranges()
+        ranges = []
+
+        while r0 or r1:
+            if r0 and (not r1 or r0[0].start <= r1[0].start):
+                r = r0.pop(0)
+            else:
+                r = r1.pop(0)
+
+            if ranges and ranges[-1][1] >= r.start:
+                if ranges[-1][1] < r.end:
+                    ranges[-1] = (ranges[-1][0], r.end)
+            else:
+                ranges.append((r.start, r.end))
+
+        self._ranges = ranges
+        return self
+
+    def __add__(self, other):
+        r = self.copy()
+        r += other
+        return r
+
+    def __radd__(self, other):
+        r = self.copy()
+        r += other
+        return r
+
+    def __isub__(self, other):
+        r1 = IntRange.as_range(other).sub_ranges()
+        r0 = self.sub_ranges()
+        ranges = []
+
+        start = None
+        end = None
+        min_start = None
+
+        while r0 or r1:
+            if r0 and (not r1 or r0[0].start < r1[0].start):
+                r = r0.pop(0)
+                # print('add: ', r, '| start:', start, ' end:', end, ' min_start:', min_start)
+                if start is not None and end is not None:
+                    ranges.append((start, end))
+                if min_start is None or min_start < r.end:
+                    start = r.start if min_start is None else max(r.start, min_start)
+                    end = r.end
+                else:
+                    start=None
+                    end = None
+            else:
+                r = r1.pop(0)
+                # print('rem: ', r, '| start:', start, ' end:', end, ' min_start:', min_start)
+                if start is not None and end is not None and r.start < end:
+                    ranges.append((start, r.start))
+                    start = r.end
+                if end is not None and end <= r.end:
+                    end = None
+                min_start = r.end
+        if start is not None and end is not None:
+            ranges.append((start, end))
+
+        self._ranges = ranges
+        return self
+
+    def __sub__(self, other):
+        r = self.copy()
+        r -= other
+        return r
+
+    def __rsub__(self, other):
+        o = other.copy()
+        o -= self
+        return o
+
+    def complement(self, in_range=False):
+        a = IntRange(self.start, self.end) if in_range else IntRange.infinite_range()
+        return a - self
+
+    def tuple(self):
+        return self.start, self.end
+
+    @staticmethod
+    def as_range(r):
+        if isinstance(r, IntRange):
+            return r
+        elif isinstance(r, int):
+            return IntRange(r, r + 1)
+        elif isinstance(r, (tuple, set)):
+            if len(r) != 2:
+                raise ValueError("%s can't be interpreted as a range." % str(r))
+            a, b = sorted(r)
+            return IntRange(a, b)
+        elif istypeof_or_listof(r, (tuple, set)):
+            try:
+                s = IntRange.empty()
+                for _ in r:
+                    if s is None:
+                        s = IntRange.as_range(_)
+                    else:
+                        s += IntRange.as_range(_)
+            except ValueError:
+                raise ValueError("%s can't be interpreted as a range." % str(r)) from None
+            return s
+        elif istypeof_or_listof(r, int) or \
+                (isinstance(r, np.ndarray) and str(r.dtype).startswith(('uint', 'int')) and r.ndim == 1):
+            r = np.unique(r)
+            ranges = []
+            start = r[0]
+            end = start+1
+            for i in r[1:]:
+                if i == end:
+                    end += 1
+                else:
+                    ranges.append((start, end))
+                    start = i
+                    end = i+1
+            ranges.append((start, end))
+
+            r = IntRange.empty()
+            r._ranges = ranges
+            return r
+        raise ValueError("%s can't be interpreted as a range." % str(r))
+
+    @staticmethod
+    def empty():
+        return IntRange()
+
+    @staticmethod
+    def infinite_range(positive=True, negative=True):
+        a = -float('inf') if negative else 0
+        b = float('inf') if positive else 0
+        return IntRange(a,b)
+
+    def __iter__(self):
+        for r in self._ranges:
+            for i in range(r[0], r[1]):
+                yield i
+
+    def __len__(self):
+        return sum(r[1]-r[0] for r in self._ranges)

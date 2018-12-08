@@ -181,128 +181,218 @@ class DataSetMap(AbstractDataSet):
 
 ########################################################################################################################
 class DataSetShuffle(AbstractDataSet):
-    def __init__(self, dataset, nb_subgenerator=0, parallel=True, name='shuffle', rnd=None):
+    def __init__(self, dataset, indices=None, subgen=1, name='shuffle', rnd=None):
         """
         :type dataset: AbstractDataSets        if args
         """
         super(DataSetShuffle, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
         self._columns = dataset.copy_columns(self)
 
-        if rnd is None:
-            rnd = np.random.RandomState(1234)
         self.rnd = rnd
-        self.nb_subgenerator = nb_subgenerator
-        self.parallel = parallel
 
-        self.random_sequence = None
+        self.indices = None if indices is None else np.asarray(indices, dtype=np.uint32)
+        self.random_indices = indices is None
+
+        self.subgen = max(subgen,0) if isinstance(subgen, int) else 0
+        self.subgen_range = None
+        self.subgen_index = None
+
+        if subgen and subgen != 1 and not self.random_indices:
+            if isinstance(subgen, list):
+                self.subgen = len(subgen)
+                self.subgen_range = subgen
+            else:
+                log.warn("With not random indicies, subgenerators range must be specified. "
+                         "Falling back to no subgenerators...")
+                self.subgen = 0
 
     def _generate_random_sequence(self):
-        if self.nb_subgenerator:
-            subgen_n = [int(round((_+1)*self.size/self.nb_subgenerator)-round(_*self.size/self.nb_subgenerator))
-                        for _ in range(self.nb_subgenerator)]
-            rand_seq = np.zeros((self.size, 2), dtype=int)
-            start = 0
-            for i, n in enumerate(subgen_n):
-                rand_seq[start:start + n, 0] = i
-                rand_seq[start:start + n, 1] = start
-                start += n
+        if self.subgen > 1:
+            # Compute (start, end) for each subgen
+            subgen_range = [(int(round(_ * self.size / self.subgen)), int(round((_ + 1) * self.size / self.subgen)))
+                        for _ in range(self.subgen)]
+
+            # Create one-hot
+            rand_seq = np.zeros((self.size, self.subgen), dtype=np.uint32)
+            for i, (start, end) in enumerate(subgen_range):
+                n = end-start
+                rand_seq[start:start + n, :] = [1 if i == _ else 0 for _ in range(self.subgen)]
+            # Shuffle one-hot
             self.rnd.shuffle(rand_seq)
-            for i, n in enumerate(subgen_n):
-                rand_seq[rand_seq[:, 0] == i, 1] += np.arange(n)
-            return rand_seq
+
+            # Compute the table of subgenerator own indexes by cumsum one-hot
+            rand_seq_id = rand_seq*rand_seq.cumsum(axis=0)
+
+            # Replace every one in the one-hot table by the starting index of its sub-generator
+            rand_seq_start = np.multiply(rand_seq, [start for (start, end) in subgen_range])
+
+            # Compute final random sequence by adding the sub-generators own indexes and starting index
+            indices = np.asarray((rand_seq_start+rand_seq_id).sum(axis=1), dtype=np.uint32)-1
+
+            # Compute subgenerator indexes
+            np.multiply(rand_seq, np.arange(len(subgen_range), dtype=np.uint32), out=rand_seq)
+            rand_seq = rand_seq.sum(axis=1)
+
+            return indices, subgen_range, rand_seq
         else:
             rand_seq = np.arange(self.parent_dataset.size, dtype=int)
             self.rnd.shuffle(rand_seq)
             return rand_seq
 
     def _setup_determinist(self):
-        self.random_sequence = self._generate_random_sequence()
+        if self.random_indices:
+            seq = self._generate_random_sequence()
+            if isinstance(seq, tuple):
+                self.indices, self.subgen_range, self.subgen_index = seq
+            else:
+                self.indices = seq
+        else:
+            if self.subgen > 1:
+                if self.subgen_index is None:
+                    indices_map = np.zeros(dtype=np.int32, shape=(self.parent_dataset.size,))-1
+                    for i, s in enumerate(self.subgen_range):
+                        indices_map[s[0]:s[1]] = i
+                    self.subgen_index = indices_map[self.indices]
 
     def _generator(self, gen_context):
         columns = gen_context.columns
 
-        if gen_context.determinist:
-            random_sequence = self.random_sequence
+        if gen_context.determinist or not self.random_indices:
+            indices = self.indices
+            subgen_range = self.subgen_range
         else:
-            random_sequence = self._generate_random_sequence()
+            if self.subgen:
+                indices, subgen_range = self._generate_random_sequence()
+            else:
+                indices = self._generate_random_sequence()
+                subgen_range = None
 
-        sub_gen = [None] * self.nb_subgenerator
+        #indices = indices[gen_context.start_id:gen_context.end_id]
 
-        # Check for parallel execution
-        parallel = self.parallel
-        if not self.nb_subgenerator:
-            if parallel == 'process':
-                log.warn('Multi Process parallelisation is only available with sub-generator shuffle! '
-                         'Falling back to multi-threaded parallelisation...')
-                parallel = 'thread'
+        # Setup subgenerators
+        subgen = []
+        subgen_index = None
+        async_subgen = None
+        if self.subgen > 1:
+            valid_indices = indices[gen_context.start_id:gen_context.end_id+1]
+            start = valid_indices.min()
+            end = valid_indices.max()+1
+
+            valid_subgen = []
+            valid_ranges = []
+            for i, (gen_start, gen_end) in enumerate(subgen_range):
+                if gen_start < end and end > start:
+                    gen_start = max(gen_start, start)
+                    gen_end = min(gen_end, end)
+                    valid_ranges.append((gen_start, gen_end))
+                    valid_subgen.append(i)
+            subgen_range = valid_ranges
+            valid_subgen = np.array(valid_subgen)
+            # valid_subgen: [-1 if _ not in valid_subgen else valid_subgen.index(_) for _ in range(self.subgen)]
+            valid_subgen = np.array([if_else(np.where(valid_subgen == _)[0], lambda x: len(x) > 0, [-1])[0]
+                                     for _ in range(self.subgen)])
+
+            if not 1 < gen_context.ncore <= len(subgen_range):
+                async_subgen = gen_context.ncore > len(subgen_range)
+                subgen_index = self.subgen_index
+                # Setup subgenerator
+                for i, (gen_start, gen_end) in enumerate(subgen_range):
+                    is_last = i == len(subgen_range)-1
+                    gen = gen_context.generator(self._parent, start=gen_start, end=gen_end, n=1,
+                                                parallel=async_subgen and not is_last,
+                                                ncore=round(i*gen_context.ncore/len(subgen_range)))
+                    if async_subgen:
+                        gen.setup()     # Begin computation if parallel
+                    subgen.append(gen)
+
+            else:
+                async_subgen = True
+
+                # Split subgen
+                s_split = []
+                indices_map = np.zeros(dtype=np.int32, shape=(self.parent_dataset.size,))-1
+                for i in range(gen_context.ncore):  # For each core select the subset of valid subgen
+                    i0 = round(i*len(subgen_range)/gen_context.ncore)
+                    i1 = round((i+1)*len(subgen_range)/gen_context.ncore)
+                    for start, end in valid_ranges[i0:i1]:
+                        indices_map[start:end] = i
+                    s_split.append((i0, i1))
+                subgen_index = indices_map[valid_indices]
+                del indices_map
+                for i, (i0, i1) in enumerate(s_split):  # For each core setup dataset and generator
+                    is_last = i == len(s_split) - 1
+                    s_indices = indices[subgen_index==i]
+                    s_dataset = DataSetShuffle(self._parent, indices=s_indices, subgen=valid_ranges[i0:i1])
+                    s_dataset.subgen_index = valid_subgen[self.subgen_index[subgen_index==i]]-i0
+                    gen = gen_context.generator(s_dataset, n=1, ncore=1, parallel='thread' if is_last else 'process')
+                    gen.setup()
+                    subgen.append(gen)
         else:
-            if parallel:
-                if isinstance(parallel, bool):
-                    parallel = 'process'
-
-                # search generator first and last sample id
-                first_ids = {}
-                last_ids = {}
-                for i in range(gen_context.start_id, gen_context.end_id):
-                    sub_gen_id, sample_id = random_sequence[i]
-                    if sub_gen_id not in first_ids:
-                        first_ids[sub_gen_id] = sample_id
-                    last_ids[sub_gen_id] = sample_id
-
-                for sub_gen_id, first_id in first_ids.items():
-                    last_id = last_ids[sub_gen_id]
-
-                    # Check and create sub generators
-                    sub_gen[sub_gen_id] = gen_context.generator(self._parent, start=first_id, end=last_id+1, n=1,
-                                                                parallel=parallel)
-                    sub_gen[sub_gen_id].setup()  # Begin computation if parallel
+            if gen_context.ncore > 1:
+                for i in range(gen_context.ncore):
+                    gen = gen_context.generator(self._parent, n=1, start=indices[gen_context.start_id],
+                                                ncore=1, parallel=True)
+                    gen.seq_id = None
+                    subgen.append(gen)
+            else:
+                subgen.append(gen_context.generator(self._parent, n=1, start=0, end=self._parent.size, ncore=1))
 
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
-            if not self.nb_subgenerator:
-                # Read data from parent
-                seq = [random_sequence[i + i_global] for i in range(n)]
-                if parallel:
-                    gen_context.parallel_exec = True
 
-                    def write_at(returned):
-                        result = returned
-                        id = seq.index(result.start_id)
-                        r[id] = result
-                        r.trace.affiliate_parent_trace(result.trace)
+            if self.subgen <= 1:
+                seq = list(indices[i_global:i_global+n])
+                if len(subgen) > 1:  # -- Mutliple core, No subgen --
+                    waiting_seq = len(seq)
+                    while waiting_seq:
+                        waiting = True
+                        for s in subgen:
+                            if s.seq_id is not None and s.poll(copy=r[s.seq_id:s.seq_id+1], r=r, ask_next=False):
+                                waiting = False
+                                s.seq_id = None
+                                waiting_seq -= 1
 
-                    n_thread = None if isinstance(parallel, bool) else parallel
-                    parallel_exec(self._parent.gen_read, seq, cb=write_at, n_process=n_thread,
-                                  static_args={'gen_context': gen_context.lite_copy(), 'clear_weakref': True})
+                            if seq and s.seq_id is None:     # Ask next
+                                s.seq_id = n - len(seq)
+                                s.ask(seq.pop(0))
 
-                else:
-                    for i, id in enumerate(seq):
-                        gen = gen_context.generator(self._parent, start=id, end=id+1, n=1)
-                        gen.next(copy={c: r[i:i+1, c] for c in r.columns_name()}, r=r)
-                        gen.clean()
+                        if waiting:
+                            time.sleep(1e-3)
+
+                else:       # -- Single core, No subgen --
+                    for i, seq_id in enumerate(seq):
+                        subgen[0].next(copy=r[i:i+1], r=r, seek=seq_id)
+                    if gen_context.is_last() or indices[i_global+n] != indices[i_global+n-1]+1:
+                        subgen[0].clean()
             else:
-                # Read data from sub-generators
-                for i in range(n):
-                    sub_gen_id, sample_id = random_sequence[i+i_global]
-                    sub_gen[sub_gen_id].next(copy={c: r[i:i+1, c] for c in columns}, r=r)
+                seq_subgens = subgen_index[i_global:i_global+n]
+                if async_subgen:    # -- Async subgen --
+                    for i, sub_id in enumerate(seq_subgens):
+                        subgen[sub_id].next(copy=r[i:i+1], r=r)
+                else:               # -- Sync subgen --
+                    seq_indexes = self.indices[i_global:i_global + n]
+                    for i, (sub_id, seq_id) in enumerate(zip(seq_subgens, seq_indexes)):
+                        try:
+                            subgen[sub_id].next(copy=r[i:i+1], r=r, seek=seq_id)
+                        except StopIteration as e:
+                            import traceback
+                            traceback.print_last()
+                            raise e
             r = None
             yield weakref
 
-        print('Finishing')
-        if self.nb_subgenerator:
-            for i in range(self.nb_subgenerator):
-                print('Cleaning %i' % i)
-                sub_gen[i].clean()
+        for s in subgen:
+            s.clean()
 
     @property
     def size(self):
-        return self._parent.size
+        return self._parent.size if self.indices is None else len(self.indices)
 
 
 ########################################################################################################################
 class DataSetJoin(AbstractDataSet):
-    def __init__(self, datasets, parallel=False, verbose=False, **kwargs):
+    def __init__(self, datasets, verbose=False, **kwargs):
         """
         :param datasets: A list of dataset to join. Each element of the list should be either:
                           - a dataset (the primary key column is used for the join)
@@ -325,8 +415,6 @@ class DataSetJoin(AbstractDataSet):
 
         NOTE:    All dataset will be accessed in ascending order of their join column
         """
-
-        self.parallel = parallel
 
         #  ---  REFORMATING PARAMETERS  ---
         dataset_tuples = []
@@ -482,8 +570,16 @@ class DataSetJoin(AbstractDataSet):
 
         datasets_columns[self._pk_foreign_col[0]].append(self._pk_foreign_col[1])
         reverse_columns_map[self._pk_foreign_col[0]][self._pk_foreign_col[1]] = 'pk'
+        ngen = len(datasets_columns)
+        generators = [None, -1] * ngen
 
-        generators = [[None, -1] for _ in datasets_columns]
+        intime_gens = [False] + [i < gen_context.ncore for i in reversed(range(1, ngen))]
+        if gen_context.ncore <= ngen:
+            ncore_gens = [1]*ngen
+        else:
+            free_core = gen_context.ncore-ngen
+            mean_ncore = free_core//ngen
+            ncore_gens = [mean_ncore + (1 if i < free_core % ngen else 0) for i in range(ngen)]
 
         while not gen_context.ended():
             global_i, n, weakref = gen_context.create_result()
@@ -497,7 +593,8 @@ class DataSetJoin(AbstractDataSet):
                         dataset = self.parent_datasets[dataset_id]
                         generators[dataset_id][0] = gen_context.generator(dataset, start=needed_index, end=dataset.size,
                                                                           n=1, columns=datasets_columns[dataset_id],
-                                                                          parallel=self.parallel)
+                                                                          intime=intime_gens[dataset_id],
+                                                                          ncore=ncore_gens[dataset_id])
                         generators[dataset_id][1] = needed_index
 
                 # Reading generators
