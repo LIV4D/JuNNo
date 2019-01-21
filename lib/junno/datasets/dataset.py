@@ -69,15 +69,12 @@ The module is composed of the classes:
 """
 from abc import ABCMeta, abstractmethod
 import base64
-import enum
 from functools import partial
 import multiprocessing as mp
 import numpy as np
 import os
-from os.path import dirname, exists, join, splitext, basename, abspath
-from os.path import split as split_path
+from os.path import dirname, exists, join, basename
 from os import makedirs
-import pandas as pd
 
 from ..j_utils.j_log import log, Process
 
@@ -604,6 +601,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                      compress_format='png', metadata_format='csv', compress_img=True,
                      column_for_filename=None):
 
+        import pandas as pd
+
         if column_for_filename is None:
             if 'name' in self.columns_name():
                 column_for_filename = 'name'
@@ -741,7 +740,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return CustomDataLoader(self)
 
-    def as_cache(self, n=1, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None):
+    def as_cache(self, n=1, start=0, end=None, columns=None, ncore=1, name=None):
         start, end = interval(self.size, start, end)
         if columns is None:
             columns = self.columns_name()
@@ -766,7 +765,61 @@ class AbstractDataSet(metaclass=ABCMeta):
         dataset._parents = [self]
         return dataset
 
+    def cache(self, n=1, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None):
+        import tables
+        from collections import OrderedDict
+
+        start, end = interval(self.size, start, end)
+        if columns is None:
+            columns = self.columns_name()
+
+        if name is None:
+            label = self._name
+            name = 'cache'
+        else:
+            label = name
+
+        if ondisk:
+            cache_path = ondisk.split(':')
+            if len(cache_path) == 1:
+                path = cache_path[0]
+                table_name = 'dataset'
+            elif len(cache_path) == 2:
+                path, table_name = cache_path
+            else:
+                raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
+
+            hd5f = tables.File(path, mode='a')
+            table_path, table_name = table_name.rsplit('/', maxsplit=1)
+            if not table_path.startswith('/'):
+                table_path = '/' + table_path
+        else:
+            hd5f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
+            table_path = '/'
+            table_name = 'dataset'
+
+        table_desc = OrderedDict()
+        for col in self._columns:
+            table_desc[col.name] = tables.Col.from_sctype(col.dtype, col.shape)
+
+        hd5t = hd5f.create_table(table_path, table_name, description=table_desc, expectedrows=self.size)
+
+        with Process('Allocating %s' % label, end - start, verbose=False) as p:
+            hd5t.append()
+
+        with Process('Caching %s' % label, end - start, verbose=False) as p:
+            def write_back(r):
+                hd5t[r.start_id-start:r.end_id-start] = r
+                p.update(r.size)
+            self.export(write_back, n=n, start=start, end=end, columns=columns, ncore=ncore)
+
     #   ---   Operations   ---
+    @classmethod
+    def operation(cls, func):
+        if hasattr(cls, func.__name__):
+            raise AttributeError('%s method name already exist in AbstractDataset.' % func.__name__)
+        setattr(cls, func.__name__, func)
+
     def subset(self, start=0, end=None, name='subset', *args):
         from .datasets_core import DataSetSubset
         start, end = interval(self.size, start, end, args)
@@ -793,7 +846,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         of the dataset. If many keys has a -1 value, then the free instances (not associated with any other keys) \
         of the dataset are equally shared between them.
         :return A dictionary of set, each set being defined by its ratio of usage.
-        :rtype: dict 
+        :rtype: dict
         """
 
         d = {}
