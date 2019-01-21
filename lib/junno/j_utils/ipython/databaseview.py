@@ -38,6 +38,7 @@ class SimpleDatabaseView(AutoImportDOMWidget):
         super(SimpleDatabaseView, self).__init__(layout=Layout(width='100%'), dependencies=('DatabaseView',),
                                                  _database_id=db_id, **kwargs)
         self.retreive_data = None
+        self.retreive_fullscreen = None
         self.retreive_row_name = None
 
     def register_target(self, comm, msg):
@@ -45,6 +46,38 @@ class SimpleDatabaseView(AutoImportDOMWidget):
 
         @comm.on_msg
         def _recv(msg):
+            if self.retreive_data is None:
+                return
+            try:
+                msg = msg['content']['data']
+                request = msg[0]
+                pos = msg[1:].split(',')
+                if len(pos) == 2:
+                    row, col = [int(_) for _ in pos]
+                    channel = 0
+                elif len(pos) == 3:
+                    row, col, channel = [int(_) for _ in pos]
+                else:
+                    return
+
+                if request == 'm':
+                    data, fullscreenable = self.retreive_data(row, col)
+                    if isinstance(data, tuple):
+                        nw, nh = dimensional_split(len(data))
+                        data = '#%i,%i|' % (nw, nh) + ' '.join(data)
+                    comm.send(('f' if fullscreenable else '-') + data)
+                elif request == 'f':
+                    # --- SHOW IN FULLSCREEN ---
+                    data = self.retreive_fullscreen(row, col, channel)
+                    comm.send('$' + data)
+                    log.debug('$', data)
+            except:
+                error_msg = 'Error when retreiving [%i,%i]...\n' % (row, col)
+                error_msg += traceback.format_exc()
+                log.error(error_msg)
+
+        # old
+        def _recv_old(msg):
             if self.retreive_data is None:
                 return
             try:

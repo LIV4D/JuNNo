@@ -1,4 +1,3 @@
 from .filescollections import DataSetPandaDF, ImagesCollection
-from .dataset import NumPyDataSet
-from .datasets_core import DataSetJoin
+from .datasets_core import DataSetJoin, NumPyDataSet
 from .std_datasets import *

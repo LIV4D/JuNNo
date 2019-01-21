@@ -73,6 +73,142 @@ def compute_proba_patch_centers(proba_map, n, rng=None):
     return [np.unravel_index(i, s) for i in centers_id]
 
 
+_last_map = None
+_last_lut = None
+
+
+def map_values(array, map, axis=None, sampling=None, default=None):
+    assert isinstance(map, dict) and len(map)
+
+    import numpy as np
+    from .collections import if_none
+
+    if axis:
+        if isinstance(axis, int):
+            axis=[axis]
+        elif isinstance(axis, (list, tuple, np.ndarray)):
+            array = np.moveaxis(array, source=axis, destination=np.arange(len(axis)))
+        else:
+            raise ValueError('Invalid axis parameter: %s (should be one or a list of axis)' % repr(axis))
+    elif axis is None:
+        axis = np.arange(len(np.array(next(iter(map.keys()))).shape))
+
+    if sampling is None:
+        if 'float' in str(array.dtype) and array.min() >= 0 and array.max() <= 1:
+            sampling = 1/255
+    if not sampling:
+        sampling = 1
+    else:
+        array = array / sampling
+
+    if 'int' not in str(array.dtype):
+        from .j_log import log
+        log.warn('Array passed to map_values was converted to int32. Numeric precision may have been lost.')
+        array = array.astype(dtype=np.int32)
+
+    # Read shape
+    n_axis = len(axis)
+    source_size = np.prod(tuple(array.shape[_] for _ in range(n_axis)))
+    map_shapes = tuple(array.shape[_] for _ in range(n_axis, array.ndim))
+    array = array.reshape((source_size,)+map_shapes)
+    dest_sample = np.array(next(iter(map.values())))
+    dest_shape = dest_sample.shape
+    dest_size = int(np.prod(dest_shape))
+
+    # Prepare lut table
+    a = array.reshape((source_size, np.prod(map_shapes)))
+    mins = a.min(axis=-1)
+    maxs = a.max(axis=-1)
+    stride = np.cumprod([1]+list((maxs-mins+1)[1::-1]))[::-1]
+    array = array.reshape((source_size,) + map_shapes)
+
+    sources = []
+    lut_dests = [if_none(default, np.zeros_like(dest_sample))]
+    lut_color = [np.zeros((3,), dtype=np.uint8) if not isinstance(default, str) else str2color(default)]
+    for k, v in map.items():
+        source = (np.array(k)/sampling).astype(dtype=array.dtype).flatten()
+        dest = np.array(v)
+        if dest.shape:
+            dest = dest.flatten()
+        if source_size != source.size:
+            raise ValueError('Invalid source values: %s (length should be %i)' % (repr(source), source_size))
+        if dest_size != dest.size:
+            raise ValueError('Invalid destination values: %s (length should be %i)' % (repr(dest), dest_size))
+        sources.append(source)
+        lut_dests.append(dest)
+        if not dest.shape and isinstance(dest[()], str):
+            try:
+                lut_color.append(str2color(dest[()]))
+            except ValueError:
+                pass
+
+    array = np.sum((array.T - mins) * stride, axis=1)
+
+    if np.all(sources > mins) and np.all(sources < maxs):
+        sources = np.array(sources, dtype=array.dtype)-mins
+    lut_sources = np.zeros((np.prod(maxs-mins+1),), dtype=np.uint32)
+    for s_id, s in enumerate(sources):
+        lut_sources[np.sum((s-mins)*stride)] = s_id+1
+
+    if len(lut_color) == len(lut_dests):
+        lut_dests = lut_color
+    lut_dests = np.array(lut_dests)
+
+    # Map values
+    array = lut_sources[array]
+    array = lut_dests[array]
+
+    # Reshape
+    array = array.reshape(map_shapes+dest_shape)
+    f_axis = sorted(axis)[0]
+
+    return np.moveaxis(array, np.arange(len(map_shapes), array.ndim),
+                       np.arange(f_axis, f_axis+len(dest_shape)) if len(dest_shape)!=len(axis) else axis)
+
+
+def str2color(str_color, bgr=True, uint8=True):
+    import numpy as np
+    if not str_color or not isinstance(str_color, 'str'):
+        return np.zeros((3,), dtype=np.uint8 if uint8 else np.float16)
+
+    c = str_color.split('.')
+    if len(c) == 1:
+        c_str = c[0]
+        m = 1
+    else:
+        c_str = c[0]
+        m = float('0.'+c[1])
+        if c_str.lower() == 'black':
+            m = 1-m
+
+    try:
+        c = dict(
+            red=(255,0,0),
+            magenta=(255,0,255),
+            blue=(0,0,255),
+            cyan=(0,255,255),
+            green=(0,255,0),
+            yellow=(255,255,0),
+            orange=(255,127,0),
+            apple_green=(127,255,0),
+            turquoise=(0,255,127),
+            sky_blue=(0,127,255),
+            purple=(127,0,255),
+            pink=(255,0,127),
+            white=(255,255,255),
+            black=(0,0,0)
+        )[c_str.lower()]
+    except KeyError:
+        raise ValueError('Invalid color code: %s' % c) from None
+    c = np.array(c, dtype=np.float16)*m
+    if uint8:
+        c = c.astype(dtype=np.uint8)
+    else:
+        c /= 255
+    if bgr:
+        c = c[::-1]
+    return c
+
 def cast_shape(array, target_shape, pad=False, crop=False,
                       first_last_channel=True, ignore_null_dimension=True):
     import numpy as np

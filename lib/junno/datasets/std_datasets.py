@@ -3,7 +3,7 @@ import pickle
 import numpy as np
 
 from ..j_utils import log as _log
-from .dataset import NumPyDataSet
+from .datasets_core import NumPyDataSet
 
 
 def cache_download(url, name):
@@ -27,7 +27,7 @@ def cache_download(url, name):
     return file_path
 
 
-def cifar10_datasets(true_label=False):
+def cifar10_datasets(format_label=True):
     archive_url = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
     archive_file = cache_download(archive_url, 'CIFAR10')
 
@@ -51,7 +51,7 @@ def cifar10_datasets(true_label=False):
 
             return img, label
 
-        if true_label:
+        if format_label:
             with tar.extractfile(prefix+"batches.meta") as f_data:
                 raw_labels = pickle.load(f_data)
             true_label = {i: n for (i,n) in enumerate(raw_labels['label_names'])}
@@ -68,7 +68,8 @@ def cifar10_datasets(true_label=False):
                 y[i*n_file:(i+1)*n_file] = label
             p.step = i+1
         if true_label:
-            d['train'] = NumPyDataSet(dict(x=x, y=y, labels=np.vectorize(true_label.get)(y)))
+            d['train'] = NumPyDataSet(dict(x=x, y=y))
+            d['train'].col.y.format = true_label
         else:
             d['train'] = NumPyDataSet(dict(x=x, y=y))
 
@@ -76,10 +77,10 @@ def cifar10_datasets(true_label=False):
         with tar.extractfile(prefix+'test_batch') as f_data:
             x, y = retreive_data_from_file(f_data)
         if true_label:
-            d['test'] = NumPyDataSet(dict(x=x, y=y, labels=np.vectorize(true_label.get)(y)))
+            d['test'] = NumPyDataSet(dict(x=x, y=y))
+            d['test'].col.y.format = true_label
         else:
             d['test'] = NumPyDataSet(dict(x=x, y=y))
-
     return d
 
 

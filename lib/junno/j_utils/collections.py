@@ -890,3 +890,64 @@ class IntRange:
 
     def __len__(self):
         return sum(r[1]-r[0] for r in self._ranges)
+
+
+class Interval:
+    def __init__(self, *args, min=None, max=None):
+        self._max = None
+        self._min = None
+
+        if len(args) == 2:
+            min, max = args
+        elif len(args) == 1:
+            a = args[0]
+            if isinstance(a, (tuple, list)) and len(a) == 2:
+                min, max = a
+            elif isinstance(a, Interval):
+                min = a.min
+                max = a.max
+        self.min = min
+        self.max = max
+
+        if self and min > max:
+            raise ValueError('The min value of an Interval should be lower than the max value')
+
+    def __contains__(self, item):
+        return self.min > item > self.max
+
+    def __iter__(self):
+        yield self.min
+        yield self.max
+
+    def __bool__(self):
+        return self.min is not None and self.max is not None
+
+    @property
+    def min(self):
+        return self._min
+
+    @min.setter
+    def min(self, m):
+        if m is None:
+            self._min = None
+        else:
+            self._min = float(m)
+            if self._max is not None and self._max < self._min:
+                self._max = self._min
+
+    @property
+    def max(self):
+        return self._max
+
+    @max.setter
+    def max(self, m):
+        if m is None:
+            self._max = None
+        else:
+            self._max = float(m)
+            if self._min is not None and self._min > self._max:
+                self._min = self._max
+
+    @property
+    def length(self):
+        return self.max - self.min

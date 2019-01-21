@@ -32,7 +32,6 @@ class DataSetAugmentedData(AbstractDataSet):
         super(DataSetAugmentedData, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
 
         # Initialize columns
-
         self._columns = dataset.copy_columns(self)
         if not isinstance(columns, list):
             columns = [columns]

@@ -343,17 +343,17 @@ class LogsHandler:
             return self._process_stack[id][-1]
         return self.default_log
 
-    def warn(self, msg=None, description=None):
-        return self.log.warn(msg, description)
+    def warn(self, *args, msg=None):
+        return self.log.warn(*args, msg=msg)
 
-    def debug(self, msg=None, description=None):
-        return self.log.debug(msg, description)
+    def debug(self, *args, msg=None):
+        return self.log.debug(*args, msg=msg)
 
-    def info(self, msg=None, description=None):
-        return self.log.info(msg, description)
+    def info(self, *args, msg=None):
+        return self.log.info(*args, msg=msg)
 
-    def error(self, msg=None, description=None):
-        return self.log.error(msg, description)
+    def error(self, *args, msg=None):
+        return self.log.error(*args, msg=msg)
 
     def __lshift__(self, other):
         return self.log.__lshift__(other)
@@ -504,12 +504,11 @@ class Logs:
     global log
 
     class Message:
-        def __init__(self, msg, type, description, log_time):
+        def __init__(self, msg, type, log_time):
             self.msg = msg
             self.type = type
             self.time = time.time()
             self.log_time = log_time
-            self.description = description
 
     def __init__(self, name):
         self.msg_list = []
@@ -524,11 +523,11 @@ class Logs:
     def name(self):
         return self._name
 
-    def new_msg(self, type, msg=None, description=None):
+    def new_msg(self, type, msg=None):
         if msg is None:
             self.default_type = type
             return self
-        msg = Logs.Message(msg, type, description, self.elapsed_time())
+        msg = Logs.Message(msg, type, self.elapsed_time())
         self.msg_list.append(msg)
         self.notify_change()
         if log_out is not None:
@@ -543,17 +542,25 @@ class Logs:
         for log in self._log_ipywidgets:
             log.value = self._log_txt()
 
-    def warn(self, msg=None, description=None):
-        return self.new_msg('warning', msg, description)
+    def warn(self, *args, msg=None):
+        if args and msg is None:
+            msg = ' '.join(str(_) for _ in args)
+        return self.new_msg('warning', msg)
 
-    def debug(self, msg=None, description=None):
-        return self.new_msg('debug', msg, description)
+    def debug(self, *args, msg=None):
+        if args and msg is None:
+            msg = ' '.join(str(_) for _ in args)
+        return self.new_msg('debug', msg)
 
-    def info(self, msg=None, description=None):
-        return self.new_msg('info', msg, description)
+    def info(self, *args, msg=None):
+        if args and msg is None:
+            msg = ' '.join(str(_) for _ in args)
+        return self.new_msg('info', msg)
 
-    def error(self, msg=None, description=None):
-        return self.new_msg('error', msg, description)
+    def error(self, *args, msg=None):
+        if args and msg is None:
+            msg = ' '.join(str(_) for _ in args)
+        return self.new_msg('error', msg)
 
     def __lshift__(self, other):
         return self.new_msg(other, self.default_type)

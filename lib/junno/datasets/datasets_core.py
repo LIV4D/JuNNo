@@ -1,11 +1,12 @@
 import numpy as np
-import pandas as pd
+import tables
+import time
 
-from .dataset import AbstractDataSet, DSColumn, DataSetResult
-from ..j_utils.parallelism import parallel_exec
+from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
 from ..j_utils.math import interval
+from ..j_utils.collections import if_else
 
 
 ########################################################################################################################
@@ -44,11 +45,99 @@ class NumPyDataSet(AbstractDataSet):
 
 
 ########################################################################################################################
-class HDFStoreDataSet(AbstractDataSet):
-    def __init__(self, path, name='HDFStoreDataSet'):
-        self.store = pd.HDFStore(path, mode='r')
-        super(HDFStoreDataSet, self).__init__(name=name, pk_type=np.int32)
+class PyTableDataSet(AbstractDataSet):
+    def __init__(self, pytable: tables.Table, where=None, name='PyTableDataset'):
+        super(PyTableDataSet, self).__init__(name=name, pk_type=np.int32)
+        self.pytable = pytable
 
+        if self.pytable.description._v_is_nested:
+            raise NotImplementedError('PyTable with nested columns are not supported.')
+
+        for col_name, col in pytable.description._v_colobjects.items():
+            self.add_column(col_name, col.shape, col.dtype)
+
+        self.where = where
+        self._solve_where()
+
+    def _solve_where(self):
+        if self.where is None:
+            self._filtered_rows = None
+        else:
+            self._filtered_rows = np.array([_.nrow for _ in
+                                            self.pytable.get_where_list(self.where, condvars=None, sort=True)])
+
+    @staticmethod
+    def from_file(path, table="dataset", name='PyTableDataset'):
+        import tables
+        f = tables.open_file(path, mode='r')
+        table_path, table_name = table.rsplit('/', 1)
+        if not table_path.startswith('/'):
+            table_path = '/'+table_path
+        table = f.get_node(table_path, table_name, classname='Table')
+        return PyTableDataSet(table, name=name)
+
+    @staticmethod
+    def from_numpy(data_dict, cache_path=None, name='PyTableDataset'):
+        import tables
+        from ..j_utils.collections import is_dict
+
+        if is_dict(data_dict):
+            cols_data, cols_name = zip(data_dict.items())
+            data_dict = np.rec.fromarrays(cols_data, names=cols_name)
+        elif not isinstance(data_dict, np.recarray):
+            raise ValueError('data_dict should either be a dictionnary of numpy arrays or a numpy recarray.')
+
+        if cache_path is not None:
+            cache_path = cache_path.split(':')
+            if len(cache_path) == 1:
+                path = cache_path[0]
+                table_name = 'dataset'
+            elif len(cache_path) == 2:
+                path, table_name = cache_path
+            else:
+                raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
+
+            f = tables.File(path, mode='a')
+            table_path, table_name = table_name.rsplit('/', maxsplit=1)
+            if not table_path.startswith('/'):
+                table_path = '/' + table_path
+            table = f.create_table(table_path, table_name, obj=data_dict, createparents=True)
+        else:
+            f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
+            table = f.create_array(f.root, "dataset", obj=data_dict)
+        return PyTableDataSet(table, name=name)
+
+    @property
+    def size(self):
+        return len(self._filtered_rows) if self.where else len(self.pytable)
+
+    def _generator(self, gen_context):
+        columns = gen_context.columns
+        start = gen_context.start_id
+        stop = gen_context.end_id
+
+        if self.where:
+            hd5_gen = self.pytable.itersequence(self._filtered_rows[start:stop])
+        else:
+            hd5_gen = self.pytable.iterrows(start, stop)
+
+        while not gen_context.ended():
+            i, n, weakref = gen_context.create_result()
+            r = weakref()
+
+            for j in range(n):
+                row = next(hd5_gen)
+                for c in columns:
+                    r[c] = row[c]
+
+            r = None
+            yield weakref
+
+    def select(self, where):
+        d = PyTableDataSet(self.pytable, where=where, name=self.dataset_name)
+        for c_name, c in self.columns.items():
+            d.col[c_name].format = c.format
+        return d
 
 
 ########################################################################################################################
@@ -64,10 +153,10 @@ class DataSetSubset(AbstractDataSet):
     def _generator(self, gen_context):
         first_id = gen_context.start_id + self.start
         last_id = gen_context.end_id + self.start
-        gen = gen_context.generator(self._parent, start=first_id, end=last_id)
+        gen = gen_context.generator(self._parent, start=first_id, end=last_id, columns=gen_context.columns)
         while not gen_context.ended():
-            i, n, r = gen_context.create_result()
-            yield gen.next(copy={c: r()[c] for c in gen_context.columns})
+            i, n, weakref = gen_context.create_result()
+            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns})
 
     @property
     def size(self):
@@ -146,13 +235,14 @@ class DataSetMap(AbstractDataSet):
                 assert s[1:] == shape[1:]
                 shape = tuple([shape[0]+s[0]] + list(s[1:]))
 
-            self.add_column(column, shape, c.dtype)
+            self.add_column(name=column, shape=shape, dtype=c.dtype, format=c.format)
 
     def _generator(self, gen_context):
         columns = gen_context.columns
 
         gen_columns = set()
-        columns_map = {}
+        copy_columns = {}
+        duplicate_columns = {}
         for c_name in columns:
             c_parents = self.concatenation_map[c_name]
             gen_columns.update(set(c_parents))
@@ -160,17 +250,28 @@ class DataSetMap(AbstractDataSet):
             for c_parent in c_parents:
                 column_parent = self.parent_dataset.column_by_name(c_parent)
                 n = column_parent.shape[0] if column_parent.shape else 0
-                columns_map[c_parent] = (c_name, i, n)
+                if c_parent not in copy_columns:
+                    copy_columns[c_parent] = (c_name, i, n)
+                else:
+                    d = duplicate_columns.get(c_parent, None)
+                    if d is None:
+                        d = []
+                        duplicate_columns[c_parent] = d
+                    d.append((c_name, i, n))
                 i += n
-            columns_map['pk'] = ('pk', 0, 0)
+            copy_columns['pk'] = ('pk', 0, 0)
         gen_columns = list(gen_columns)
         gen = gen_context.generator(self._parent, columns=gen_columns)
 
         while not gen_context.ended():
             _, N, weakref = gen_context.create_result()
             r = weakref()
-            gen.next(copy={c_parent: r[c_name][:, i:i+n] if n > 0 else r[:, c_name]
-                           for c_parent, (c_name, i, n) in columns_map.items()}, limit=N, r=r)
+            result = gen.next(copy={c_parent: r[c_name][:, i:i+n] if n > 0 else r[:, c_name]
+                              for c_parent, (c_name, i, n) in copy_columns.items()}, limit=N, r=r)
+            for c_parent, duplicates in duplicate_columns.items():
+                for c_name, i, n in duplicates:
+                    r[c_name][:, i:i+n] = result[c_parent]
+            result = None
             r = None
             yield weakref
 
@@ -321,9 +422,9 @@ class DataSetShuffle(AbstractDataSet):
                 del indices_map
                 for i, (i0, i1) in enumerate(s_split):  # For each core setup dataset and generator
                     is_last = i == len(s_split) - 1
-                    s_indices = indices[subgen_index==i]
+                    s_indices = indices[subgen_index == i]
                     s_dataset = DataSetShuffle(self._parent, indices=s_indices, subgen=valid_ranges[i0:i1])
-                    s_dataset.subgen_index = valid_subgen[self.subgen_index[subgen_index==i]]-i0
+                    s_dataset.subgen_index = valid_subgen[self.subgen_index[subgen_index == i]]-i0
                     gen = gen_context.generator(s_dataset, n=1, ncore=1, parallel='thread' if is_last else 'process')
                     gen.setup()
                     subgen.append(gen)
@@ -480,14 +581,14 @@ class DataSetJoin(AbstractDataSet):
                 if not isinstance(column, tuple) or len(column) != 2:
                     continue
                 remote_c = datasets[dataset_id].column_by_name(foreign_name)
-                self.add_column(column_name, remote_c.shape, remote_c.dtype)
+                self.add_column(column_name, remote_c.shape, remote_c.dtype, remote_c.format)
                 self._columns_map[column_name] = (dataset_id, foreign_name)
         else:               # All columns of joined datasets will be used
             for dataset_id, (dataset, dataset_name) in enumerate(zip(datasets, datasets_name)):
                 for column in dataset.columns:
                     dataset_id = simp_dataset_map[dataset_id]
                     column_name = '%s_%s' % (dataset_name, column.name)
-                    self.add_column(column_name, column.shape, column.dtype)
+                    self.add_column(column_name, column.shape, column.dtype, column.format)
                     self._columns_map[column_name] = (dataset_id, column.name)
 
         #  ---  JOIN DATASETS  ---
@@ -850,13 +951,15 @@ class DataSetApply(AbstractDataSet):
                 # Try to infer column shape and type
                 c_shape = None
                 c_dtype = None
+                c_format = DSColumnFormat.Base(None, None)
                 if same_size_type:
                     _ = dataset.column_by_name(parent_c[c_id])
                     c_shape = _.shape
                     c_dtype = _.dtype
+                    c_format = _.format
 
                 # Apply column
-                own_columns.append(DSColumn(c, c_shape, c_dtype, self))
+                own_columns.append(DSColumn(c, c_shape, c_dtype, self, c_format))
                 self._columns_parent[c] = parent_c
             self._apply_col_dict[own_c] = parent_c
             self._apply_columns += own_c
@@ -882,6 +985,7 @@ class DataSetApply(AbstractDataSet):
                     col = self.column_by_name(c)
                     col._dtype = columns_type_shape[c][0]
                     col._shape = columns_type_shape[c][1]
+                    col.format = None
         else:
             sample = dataset.read_one(0, columns=self.f_columns([_.name for _ in own_columns]), extract=False)
             for c_own, c_parent in self._apply_col_dict.items():
@@ -914,9 +1018,11 @@ class DataSetApply(AbstractDataSet):
                     if isinstance(c_sample, np.ndarray):
                         col._shape = c_sample.shape
                         col._dtype = c_sample.dtype
+                        col.format = None
                     else:
                         col._shape = ()
                         col._dtype = type(c_sample) if type(c_sample) != str else 'O'
+                        col.format = None
         self._f_kwargs = {c.name + '_shape': c.shape for c in self._columns}
 
     def _generator(self, gen_context):

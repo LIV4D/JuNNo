@@ -176,6 +176,35 @@ def softmax(x, axis=0):
     r = e_x / e_x.sum(axis=0)
     return np.swapaxes(r, 0, axis)
 
+
+def apply_scale(a, range=None, domain=None, clip=None):
+    from .collections import Interval
+    import numpy as np
+
+    range = Interval(range)
+    domain = Interval(domain)
+    clip = Interval(clip)
+
+    if range:
+        if domain.min is None:
+            domain.min = np.min(a)
+        if domain.max is None:
+            domain.max = np.max(a)
+
+        if range.min is None:
+            range.min = domain.min
+        elif range.max is None:
+            range.max = domain.max
+
+        a = range.min + (a-domain.min) * range.length / domain.length
+
+    if clip.min is not None:
+        a[a < clip.min] = clip.min
+    if clip.max is not None:
+        a[a > clip.max] = clip.max
+    return a
+
+
 ########################################################################################################################
 #              -------- THEANO IMPROVMENTS -------
 def merge_axis(a, keep_axis=None, shape=None):

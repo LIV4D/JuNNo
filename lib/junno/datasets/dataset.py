@@ -68,26 +68,23 @@ The module is composed of the classes:
 
 """
 from abc import ABCMeta, abstractmethod
-import numpy as np
 import base64
 import enum
 from functools import partial
-from copy import copy
-from os.path import dirname, exists, join, splitext, basename
+import multiprocessing as mp
+import numpy as np
+import os
+from os.path import dirname, exists, join, splitext, basename, abspath
+from os.path import split as split_path
 from os import makedirs
 import pandas as pd
-import time
-import multiprocessing as mp
-import queue
-import threading
 
-from ..j_utils.j_log import log, Process, float_to_str
+from ..j_utils.j_log import log, Process
 
 from ..j_utils.function import not_optional_args, to_callable, optional_args
-from ..j_utils.parallelism import parallel_exec, intime_generator
-from ..j_utils.math import interval
-from ..j_utils.collections import if_none, AttributeDict
-import weakref
+from ..j_utils.parallelism import N_CORE
+from ..j_utils.math import interval, apply_scale
+from ..j_utils.collections import AttributeDict, Interval, if_none
 
 
 class AbstractDataSet(metaclass=ABCMeta):
@@ -153,9 +150,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             item = (item, None)
         if isinstance(item, tuple):
             if isinstance(item[0], int):
-                return self.read_one(row=item[0], columns=item[1])
+                return self.read_one(row=item[0], columns=item[1], extract=False)
             elif isinstance(item[0], slice):
-                return self.read(item[0].start, item[0].stop, columns=item[1])
+                return self.read(item[0].start, item[0].stop, columns=item[1], extract=False)
         raise NotImplementedError
 
     @property
@@ -261,6 +258,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :rtype: generator
         """
         self.clear_sample()
+        from .dataset_generator import DataSetSmartGenerator
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, end_id=end, columns=columns,
                                      determinist=determinist, intime=intime, ncore=ncore)
 
@@ -328,16 +326,20 @@ class AbstractDataSet(metaclass=ABCMeta):
         return r
 
     @property
+    def col(self):
+        return self.columns
+
+    @property
     def pk(self):
         return self._pk
 
     def copy_columns(self, dataset=None):
         if dataset is None:
             dataset = self
-        return [DSColumn(_.name, _.shape, _.dtype, dataset) for _ in self._columns]
+        return [DSColumn(_.name, _.shape, _.dtype, dataset, _.format) for _ in self._columns]
 
-    def add_column(self, name, shape, dtype):
-        self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self))
+    def add_column(self, name, shape, dtype, format=None):
+        self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format))
 
     #   ---   Dataset Hierarchy   ---
     @property
@@ -389,28 +391,34 @@ class AbstractDataSet(metaclass=ABCMeta):
 
             context = {'generator': None, 'gen_id': -1, 'result': None}
 
-            columns_name = []
+            columns = []
             columns_description = []
             for c in dataset._columns:
-                columns_name.append(c.name)
+                columns.append(c)
                 c_name = c.name + ';' + c.sql_type
                 if len(c.shape) > 0:
                     c_name += ' [' + ('x'.join([str(_) for _ in c.shape])) + ']'
                 columns_description.append(c_name)
 
-            def retreive_data(row, col):
+            def retreive_data(row, col, fullscreen_id=None):
                 if context['generator'] is not None and context['gen_id']+1 == row:
                     context['gen_id'] += 1
                     context['result'] = next(context['generator'])
                 elif context['gen_id'] != row:
-                    context['generator'] = dataset.generator(start=row)
+                    context['generator'] = dataset.generator(start=row, determinist=True)
                     context['gen_id'] = row
                     context['result'] = next(context['generator'])
 
-                return context['result'][0, columns_name[col]]
+                c = columns[col]
+                d = context['result'][0, c.name]
+                if fullscreen_id is None:
+                    return c.format.export_html(d), c.format.html_fullscreen
+                else:
+                    return c.format.export_html(d, fullscreen_id)
 
             w.columns_name = columns_description
             w.db_view.retreive_data = retreive_data
+            w.db_view.retreive_fullscreen = retreive_data
             w.db_view.reset()
 
         dataset_changed(len(datasets)-1)
@@ -446,7 +454,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             return
 
         if ncore is None:
-            ncore = N_THREAD
+            ncore = N_CORE
         ncore = min(ncore, size)
 
         if ncore > 1:
@@ -733,20 +741,12 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return CustomDataLoader(self)
 
-    #   ---   Operations   ---
-    def subset(self, start=0, end=None, name='subset', *args):
-        from .datasets_core import DataSetSubset
-        start, end = interval(self.size, start, end, args)
-        return DataSetSubset(self, start, end, name=name)
-
-    def subgen(self, n=1, name='subgen'):
-        from .datasets_core import DataSetSubgen
-        return DataSetSubgen(self, n=n, name=name)
-
-    def as_cache(self, n=1, start=0, end=None, columns=None, ncore=1, name=None):
+    def as_cache(self, n=1, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None):
         start, end = interval(self.size, start, end)
         if columns is None:
             columns = self.columns_name()
+
+        from .dataset_generator import DataSetResult
         data = DataSetResult.create_empty(dataset=self, n=end - start, start_id=start, columns=columns)
 
         if name is None:
@@ -761,9 +761,20 @@ class AbstractDataSet(metaclass=ABCMeta):
                 p.update(r.size)
             self.export(write_back, n=n, start=start, end=end, columns=columns, ncore=ncore)
 
+        from .datasets_core import NumPyDataSet
         dataset = NumPyDataSet(data, name=name)
         dataset._parents = [self]
         return dataset
+
+    #   ---   Operations   ---
+    def subset(self, start=0, end=None, name='subset', *args):
+        from .datasets_core import DataSetSubset
+        start, end = interval(self.size, start, end, args)
+        return DataSetSubset(self, start, end, name=name)
+
+    def subgen(self, n=1, name='subgen'):
+        from .datasets_core import DataSetSubgen
+        return DataSetSubgen(self, n=n, name=name)
 
     def split_sets(self, **kwargs):
         """Split sets into a dictionary named after the parameters keys.
@@ -1111,22 +1122,15 @@ class DSColumn:
     """
     Store information of a column of a DataSet
     """
-    def __init__(self, name, shape, dtype, dataset=None, datatype=None):
+    def __init__(self, name, shape, dtype, dataset=None, format=None):
         self._name = name
         self._shape = shape
         self._dtype = dtype
         if dtype == str:
             self._dtype = 'O'
 
-        self._format_export = None
-        self._format_display = None
-        if datatype is not None:
-            self._datatype = datatype
-        elif dataset is None:
-            self._datatype = DSColumn.DataType.UNKNOWN
-        else:
-            self._datatype = DSColumn.DataType.infer_type(self._dataset.sample[name])
-        self.fullscreen_display = DSColumn.DataType.default_fullscreen_display(self._datatype)
+        self._format = None
+        self.format = format
 
     def __getstate__(self):
         return self._name, self._shape, self._dtype
@@ -1150,10 +1154,6 @@ class DSColumn:
         :rtype: type
         """
         return self._dtype
-
-    @property
-    def datatype(self):
-        return self._datatype
 
     @property
     def sql_type(self):
@@ -1186,1019 +1186,316 @@ class DSColumn:
             return self._dataset()
         return None
 
+    @property
+    def format(self):
+        return self._format
+
+    @format.setter
+    def format(self, f):
+        self._format = DSColumnFormat.auto_format(self._dtype, self._shape, f)
+
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
 
-    @property
-    def format_display(self):
-        if self._format_display is None:
-            return self.default_display_export
-        else:
-            return self._format_export
-
-    @format_display.setter
-    def format_display(self, f):
-        if f is None or callable(f):
-            self._format_display = f
-
-    def format_html(self, x, thumbnail):
-        datatype = self.datatype
-        DT = DSColumn.DataType
-
-        if datatype is DT.IMAGE:
-            import cv2
-            if x.ndim == 3:
-                x = x.transpose((1, 2, 0))
-            if thumbnail:
-                h, w = x.shape[:2]
-                ratio = h / w
-                mindim = min(thumbnail[0] * ratio, thumbnail[1])
-                thumbnail_size = (round(mindim / ratio), round(mindim))
-                x = cv2.resize(x, thumbnail_size, interpolation=cv2.INTER_AREA)
-
-            png = base64.b64encode(cv2.imencode('.png', x)[1])[2:-1]
-
-        elif datatype is DT.INTEGER:
-            return '<p> %i </p>' % x[0]
-        elif datatype is DT.FLOAT:
-            return '<p> %.4f </p>' % x[0]
-        elif datatype is DT.TEXT:
-            return '<p> %s </p>' % x[0]
-        else:
-            return '<p> %s </p>' % repr(x)
-
-    @property
-    def format_export(self):
-        if self._format_export is None:
-            return DSColumn.default_format_export
-        return self._format_export
-
-    @format_export.setter
-    def format_export(self, f):
-        if f is None or callable(f):
-            self._format_export = f
-
-    def default_format_export(self, x):
-        DT = DSColumn.DataType
-        if self.datatype is DT.IMAGE:
-            if 'int' in x.dtype:
-                if x.min() < 0 or x.max() > 255:
-                    x -= x.min()
-                    x /= 255*x.max()
-            elif 'float' in x.dtype:
-                if x.min() < 0 or x.max() > 1:
-                    x -= x.min()
-                    x /= x.max()
-        return x
-
-    def default_display_export(self, x):
-        return self.format_export(x)
-
-    @enum.unique
-    class DataType(enum):
-        CUSTOM = -1
-        UNKNOWN = 0
-        ARRAY = 1       # Array of Numbers
-        INTEGER = 2     # Single integer
-        NUMBER = 3      # Single float number
-        TEXT = 4        # Single text
-        IMAGE = 5       # Single or mutliple images
-
-        @staticmethod
-        def infer_type(x):
-            if x.shape == ():
-                if 'int' in x.dtype:
-                    return DSColumn.DataType.INTEGER
-                elif 'float' in x.dtype:
-                    return DSColumn.DataType.NUMBER
-                elif x.dtype == 'str':
-                    return DSColumn.DataType.TEXT
-                elif x.dtype == 'O':
-                    if isinstance(x[0], str):
-                        return DSColumn.DataType.TEXT
-                    else:
-                        return DSColumn.DataType.UNKNOWN
-            elif 'int' in x.dtype or 'float' in x.dtype or x.dtype in ('bool',):
-                if x.ndim in (2, 3) and x.shape[-2:].min() >= 3:
-                    return DSColumn.DataType.IMAGE
-                else:
-                    return DSColumn.DataType.ARRAY
-            return DSColumn.DataType.UNKNOWN
-
-        @staticmethod
-        def default_fullscreen_display(datatype):
-            DT = DSColumn.DataType
-            return datatype in (DT.IMAGE,)
-
 
-########################################################################################################################
-class DataSetResult:
-    """
-    Store the result of an iteration of a generator from DataSet
-    """
-
-    def __init__(self, data_dict, columns, start_id, size, dataset=None):
-        """
-        :type data_dict: dict
-        :type dataset: AbstractDataSet
-        """
-        self._data_dict = data_dict
-        self._columns = columns
-        self._start_id = start_id
-        self._size = size
-        self._dataset = None
-
-        self.affiliate_dataset(dataset)
-        self._trace = DataSetResult.Trace(self)
-
-        self._ipywidget = None
-
-    def __getstate__(self):
-        return self._data_dict, self._columns, self._start_id, self._size, self._trace
-
-    def __setstate__(self, state):
-        self._data_dict, self._columns, self._start_id, self._size, self._trace = state
-        self._dataset = None
-        self._ipywidget = None
-
-    @staticmethod
-    def create_empty(n, start_id, columns=None, dataset=None, assign=None):
-        """
-
-        :param dataset:
-        :param n:
-        :param start_id:
-        :param columns:
-        :rtype: DataSetResult
-        """
-        if dataset is None:
-            if columns is None:
-                raise ValueError('Either the dataset or the columns list must be specified '
-                                 'when creating an empty dataset result.')
-            if not isinstance(columns, list):
-                columns = [columns]
-            else:
-                columns = columns.copy()
-            for c in columns:
-                if not isinstance(c, DSColumn):
-                    raise ValueError(
-                        'When creating a dataset result without specifying a dataset, columns list should only'
-                        'contains valid columns.')
-        else:
-            columns = dataset.interpret_columns(columns, to_column_name=False)
-            if 'pk' not in [_.name for _ in columns]:
-                columns.insert(0, dataset.column_by_name('pk'))
-
-        if assign is None:
-            assign = {}
-
-        data_dict = {}
-        for c in columns:
-            if c.name in assign:
-                a = assign[c.name]
-                if a.shape != (n,) + tuple(c.shape):
-                    raise ValueError('The shape of the assigned value for column %s is %s but should be %s.'
-                                     % (c.name, repr(a.shape), repr((n,)+c.shape)))
-                data_dict[c.name] = a
-            else:
-                data_dict[c.name] = np.zeros(tuple([n]+list(c.shape)), dtype=c.dtype)
-
-        return DataSetResult(data_dict=data_dict, columns=columns, start_id=start_id, size=n, dataset=dataset)
-
-    @staticmethod
-    def create_from_data(data):
-        """
-        Create a generic DataSetResult using data
-        :param data: a dictionary where each column uses a different key
-        :return:
-        """
-        columns = [DSColumn(name=name, shape=d.shape[1:], dtype=d.dtype) for name, d in data.items()]
-
-        n = None
-        for d in data.values():
-            if n is None:
-                n = d.shape[0]
-            elif n != d.shape[0]:
-                raise ValueError("Error when creating DataSetResult from data: some columns don't share the same length.")
-
-        if 'pk' not in [_.name for _ in columns]:
-            columns.insert(0, DSColumn(name='pk', shape=(), dtype=np.uint16))
-            data['pk'] = np.arange(n, dtype=np.uint16)
-
-        return DataSetResult(data_dict=data, columns=columns, start_id=0, size=n)
-
-    def _ipython_display_(self):
-        from ..j_utils.ipython import import_display
-        import_display(self.ipywidget)
-
-    @property
-    def ipywidget(self):
-        from ..j_utils.ipython.databaseview import SimpleDatabaseView
-
-        if self._ipywidget is not None:
-            return self._ipywidget
-
-        w = SimpleDatabaseView()
-
-        columns_name = []
-        columns_description = []
-        for c in self.columns:
-            columns_name.append(c.name)
-            c_name = c.name + ';' + c.sql_type
-            if len(c.shape) > 0:
-                c_name += ' [' + ('x'.join([str(_) for _ in c.shape])) + ']'
-            columns_description.append(c_name)
-
-        def retreive_data(row, col):
-            return self[row, columns_name[col]]
-
-        w.columns_name = '|'.join(columns_description)
-        w.retreive_data = retreive_data
-        w.length = self.size
-
-        self._ipywidget = w
-        return w
-
-    @property
-    def dataset(self):
-        """
-        Parent dataset
-        :rtype: AbstractDataSet
-        """
-        if self._dataset is not None:
-            return self._dataset()
-        return None
-
-    def affiliate_dataset(self, dataset):
-        self._dataset = weakref.ref(dataset)
-        for c in self._columns:
-            c._dataset = weakref.ref(dataset)
-
-    def clear_dataset(self):
-        self._dataset = None
-        for c in self._columns:
-            c._dataset = None
-
-    def __del__(self):
-        self.clean()
-
-    def clean(self):
-        for data in self._data_dict.values():
-            if data.flags['OWNDATA']:
-                del data
-        self._data_dict.clear()
-        self._columns.clear()
-        self._dataset = None
-        self._size = 0
-        self._start_id = 0
-        self._trace = DataSetResult.Trace(self)
-
-    @property
-    def start_id(self):
-        """
-        Index of the beginning of this subset in the parent dataset
-        :rtype: int
-        """
-        return self._start_id
-
-    @property
-    def end_id(self):
-        """
-        Index of the ending of this subset in the parent dataset
-        :rtype: int
-        """
-        return self._start_id + self._size
-
-    @property
-    def size(self):
-        """
-        Size of this subset (first dimension of every columns of this subset)
-        :rtype: int
-        """
-        return self._size
-
-    @property
-    def mem_size(self):
-        """
-        Amount of memory used to store this DataSetResult in bytes. (Does not include shared memory)
-        :rtype: int
-        """
-        b = 0
-        for data in self._data_dict.values():
-            if data.flags['OWNDATA']:
-                b += data.nbytes
-        return b
-
-    @property
-    def total_mem_size(self):
-        """
-        Total amount of memory used to store this DataSetResult in bytes. (Includes shared memory)
-        :rtype: int
-        """
-        b = 0
-        for data in self._data_dict.values():
-            b += data.nbytes
-        return b
-
-    @property
-    def trace(self):
-        return self._trace
-
-    @property
-    def columns(self):
-        return self._columns
-
-    def __len__(self):
-        return self._size
-
-    def __bool__(self):
-        return self._size != 0
-
-    def __setitem__(self, key, value):
-        simple_id = isinstance(key, int)
-        if simple_id:
-            key = slice(key, key+1, 1)
-        if isinstance(key, slice):
-            if not key.step is None and key.step != 1:
-                raise IndexError('Not continuous slice index is not supported'
-                                 '(step should be 1 and not %i)' % key.step)
-            start = 0 if key.start is None else key.start
-            stop = self.size if key.stop is None else key.stop
-            length = stop-start
-
-            if isinstance(value, DataSetResult):
-                assert value.size >= length
-                value = value._data_dict
-            if isinstance(value, dict):
-                for v_name, v in value.items():
-                    if v_name in self._data_dict:
-                        d = v if simple_id else v[:length]
-
-                        from scipy.sparse import spmatrix
-                        if isinstance(d, spmatrix):
-                            d = d.toarray()
-
-                        self._data_dict[v_name][start:stop] = d
-            elif isinstance(value, list):
-                try:
-                    self._data_dict['pk'][start:stop] = value[0] if simple_id else value[0][:length]
-                    for c_id, c in enumerate(self.columns):
-                        self._data_dict[c.name][start:stop] = value[c_id+1] if simple_id else value[c_id+1][:length]
-                except:
-                    raise ValueError('%s is not a valid value to assign to a dataset row...' % value)
-
-        elif isinstance(key, tuple):
-            def istypeof_or_listof(o, t):
-                return isinstance(o, t) or (isinstance(o, t) and isinstance(o[0], t))
-
-            if (isinstance(key[0], slice) or istypeof_or_listof(key[0], int)) and (
-                istypeof_or_listof(key[1], str) or istypeof_or_listof(key[1], list)):
-                indexes = key[0]
-                columns = key[1]
-            else:
-                raise NotImplementedError
-            if isinstance(indexes, int):
-                indexes = slice(indexes, indexes+1)
-            if columns in self:
-                if isinstance(value, np.ndarray):
-                    np.copyto(self._data_dict[columns][indexes], value)
-                else:
-                    self._data_dict[columns][indexes] = value
-        elif isinstance(key, str):
-            self._data_dict[key][:] = value
-        else:
-            raise NotImplementedError
-
-    def __getitem__(self, item):
-        if isinstance(item, str):
-            return self._data_dict[item]
-        elif isinstance(item, (int, slice)):
-            return self[item, set(self.columns_name() + ['pk'])]
-        elif isinstance(item, list):
-            return [self[_] for _ in item]
-        elif isinstance(item, tuple):
-            if (isinstance(item[0], slice) or istypeof_or_listof(item[0], int)) and istypeof_or_collectionof(item[1], str, (list, tuple, set)):
-                indexes = item[0]
-                columns = item[1]
-            else:
-                raise NotImplementedError('First index should be row index and second should be columns index\n'
-                                          '(here provided type is [%s, %s])' % (str(type(item[0])), str(type(item[1]))))
-
-            if isinstance(columns, (list, tuple)):
-                return [self._data_dict[_][indexes] for _ in columns]
-            elif isinstance(columns, set):
-                return {c: self._data_dict[c][indexes] for c in columns}
-            else:
-                return self._data_dict[columns][indexes]
-        else:
-            raise NotImplementedError
-
-    def __contains__(self, item):
-        return item in self._data_dict
-
-    def columns_name(self):
-        """
-        :rtype: List[str]
-        """
-        return [_ for _ in self.keys() if _ != 'pk']
-
-    def keys(self):
-        return [_.name for _ in self._columns]
-
-    def items(self):
-        for c_name in self.keys():
-            yield c_name, self._data_dict[c_name]
-
-    def truncate(self, n):
-        for _, data in self._data_dict.items():
-            self._data_dict[_] = data[:n]
-        self._size = n
-        return self
-
-    class Trace:
-        def __init__(self, r):
-            dataset = r.dataset
-            if dataset is not None:
-                self._dataset_name = dataset.dataset_name[:]
-                self._n = dataset.size
-            else:
-                self._dataset_name = 'unknown'
-                self._n = -1
-
-            self._parent_traces = {}
-
-            self._start_date = time.time()
-            self._end_date = None
-
-
-            self._mem_size = r.mem_size
-            self._total_mem_size = r.total_mem_size
-
-        def computation_ended(self):
-            self._end_date = time.time()
-
-        def affiliate_parent_trace(self, trace):
-            if trace.dataset_name not in self._parent_traces:
-                self._parent_traces[trace.dataset_name] = []
-            self._parent_traces[trace.dataset_name].append(trace)
+class DSColumnFormat:
+    class Base:
+        def __init__(self, dtype, shape):
+            self.__dtype = dtype
+            self.__shape = shape
+            self.check_type(dtype, shape)
+            self.html_fullscreen = False
+
+        def check_type(self, dtype, shape):
+            return True
+
+        def copy(self, dtype, shape):
+            from copy import deepcopy
+            self.check_type(dtype, shape)
+            f = deepcopy(self)
+            f._dtype = dtype
+            f._shape = shape
+            return f
+
+        @property
+        def dtype(self):
+            return self.__dtype
+
+        @property
+        def shape(self):
+            return self.__shape
+
+        @property
+        def format_name(self):
+            return self.__class__.__name__
+
+        def preformat(self, data):
+            preformat = None
+            for C in reversed(type(self).mro()):
+                p = getattr(C, '_preformat', None)
+                if p and p is not preformat:
+                    preformat = p
+                    data = preformat(self, data)
+            return data
+
+        def _preformat(self, data):
+            return data
+
+        def format_html(self, data, raw_data, fullscreen=None):
+            return "<p> %s </p>" % str(data)
+
+        def format_data(self, data):
+            return data
+
+        def write_file(self, data, path, filename):
+            return self.format_data(data)
+
+        def export_html(self, data, fullscreen=None):
+            return self.format_html(self.preformat(data), data, fullscreen=fullscreen)
+
+        def export_data(self, data):
+            return self.format_data(self.preformat(data))
+
+        def export_file(self, data, path, filename):
+            return self.write_file(self.preformat(data), path, filename)
+
+    class Number(Base):
+        def __init__(self, dtype, shape):
+            super(DSColumnFormat.Number, self).__init__(dtype, shape)
+
+        def check_type(self, dtype, shape):
+            if not np.issubdtype(dtype, np.number):
+                raise ValueError('Number format must be applied to number columns.')
+            if len(shape):
+                raise ValueError('Number format can only be applied to columns with an empty shape.')
+            return True
+
+        def export_html(self, data, fullscreen=None):
+            return ("<p>%i</p>" if 'int' in str(self.dtype) else "<p>%f.3</p>") % data
+
+    class Text(Base):
+        def __init__(self, dtype, shape):
+            super(DSColumnFormat.Text, self).__init__(dtype, shape)
+
+        def check_type(self, dtype, shape):
+            if len(shape):
+                raise ValueError('String format can only be applied to columns with an empty shape.')
+            return True
+
+    class Label(Base):
+        def __init__(self, dtype, shape, mapping=None, default=None):
+            super(DSColumnFormat.Label, self).__init__(dtype, shape)
+            self.mapping = if_none(mapping, dict())
+            self.default = if_none(default, mapping['default'] if 'default' in mapping else None)
+
+        def format_html(self, data, raw_data, fullscreen=None):
+            try:
+                d = self.mapping[data]
+            except KeyError:
+                d = self.default
+            return "<p> <i> %s </i> </p>" % str(d)
 
         def __repr__(self):
-            return 'Trace(%s)' % self.dataset_name
+            return 'DSColumnFormat.Label(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
-        def __str__(self):
-            return self.trace2str()
+    class Matrix(Base):
+        def __init__(self, dtype, shape):
+            super(DSColumnFormat.Matrix, self).__init__(dtype, shape)
+            self._domain = Interval()
+            self._range = Interval()
+            self._clip = Interval()
 
-        def __call__(self, *args, **kwargs):
-            print(self.trace2str())
+        def check_type(self, dtype, shape):
+            if not np.issubdtype(dtype, np.number):
+                raise ValueError('Matrix format must be applied to number columns (not %s).' % repr(dtype))
+            if not len(shape):
+                raise ValueError('Matrix format can only be applied to columns with a non empty shape.')
+            return True
 
-        def print(self):
-            print(self.trace2str())
+        def _preformat(self, data):
+            d = apply_scale(data, self.range, self.domain, self.clip)
+            return d
 
-        def trace2str(self, total_time=None):
-            s = ''
-            if total_time is None:
-                total_time = self.total_exec_time
-            for t in self.all_parent_traces():
-                s += t.trace2str(total_time)
-            s += '-- %s --\n' % self.dataset_name
+        def format_data(self, data):
+            return str(data)
 
-            if total_time:
-                s += '\t exec time: %s s, %s%% (total: %s s, %s%%)\n' \
-                     % (float_to_str(self.exec_time, '.2f'),
-                        float_to_str(self.exec_time / total_time * 100, '.1f'),
-                        float_to_str(self.total_exec_time, '.2f'),
-                        float_to_str(self.total_exec_time / total_time * 100, '.1f'))
-                s += '\t mem usage: %s kB\n' % float_to_str(self.memory_allocated / 1000, '.1f')
-                s += '\t mem shared: %s kB\n' % float_to_str(self.shared_memory / 1000, '.1f')
+        def write_file(self, data, path, filename):
+            np.save(join(path, filename+'.npy'), data)
+
+        @property
+        def domain(self):
+            return self._domain
+
+        @domain.setter
+        def domain(self, d):
+            self._domain = Interval(d)
+
+        @property
+        def range(self):
+            return self._range
+
+        @range.setter
+        def range(self, d):
+            self._range = Interval(d)
+
+        @property
+        def clip(self):
+            return self._clip
+
+        @clip.setter
+        def clip(self, d):
+            self._clip = Interval(d)
+
+    class LabelMatrix(Matrix):
+        def __init__(self, dtype, shape, mapping=None, default=None):
+            super(DSColumnFormat.LabelMatrix, self).__init__(dtype, shape)
+            self.mapping = if_none(mapping, dict())
+            self.default = default
+
+        def _preformat(self, data):
+            from ..j_utils.image import map_values
+            return map_values(data, self.mapping, default=self.default)
+
+        def __repr__(self):
+            return 'DSColumnFormat.LabelMatrix(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
+
+    class Image(Matrix):
+        def __init__(self, dtype, shape):
+            from ..j_utils.math import dimensional_split
+            super(DSColumnFormat.Image, self).__init__(dtype, shape)
+            self.html_fullscreen = True
+            self.clip = 0, 255
+            self.range = 0, 255
+            if 'int' in str(dtype):
+                self.domain = 0, 255
             else:
-                s += 'Not executed yet'
-            s += '\n'
-            return s
+                self.domain = 0, 1.0
+
+            self.html_height = lambda h: int(np.round(256*(1-np.exp(-h/128))))
+            self.html_columns = lambda n: dimensional_split(n)[1]
+
+        def check_type(self, dtype, shape):
+            if not np.issubdtype(dtype, np.number):
+                raise ValueError('Image format must be applied to number columns (not %s).' % repr(dtype))
+            if len(shape) not in (2, 3):
+                raise ValueError('Image format can only be applied to columns with a non empty shape.')
 
         @property
-        def dataset_name(self):
-            return self._dataset_name
+        def channels_count(self):
+            return int(np.prod(self.shape[:-2]))
 
-        @property
-        def start_date(self):
-            return self._start_date
+        def _preformat(self, data):
+            if data.ndim > 3:
+                return data.reshape((self.channels_count,)+data.shape[-2:])
+            return data
 
-        @property
-        def end_date(self):
-            return self._end_date
+        def format_html(self, data, raw_data, fullscreen=None):
+            THUMBNAIL_SIZE = (128, 128)
+            MAX_FULL_SIZE = (1024, 1024)
 
-        @property
-        def total_exec_time(self):
-            if self._end_date is None:
-                return None
-            return self._end_date - self._start_date
+            import cv2
+            h, w = data.shape[-2:]
+            ratio = h / w
 
-        @property
-        def exec_time(self):
-            if self._parent_traces:
-                return self.total_exec_time - self.traces_total_time(self.all_parent_traces())
-            return self.total_exec_time
+            if fullscreen is None:
+                if self.channels_count % 3 == 0:
+                    gen_channels = tuple(data[_:_+3].transpose((1, 2, 0)) for _ in range(0, self.channels_count, 3))
+                else:
+                    gen_channels = tuple(data[_] for _ in range(0, self.channels_count))
 
-        @property
-        def memory_allocated(self):
-            return self._mem_size
+                n = len(gen_channels)
+                nw = self.html_columns(n) if callable(self.html_columns) else self.html_columns
+                nh = int(np.ceil(n/nw))
 
-        @property
-        def shared_memory(self):
-            return self._total_mem_size - self._mem_size
+                d = []
+                for channel_data in gen_channels:
+                    html_height = self.html_height(h) if callable(self.html_height) else self.html_height
+                    th = html_height//nh
+                    thumbnail = cv2.resize(channel_data, (th, int(np.round(th / ratio))), interpolation=cv2.INTER_AREA)
+                    png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
+                    html = '<img src="data:image/png;base64, %s" style="height: %ipx;" />' % (png, th)
+                    d.append(html)
 
-        @property
-        def total_memory(self):
-            return self._total_mem_size
-
-        @property
-        def parent_traces(self):
-            return self._parent_traces
-
-        def all_parent_traces(self, recursive=False):
-            traces = []
-
-            if recursive:
-                def recursive_search(trace):
-                    for trace_list in trace._parent_traces.values():
-                        for t in trace_list:
-                            traces.append(t)
-                            recursive_search(t)
-                recursive_search(self)
+                return '#%i,%i|' % (nh, nw) + ' '.join(d)
             else:
-                for t in self._parent_traces.values():
-                    traces += t
-            return traces
+                if self.channels_count % 3 == 0:
+                    d = data[3*fullscreen:3*fullscreen+3].transpose((1, 2, 0))
+                else:
+                    d = data[fullscreen]
+                if data.shape[0] > MAX_FULL_SIZE[0] or data.shape[1] > MAX_FULL_SIZE[1]:
+                    fulldim = min(MAX_FULL_SIZE[0]*ratio, MAX_FULL_SIZE[1])
+                    full_size = (round(fulldim/ratio), round(fulldim))
+                    d = cv2.resize(d, full_size, interpolation=cv2.INTER_AREA)
+                png = str(base64.b64encode(cv2.imencode('.png', d)[1]))[2:-1]
 
-        def dataset_traces(self, dataset_name, recursive=False):
-            if dataset_name not in self._parent_traces:
-                return 0
-            if recursive:
-                traces = []
+                mindim = min(THUMBNAIL_SIZE[0] * ratio, THUMBNAIL_SIZE[1])
+                thumbnail_size = (round(mindim / ratio), round(mindim))
 
-                def recursive_search(trace):
-                    for trace_list in trace._parent_traces.values():
-                        if trace_list.dataset_name == dataset_name:
-                            for t in trace_list:
-                                traces.append(t)
-                        else:
-                            for t in trace_list:
-                                recursive_search(t)
+                thumbnail = cv2.resize(d, thumbnail_size, interpolation=cv2.INTER_AREA)
+                t_png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
 
-                recursive_search(self)
-            else:
-                traces = self._parent_traces[dataset_name]
-            return traces
+                legend = '<p> min: %f<br/> max: %f<br /> mean: %f <br /> std: %f</p>' \
+                          % (raw_data.min(), raw_data.max(), raw_data.mean(), raw_data.std())
+                # -- Send data --
+                # HACKISH: message interpreted by FulllscreenView.js IPython.FullscreenView.setContent()
+                msg = 'I data:image/png;base64, %s||data:image/png;base64, %s||%s' % \
+                      (t_png, png, legend)
+                return msg
 
-        @staticmethod
-        def traces_total_time(traces, parallel_time=True):
-            if not traces:
-                return 0
-            if parallel_time:
-                #Todo: check not continuous execution
-                return max([_.end_date for _ in traces]) - min([_.start_date for _ in traces])
-            else:
-                return sum(_.total_exec_time for _ in traces)
+        def format_data(self, data):
+            import cv2
+            return [cv2.imencode('png', d)[0] for d in data]
 
+        def write_file(self, data, filename, path):
+            import cv2
+            for i, d in enumerate(data):
+                cv2.imwrite(join(path, filename+str(i)+'.png'), d)
 
-########################################################################################################################
-class DataSetSmartGenerator:
-    """
-    Handy interface for generator's computation
-    """
+    class LabelImage(Image):
+        def __init__(self, dtype, shape, mapping=None, default=None):
+            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape)
+            self.mapping = if_none(mapping, dict())
+            self.default = default
 
-    class Context:
-        def __init__(self, start_id, end_id, n, columns, dataset, determinist, ncore, parallelism):
-            self.start_n = n
-            self.start_id = start_id
-            self.end_id = end_id
-            self.columns = columns
-            self.dataset = dataset
-            self.determinist = determinist
-            self.ncore = ncore
-            self.parallelism = parallelism
+        def _preformat(self, data):
+            from ..j_utils.image import map_values
+            return map_values(data, self.mapping, default=self.default)
 
-            self._copy = {}
-            self._r = None
-            self.n = n
-            self.id = start_id
-
-        def __getstate__(self):
-            return self.start_n, self.start_id, self.end_id, self.columns, self.dataset, self.determinist, \
-                   self.ncore, self.parallelism, self.n, self.id
-
-        def __setstate__(self, state):
-            self.start_n, self.start_id, self.end_id, self.columns, self.dataset, self.determinist, \
-            self.ncore, self.parallelism, self.n, self.id = state
-            self._copy = {}
-            self._r = None
-
-        def generator(self, dataset, start=None, end=None, n=None, columns=None, parallel=False, ncore=None):
-            if start is None:
-                start = self.id
-            if end is None:
-                end = min(self.end_id, dataset.size)
-            if n is None:
-                n = self.n
-            if columns is None:
-                columns = self.columns
-            if ncore is None:
-                ncore = self.ncore
-
-            gen = dataset.generator(start=start, end=end, n=n, columns=columns,
-                                    determinist=self.determinist, intime=parallel, ncore=ncore)
-
-            return gen
-
-        def create_result(self, result_only=False, as_weakref=True):
-            n = min(self.n, self.dataset.size - self.id)
-            c = if_none(self._copy, {})
-            self._r = DataSetResult.create_empty(dataset=self.dataset, columns=self.columns,
-                                                 n=n, start_id=self.id, assign=c)
-            self._mem = self._r.mem_size
-            self._mem_shared = self._r.total_mem_size - self._mem
-            if as_weakref:
-                r = weakref.ref(self._r)
-            else:
-                r = self._r
-            if result_only:
-                return r
-            else:
-                return self.id, n, r
-
-        def is_last(self):
-            return self.id + self.n >= self.end_id
-
-        def ended(self):
-            return self.id >= self.end_id
-
-        def lite_copy(self):
-            r = copy(self)
-            r._r = None
-            return r
-
-        @property
-        def id_length(self):
-            return self.end_id-self.start_id
-
-    def __init__(self, dataset: AbstractDataSet, n, start_id, end_id, columns=None, determinist=True,
-                 ncore=None, intime=False):
-        if columns is None:
-            columns = dataset.columns_name()
-        else:
-            columns = dataset.interpret_columns(columns)
-
-        if ncore is None:
-            ncore=N_THREAD
-
-        if start_id is None:
-            start_id = 0
-        else:
-            start_id %= dataset.size
-
-        if end_id is None:
-            end_id = dataset.size
-        elif end_id != 0:
-            end_id %= dataset.size
-            if end_id == 0:
-                end_id = dataset.size
-
-        if not intime:
-            intime = False
-        elif isinstance(intime, bool):
-            intime = 'process'
-        elif intime not in ('process', 'thread'):
-            raise ValueError('Invalid intime argument: %s \n(should be either "process" or "thread")'
-                             % repr(intime))
-
-        self._context = DataSetSmartGenerator.Context(start_id=int(start_id), end_id=int(end_id), n=int(n),
-                                                      columns=columns, dataset=dataset,
-                                                      determinist=determinist, ncore=ncore, parallelism=intime)
-
-        self._generator_setup = False
-        self._generator = None
-
-        self._generator_conn = None
-        self._generator_process = None
-        self.__warn_limit_copy = False
-
-    def __del__(self):
-        self.clean()
-
-    def __next__(self):
-        return self.next()
-
-    def next(self, copy=None, seek=None, limit=None, r=None):
-        affiliated_result = r
-        r = None
-
-        if self.ended():
-            raise StopIteration
-
-        if not self._generator_setup or (seek is not None and seek!=self.current_id):
-            self.reset(start=seek)
-            self.setup()
-
-        if limit is None:
-            limit = self._context.start_n
-        self._context.n = min(self.end_id - self.current_id, limit)
-
-        if self._asynchronous_exec:
-            if (limit is not None) and not self.__warn_limit_copy:
-                log.warn("%s's generator is executed asynchronously, data sharing and size limit will be ignored."
-                         % self.dataset.dataset_name)
-
-            return self.poll(timeout=None, copy=copy, r=affiliated_result)
-
-        else:
-            # Setup context
-            self._context._copy = copy
-
-            # Compute next sample
-            r = self.next_core(self._generator, self._context)
-            self._context._copy = None
-
-            if affiliated_result:
-                affiliated_result.trace.affiliate_parent_trace(r.trace)
-
-            if self.ended():
-                self.clean()
-
-            return r
+        def __repr__(self):
+            return 'DSColumnFormat.LabelImage(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
     @staticmethod
-    def next_core(generator, context):
-        r = next(generator)
-        if isinstance(r, weakref.ref):
-            r = r()
-        r.trace.computation_ended()
-
-        # Clean context
-        context._r = None
-        context.id += r.size
-        return r
-
-    def poll(self, timeout=0, copy=None, r=None, ask_next=True):
-        """
-        Wait for data to be generated and returns it or returns None if timeout is reached.
-        :param timeout: Number of second to wait (must be a positive number). If None, wait indefinitely.
-        :param r: If specified, affiliate the generated result to r.
-        :return : The generated DataSetResult or None
-        """
-        affiliated_result = r
-        r = None
-        if self.ended():
-            raise StopIteration
-        self.setup()
-
-        if not self._asynchronous_exec:
-            return self.next(r=r)
-
-        if not self._generator_conn.poll(timeout=timeout):
-            return None         # No data available yet
-
-        r = self._generator_conn.recv()
-
-        if isinstance(r, tuple) and len(r)==2 and isinstance(r[0], Exception):
-            self._send_to_subprocess(False)
-            raise RuntimeError('An error occurred when executing  %s on a sub process:\n| %s'
-                               % (str(self.dataset), r[1].replace('\n', '\n| '))) from r[0]
-        elif r is None:
-            self._context.id = self.end_id
-            raise StopIteration
-
-        if ask_next:
-            self.ask()
-
-        self._context.n = min(self.end_id - self.current_id, self._context.start_n)
-
-        if copy is not None:
-            for c, d in copy.items():
-                np.copyto(d, r[c])
-
-        r.affiliate_dataset(self.dataset)
-        if affiliated_result:
-            affiliated_result.trace.affiliate_parent_trace(r.trace)
-
-        self.context.id += self.n
-        if self.ended():
-            self.clean()
-            if self.n > r.size:
-                r.truncate(self.n)
-
-        return r
-
-    def reset(self, start=None, end=None, columns=None, n=None, determinist=None):
-        if columns is None:
-            columns = self.columns
-
-        if determinist is None:
-            determinist = self._context.determinist
-
-        if n is None:
-            n = self.n
-        if start is None:
-            start = self.current_id
-        else:
-            start %= self.dataset.size
-        if end is None:
-            end = self.end_id
-        elif end != 0:
-            end %= self.dataset.size
-            if end == 0:
-                end = self.dataset.size
-        start = int(start); end = int(end); n = int(n)
-        self._context.start_id = start
-
-        if start == self.current_id and end == self.end_id and columns == self.columns and n == self.n \
-                and determinist == self._context.determinist:
-            return
-
-        if self._asynchronous_exec:
-            while self._generator_conn.poll(timeout=0):
-                self._generator_conn.recv()     # Discard previous samples
-            self._send_to_subprocess(dict(start=start, end=end, columns=columns, n=n, determinist=determinist))
-        else:
-            self.clean()
-
-        self._context.end_id = end
-        self._context.columns = columns
-        self._context.start_n = n
-        self._context.determinist = determinist
-        self._context.id = start
-        self._context.n = n
-
-    def ask(self, seek=None):
-        if seek is not None and seek!=self.current_id:
-            self.reset(start=seek)
-            self.setup()
-        elif self._asynchronous_exec:
-            self._send_to_subprocess(True)
-
-    def _send_to_subprocess(self, d, log_broken_pipe=True):
-        if self._generator_conn is None:
-            if log_broken_pipe:
-                log.warn("WARNING: %s generator's pipe is closed.")
-            return
-        try:
-            self._generator_conn.send(d)
-        except IOError as e:
-            self.context.id = self.end_id
-            self._generator_conn = None
-            if log_broken_pipe:
-                log.warn("WARNING: %s generator's pipe was closed unexpectedly.")
-
-    def __iter__(self):
-        while True:
-            yield self.next()
-
-    def setup(self):
-        if self._generator_setup:
-            return
-        if self._context.determinist:
-            self.dataset._setup_determinist()
-        self._generator_setup = True
-
-        if self.intime:
-            pipe = mp.Pipe()
-            self._generator_conn = pipe[0]
-
-            mpArg = dict(target=parallel_generator_exec,
-                         args=(self.context, pipe[1]),
-                         name='%s.generator' % self.dataset.dataset_name)
-
-            if self.intime == 'process':
-                process = mp.Process(**mpArg)
-            else:
-                process = threading.Thread(**mpArg)
-
-            process.start()
-
-            self._generator_process = process
-        else:
-            self._generator = self.dataset._generator(self._context)
-
-    def clean(self):
-        self._generator = None
-        self._context._r = None
-        if self._generator_process:
-            while self._generator_process.is_alive():
-                self._send_to_subprocess(False, log_broken_pipe=False)
-                time.sleep(1e-3)
-            del self._generator_process
-            self._generator_process = None
-        if self._generator_conn:
-                del self._generator_conn
-                self._generator_conn = None
-        self._generator_setup = False
-
-    def is_last(self):
-        return self.context.is_last()
-
-    def ended(self):
-        return self.context.ended()
-
-    @property
-    def columns(self):
-        return self._context.columns
-
-    @property
-    def dataset(self):
-        return self._context.dataset
-
-    @property
-    def n(self):
-        return self._context.n
-
-    @property
-    def current_id(self):
-        return self._context.id
-
-    @property
-    def start_id(self):
-        return self._context.start_id
-
-    @property
-    def end_id(self):
-        return self._context.end_id
-
-    @property
-    def intime(self):
-        return self._context.parallelism
-
-    def __len__(self):
-        return np.ceil((self.end_id-self.current_id)/self.n)
-
-    @property
-    def ncore(self):
-        return self._context.ncore
-
-    @property
-    def _asynchronous_exec(self):
-        # When a generator is executed in parallel, an exact copy of it is pickled and is executed synchronously in an
-        # other thread or process. This property will return True for the original generator and False for its copy.
-        return self._generator_process is not None
-
-    @property
-    def context(self):
-        return self._context
-
-
-def parallel_generator_exec(gen_context, conn):
-    SmartGen = DataSetSmartGenerator
-
-    def reset_gen(start, end, n, columns, determinist):
-        new_context = SmartGen.Context(start_id=start, end_id=end, n=n,
-                                       columns=columns, dataset=gen_context.dataset,
-                                       determinist=determinist,
-                                       ncore=gen_context.ncore, parallelism=gen_context.parallelism)
-        gen = new_context.dataset._generator(new_context)
-        return gen, new_context
-
-    # -- Setup generator --
-    gen = gen_context.dataset._generator(gen_context)
-
-    # -- Run generator --
-    try:
-        r = None
-        end = False
-        wait_response = False
-        while not end:
-            while "Messages":
-                # Checking for messages
-                if wait_response or conn.poll(0):
-                    rcv = conn.recv()
-                    if not rcv:
-                        end = True
-                        break
-                    elif isinstance(rcv, dict):
-                        del gen
-                        gen, gen_context = reset_gen(**rcv)
-                        wait_response = False
-                        r.clean()
-                        break
-                    elif wait_response and rcv is True:
-                        wait_response = False
-                        break
-                    continue
-
-                if r:   # Sending the result in the connection
-                    conn.send(r)
-                    r.clean()
-                    wait_response = True
+    def auto_format(dtype, shape, info=None):
+        if isinstance(info, DSColumnFormat.Base):
+            return info.copy(dtype, shape)
+        if shape == ():
+            if 'int' in repr(dtype):
+                if isinstance(info, dict):
+                    return DSColumnFormat.Label(dtype, shape, mapping=info)
                 else:
-                    break
+                    return DSColumnFormat.Number(dtype, shape)
+            elif 'float' in repr(dtype):
+                return DSColumnFormat.Number(dtype, shape)
+            elif dtype == 'str':
+                return DSColumnFormat.Text(dtype, shape)
+            elif dtype == 'O':
+                return DSColumnFormat.Text(dtype, shape)
+        elif 'int' in repr(dtype) or 'float' in repr(dtype) or dtype in ('bool',):
+            if isinstance(info, str) and info.lower() == 'image':
+                is_img = True
+            elif isinstance(info, str) and info.lower() == 'matrix':
+                is_img = False
+            else:
+                is_img = len(shape) in (2, 3) and np.min(shape[-2:]) >= 3
 
-            # Compute next sample
-            if not end:
-                r = SmartGen.next_core(gen, gen_context)
-
-    except StopIteration:
-        pass
-    except Exception as e:
-        conn.send((e, traceback.format_exc()))
-
-    # Sending end notification
-    conn.send(None)
-    conn.close()
-
+            if isinstance(info, dict):
+                if is_img:
+                    return DSColumnFormat.LabelImage(dtype, shape, mapping=info)
+                else:
+                    return DSColumnFormat.Label(dtype, shape, mapping=info)
+            else:
+                if is_img:
+                    return DSColumnFormat.Image(dtype, shape)
+                else:
+                    return DSColumnFormat.LabelMatrix(dtype, shape)
+        return DSColumnFormat.Base(dtype, shape)

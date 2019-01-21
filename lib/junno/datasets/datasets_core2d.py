@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 
-from .dataset import AbstractDataSet, DSColumn, DataSetResult
+from .dataset import AbstractDataSet, DSColumn
 from ..j_utils.function import identity_function, not_optional_args, match_params
 from ..j_utils.parallelism import parallel_exec
 from ..j_utils.j_log import log
@@ -238,8 +238,7 @@ class DataSetPatches(AbstractDataSet):
                     self._columns.remove(c)
 
             column_shape = parent_c.shape[:-2] + patch_shape
-            c = DSColumn(name=column, shape=column_shape, dtype=parent_c.dtype)
-            self._columns.append(c)
+            self.add_column(name=column, shape=column_shape, dtype=parent_c.dtype, format='image')
 
         # Initialize patch function
         if post_process is None:
@@ -491,7 +490,7 @@ class DataSetUnPatch(AbstractDataSet):
                 if columns == '*':
                     columns = dataset.columns_name()
                 else:
-                    columns=[columns]
+                    columns = [columns]
 
         # Initialize columns
         self._columns = dataset.copy_columns(self)
@@ -540,8 +539,8 @@ class DataSetUnPatch(AbstractDataSet):
                         del self._columns[self.column_index(c)]
                     parent_column = self.patch_dataset.parent_dataset.column_by_name(own_column)
                     self._unpatched_columns[own_column] = list(child_columns.keys())
-                    self._columns.append(DSColumn(name=own_column, dtype=parent_column.dtype, dataset=self,
-                                                  shape=patch_layer_shape+parent_column.shape[-2:]))
+                    self.add_column(name=own_column, dtype=parent_column.dtype, format='image',
+                                    shape=patch_layer_shape+parent_column.shape[-2:])
         else:
             # Dataset will assemble patches into separated columns
             if columns is None:
