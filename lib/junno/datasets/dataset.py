@@ -73,8 +73,9 @@ from functools import partial
 import multiprocessing as mp
 import numpy as np
 import os
-from os.path import dirname, exists, join, basename
+from os.path import dirname, exists, join, basename, abspath
 from os import makedirs
+import weakref
 
 from ..j_utils.j_log import log, Process
 
@@ -147,9 +148,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             item = (item, None)
         if isinstance(item, tuple):
             if isinstance(item[0], int):
-                return self.read_one(row=item[0], columns=item[1], extract=False)
+                return self.read_one(row=item[0], columns=item[1], extract=True)
             elif isinstance(item[0], slice):
-                return self.read(item[0].start, item[0].stop, columns=item[1], extract=False)
+                return self.read(item[0].start, item[0].stop, columns=item[1], extract=True)
         raise NotImplementedError
 
     @property
@@ -178,7 +179,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return fullname
 
     #   ---   Data direct access   ---
-    def read(self, start: int = None, end: int = None, columns=None, extract=True, n=None):
+    def read(self, start: int = None, end: int = None, columns=None, extract=False, n=None):
         if start is None:
             start = 0
         if end is None:
@@ -219,7 +220,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return r, gen
 
-    def read_one(self, row=0, columns=None, extract=True):
+    def read_one(self, row=0, columns=None, extract=False):
         """
         Read a specific element of a dataset. If extract is True, the result will depend on the form of columns.
         Thus, if columns is None, read_one(i) will return a dictionnary a the i-th value of all the dataset's columns,
@@ -239,6 +240,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             return [r[_][0] for _ in self.interpret_columns(columns)]
         else:
             return r[columns][0]
+
+    def at(self, row, columns=None):
+        return self.read_one(row=row, columns=columns, extract=False)
 
     #   ---   Generators   ---
     def generator(self, n=1, start=None, end=None, columns=None, determinist=True, intime=False, ncore=1):
@@ -427,7 +431,7 @@ class AbstractDataSet(metaclass=ABCMeta):
     @property
     def sample(self):
         if self._sample is None:
-            self._sample = self.read_one()
+            self._sample = self.read_one(extract=True)
         return self._sample
 
     def clear_sample(self):
@@ -765,8 +769,10 @@ class AbstractDataSet(metaclass=ABCMeta):
         dataset._parents = [self]
         return dataset
 
-    def cache(self, n=1, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None):
+    def cache(self, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None,
+              overwrite='auto'):
         import tables
+        from .dataset_generator import DataSetResult
         from collections import OrderedDict
 
         start, end = interval(self.size, start, end)
@@ -779,39 +785,99 @@ class AbstractDataSet(metaclass=ABCMeta):
         else:
             label = name
 
+        hdf_t = None
         if ondisk:
-            cache_path = ondisk.split(':')
-            if len(cache_path) == 1:
-                path = cache_path[0]
-                table_name = 'dataset'
-            elif len(cache_path) == 2:
-                path, table_name = cache_path
+            if isinstance(ondisk, bool):
+                import tempfile
+                ondisk = join(tempfile.gettempdir(), 'dataset_cache.hd5') + ':dataset'
+            if isinstance(ondisk, str):
+                ondisk_split = ondisk.split(':')
+                if len(ondisk_split) == 1:
+                    path = ondisk_split[0]
+                    table_name = 'dataset'
+                elif len(ondisk_split) == 2:
+                    path, table_name = ondisk_split
+                else:
+                    raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
+                path = abspath(path)
+                os.makedirs(dirname(path), exist_ok=True)
+
+                hdf_f = tables.open_file(path, mode='a')
+                if not table_name.startswith('/'):
+                    table_name = '/' + table_name
+                table_path, table_name = table_name.rsplit('/', maxsplit=1)
+                if not table_path:
+                    table_path = '/'
             else:
                 raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
 
-            hd5f = tables.File(path, mode='a')
-            table_path, table_name = table_name.rsplit('/', maxsplit=1)
-            if not table_path.startswith('/'):
-                table_path = '/' + table_path
+            try:
+                hdf_t = hdf_f.get_node(table_path, table_name, 'Table')
+
+                erase_table = False
+                if overwrite and isinstance(overwrite, bool):
+                    erase_table = True
+                elif overwrite == 'auto':
+                    if hdf_t.nrows != self.size:
+                        erase_table = True
+                    else:
+                        for col_name, hdf_col in hdf_t.description._v_colobjects.items():
+                            col = self.column_by_name(col_name, raise_on_unknown=False)
+                            if col is None or hdf_col.dtype.shape != col.shape or hdf_col.dtype.base != col.dtype:
+                                erase_table = True
+                                break
+                if erase_table:
+                    hdf_f.remove_node(table_path, table_name)
+                    hdf_t = None
+            except tables.NoSuchNodeError:
+                pass
         else:
-            hd5f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
+            hdf_f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
             table_path = '/'
             table_name = 'dataset'
 
-        table_desc = OrderedDict()
-        for col in self._columns:
-            table_desc[col.name] = tables.Col.from_sctype(col.dtype, col.shape)
+        if hdf_t is None:
+            desc = OrderedDict()
+            for i, c in enumerate(['pk']+columns):
+                col = self.column_by_name(c)
+                if col.shape == ():
+                    desc[col.name] = tables.Col.from_dtype(col.dtype, pos=i)
+                else:
+                    desc[col.name] = tables.Col.from_sctype(col.dtype.type, col.shape, pos=i)
+            hdf_t = hdf_f.create_table(table_path, table_name, description=desc, expectedrows=self.size,
+                                     createparents=True, track_times=False)
+            chunck_size = min(end - start, hdf_t.chunkshape[0])
 
-        hd5t = hd5f.create_table(table_path, table_name, description=table_desc, expectedrows=self.size)
+            if ncore > 1:
+                with Process('Allocating %s' % label, end-start, verbose=False) as p:
+                    empty = DataSetResult.create_empty(dataset=self, n=1).to_row_list()[0]
+                    print([_.shape for _ in empty])
+                    for i in range(0, end-start):
+                        hdf_t.append([empty]*min(chunck_size, end-i))
+                        p.step = i
 
-        with Process('Allocating %s' % label, end - start, verbose=False) as p:
-            hd5t.append()
+                with Process('Caching %s' % label, end-start, verbose=False) as p:
+                    from .dataset_generator import DataSetResult
+                    def write_back(r: DataSetResult):
+                        hdf_t.modify_rows(start=r.start_id-start, stop=r.end_id-start, rows=r.to_row_list())
+                        p.update(r.size)
+                    self.export(write_back, n=chunck_size, start=start, end=end, columns=columns, ncore=ncore)
+            else:
+                with Process('Caching %s' % label, end-start, verbose=False) as p:
+                    for r in self.generator(n=chunck_size, start=start, end=end, determinist=True, columns=columns):
+                        hdf_t.append(r.to_row_list())
+                        p.update(r.size)
 
-        with Process('Caching %s' % label, end - start, verbose=False) as p:
-            def write_back(r):
-                hd5t[r.start_id-start:r.end_id-start] = r
-                p.update(r.size)
-            self.export(write_back, n=n, start=start, end=end, columns=columns, ncore=ncore)
+        if ondisk:
+            hdf_f.close()
+            hdf_f = tables.open_file(path, 'r')
+            hdf_t = hdf_f.get_node(table_path, table_name, 'Table')
+
+        from .datasets_core import PyTableDataSet
+        hdfDataset = PyTableDataSet(hdf_t, name=name)
+        for c in columns:
+            hdfDataset.col[c].format = self.col[c].format
+        return hdfDataset
 
     #   ---   Operations   ---
     @classmethod
@@ -902,10 +968,10 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
 
-    def apply(self, function, columns=None, same_size_type=False, columns_type_shape=None, name='apply'):
+    def apply(self, columns, function, cols_format=None, n_factor=1, batchwise=False, name='apply'):
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name,
-                            columns_type_shape=columns_type_shape, same_size_type=same_size_type)
+                            cols_format=cols_format, batchwise=batchwise, n_factor=n_factor)
 
     def reshape(self, columns, shape, label_columns=None, keep_original=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
@@ -1178,11 +1244,12 @@ class DSColumn:
     def __init__(self, name, shape, dtype, dataset=None, format=None):
         self._name = name
         self._shape = shape
-        self._dtype = dtype
-        if dtype == str:
-            self._dtype = 'O'
+        # if dtype == str:
+        #     self._dtype = 'O'
+        self._dtype = np.dtype(dtype)
 
         self._format = None
+        self._dataset = None if dataset is None else weakref.ref(dataset)
         self.format = format
 
     def __getstate__(self):
@@ -1245,7 +1312,10 @@ class DSColumn:
 
     @format.setter
     def format(self, f):
-        self._format = DSColumnFormat.auto_format(self._dtype, self._shape, f)
+        if self._dtype is None or self._shape is None:
+            self._format = f
+        else:
+            self._format = DSColumnFormat.auto_format(self._dtype, self._shape, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -1440,6 +1510,8 @@ class DSColumnFormat:
         def _preformat(self, data):
             if data.ndim > 3:
                 return data.reshape((self.channels_count,)+data.shape[-2:])
+            if data.ndim == 2:
+                return data.reshape((1,)+data.shape)
             return data
 
         def format_html(self, data, raw_data, fullscreen=None):

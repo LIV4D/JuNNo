@@ -6,7 +6,7 @@ from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
 from ..j_utils.math import interval
-from ..j_utils.collections import if_else
+from ..j_utils.collections import if_else, if_none
 
 
 ########################################################################################################################
@@ -46,25 +46,86 @@ class NumPyDataSet(AbstractDataSet):
 
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
-    def __init__(self, pytable: tables.Table, where=None, name='PyTableDataset'):
-        super(PyTableDataSet, self).__init__(name=name, pk_type=np.int32)
-        self.pytable = pytable
-
-        if self.pytable.description._v_is_nested:
+    def __init__(self, pytable: tables.Table, where=None, sortby=None, name='PyTableDataset'):
+        if pytable.description._v_is_nested:
             raise NotImplementedError('PyTable with nested columns are not supported.')
 
+        col_descr = {}
+        pk_type = None
         for col_name, col in pytable.description._v_colobjects.items():
-            self.add_column(col_name, col.shape, col.dtype)
+            if col_name=='pk':
+                pk_type = col.dtype.base
+            else:
+                col_descr[col._v_pos] = col_name, col.dtype.shape, col.dtype.base
 
+        super(PyTableDataSet, self).__init__(name=name, pk_type=if_none(pk_type, np.uint32))
+        self.pytable = pytable
+
+        for i in sorted(col_descr.keys()):
+            col_name, col_shape, col_dtype = col_descr[i]
+            self.add_column(col_name, col_shape, col_dtype)
+
+        self._sorted_rows = None
+        self._filtered_rows = None
+        self._rows = None
+
+        self.sortby = sortby
+        self._solve_sortby()
         self.where = where
         self._solve_where()
 
     def _solve_where(self):
         if self.where is None:
             self._filtered_rows = None
+            if self._sorted_rows:
+                self._rows = self._sorted_rows
+            else:
+                self._rows = None
         else:
-            self._filtered_rows = np.array([_.nrow for _ in
-                                            self.pytable.get_where_list(self.where, condvars=None, sort=True)])
+            self._filtered_rows = self.pytable.get_where_list(self.where, condvars=None)
+            if self._sorted_rows:
+                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
+                rows[self._filtered_rows] = 1
+                self._rows = self._sorted_rows[rows[self._sorted_rows]]
+            else:
+                self._rows = self._filtered_rows
+
+    def _solve_sortby(self):
+        if self.sortby is None:
+            self._sorted_rows = None
+            if self._filtered_rows:
+                self._rows = self._filtered_rows
+            else:
+                self._rows = None
+        else:
+            reversed_sort = self.sortby.startswith('!')
+            sortby = self.sortby[1:] if reversed_sort else self.sortby
+            if not getattr(self.pytable.cols, sortby).is_indexed:
+                # Create a full index
+                hdf_f = None
+                if self.pytable._v_file.mode == 'r':
+                    filename = self.pytable._v_file.filename
+                    t_pathname = self.pytable._v_parent._v_pathname
+                    t_name = self.pytable._v_name
+                    self.pytable._v_file.close()
+                    hdf_f = tables.open_file(filename, mode='a')
+                    self.pytable = hdf_f.get_node(t_pathname, t_name, 'Table')
+                getattr(self.pytable.cols, sortby).create_csindex()
+                if hdf_f:
+                    hdf_f.close()
+                    del hdf_f
+                    hdf_f = tables.open_file(filename, mode='r')
+                    self.pytable = hdf_f.get_node(t_pathname, t_name, 'Table')
+
+            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False)
+            if reversed_sort:
+                self._sorted_rows = self._sorted_rows[::-1]
+            if self._filtered_rows:
+                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
+                rows[self._filtered_rows] = 1
+                self._rows = self._sorted_rows[rows[self._sorted_rows]]
+            else:
+                self._rows = self._sorted_rows
 
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
@@ -109,15 +170,15 @@ class PyTableDataSet(AbstractDataSet):
 
     @property
     def size(self):
-        return len(self._filtered_rows) if self.where else len(self.pytable)
+        return len(self._rows) if self._rows is not None else len(self.pytable)
 
     def _generator(self, gen_context):
         columns = gen_context.columns
         start = gen_context.start_id
         stop = gen_context.end_id
 
-        if self.where:
-            hd5_gen = self.pytable.itersequence(self._filtered_rows[start:stop])
+        if self._rows is not None:
+            hd5_gen = self.pytable.itersequence(self._rows[start:stop])
         else:
             hd5_gen = self.pytable.iterrows(start, stop)
 
@@ -134,7 +195,23 @@ class PyTableDataSet(AbstractDataSet):
             yield weakref
 
     def select(self, where):
-        d = PyTableDataSet(self.pytable, where=where, name=self.dataset_name)
+        d = PyTableDataSet(self.pytable, name=self.dataset_name)
+        d.sortby = self.sortby
+        d._sorted_rows = self._sorted_rows
+        d.where = where
+        d._solve_where()
+        for c_name, c in self.columns.items():
+            d.col[c_name].format = c.format
+        return d
+
+    def sort(self, sortby, reverse=False):
+        if reverse:
+            sortby = '!'+sortby
+        d = PyTableDataSet(self.pytable, name=self.dataset_name)
+        d.where = self.where
+        d._filtered_rows = self._filtered_rows
+        d.sortby = sortby
+        d._solve_sortby()
         for c_name, c in self.columns.items():
             d.col[c_name].format = c.format
         return d
@@ -875,264 +952,326 @@ class DataSetApply(AbstractDataSet):
     """
     Apply a function to some columns of a dataset, all other columns are copied
     """
-    def __init__(self, dataset, function, columns=None, same_size_type=False, columns_type_shape=None, name='apply'):
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
+                 batchwise=True, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
         :param function: the function to apply to the dataset. The function can be apply element-wise or batch-wise.
-                         Parameters of the function can be:
-                            - x (for element-wise processing)
-                            - batch (for batch-wise processing)
-                            - n: batch size
-                            - column: the column name from which the x or batch were read
-                            - **columnName**: Column element or batch
-                            - **columnName_shape**: Column shape
+                         Parameters should be named after **dataset** columns or with generic names if the function
+                         should be applied several times to the dataset (see **columns** description).
         :param columns: Describe to which columns the function should be applied and which column should be created.
                         Columns can be either:
-                            - A column name: The function will be applied to the specified column
-                            - A list of column names: The function will be applied to each column individually
-                            - A dictionary of new column: The keys of the dictionary are the name of the created columns
-                                   (if a tuple is specified as a key, function should return multiple values)
-                                   The values are the column sources (if multiples columns are passed, x, batch and
-                                   columns are list)
-        :param same_size_type: if False, the apply_function will be tried on a sample of the dataset to infer the shape of
-                          the columns modified by the apply_function.
+                            - A column name: The function will be applied to the specified column or will create a
+                                column if no column existed with that name. In the latter case, the function parameters
+                                must correspond to columns of **dataset**.
+                            - A list of column names: The function will be applied to each column individually.
+                            - A tuple of column names: Should be used when the function return several values.
+                                The outputs of the function will be stored into the specified columns. Any columns not
+                                present in the dataset will be created. The function parameters must correspond to
+                                correspond to columns of **dataset**.
+
+                            - A dictionary describing the mapping: The keys of the dictionary are the name of the
+                                    new columns (any existing columns will be replaced, the other will be copied).
+                                    Should the function return several values, the keys must be tuples of column names.
+                                    The values specify the column on which the function is applied (which columns should
+                                    be passed as a parameter of the function). It must be a **dataset** column name or a
+                                    tuple of those or None. If the number of columns specified is lesser than the number
+                                    of not-optional arguments of the function, the left-over arguments must be named as
+                                    **dataset** columns.
+
+        :param cols_format: A dictionary mapping columns names to a tuple specifying (dtype, shape [, format]). For
+                                every column not described here, its type and shape will be read after applying the
+                                function to the first row of the dataset. If a column name is given instead of a tuple,
+                                the type, shape and format will be copied from the **dataset** column. If None is given,
+                                a similar behaviour will be attempted based on the column name.
+                            Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
+                            format will be copied from **dataset**.
+
+        :param n_factor: The number of rows generated for each row given to the function. If not specified,
+                            the value will be read by passing the **dataset** first row to the function.
+
+        :param batchwise: Should be set to True if the function support batch execution (better performance are
+                            expected).
         """
-        super(DataSetApply, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
-        f_params = not_optional_args(function)
-        if ('x' in f_params) == ('batch' in f_params):
-            raise ValueError('Function to be applied must have either x or batch as parameters.')
+        super(DataSetApply, self).__init__(name, dataset, pk_type=dataset.pk.dtype if n_factor==1 else str)
+        self.f_params = tuple(not_optional_args(function))
 
         # ---  HANDLE COLUMNS  ---
         parent_columns_name = dataset.columns_name()
-        parent_shared_columns = dataset.copy_columns(self)
+        parent_copied_columns = dataset.copy_columns(self)
         own_columns = []
-        self._columns_parent = {}
-        self._apply_col_dict = {}
-        self._apply_columns = []
-        n_in = None
-        n_out = None
+        self._single_col_mapping = {}
+        self._columns_mapping = {}
+
         if columns is None:
             columns = self.columns_name()
-        if isinstance(columns, list):
-            columns = {_: _ for _ in columns}
         elif isinstance(columns, str):
-            columns = {columns: columns}
+            if columns in parent_columns_name:
+                columns = {columns: columns}
+            else:
+                columns = (columns,)
+        if isinstance(columns, list):
+            columns = {_: _ if _ in parent_columns_name else None for _ in columns}
+        elif isinstance(columns, tuple):
+            columns = {columns: ()}
+        if not isinstance(columns, dict):
+            raise ValueError('Columns should be of the following type str, tuple, list, dict.'
+                             '(type provided: %s)' % type(columns).__name__)
+
         for own_c, parent_c in columns.items():
             if isinstance(own_c, str):
                 own_c = (own_c,)
             if parent_c is None or not parent_c:
                 parent_c = []
             elif isinstance(parent_c, str):
-                parent_c = (parent_c,)
-            if len(parent_c) != len(own_c):
-                same_size_type = False
+                parent_c = [parent_c]
+            elif isinstance(parent_c, tuple):
+                parent_c = list(parent_c)
+            else:
+                raise ValueError('Invalid columns description values: %s.' % parent_c)
 
-            # Check parent columns
+            # Check explicit parent columns
+            if len(parent_c) > len(self.f_params):
+                raise ValueError('Too many parent columns: function expect %i parameters, %i was given.'
+                                 % (len(self.f_params), len(parent_c)))
             for c in parent_c:
                 if c not in parent_columns_name:
                     raise ValueError('%s is not a columns of %s!' % (c, dataset.dataset_name))
-            if n_in is None:
-                n_in = len(parent_c)
-            elif n_in != len(parent_c):
-                raise ValueError('Columns mapping should have the same number of parent columns (n_in: %i)!' % n_in)
-            # Removing parent columns from
-            parent_shared_columns = [_ for _ in parent_shared_columns if _.name not in parent_c]
+            # Removing explicit parent columns from
+            if remove_parent_columns:
+                parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in parent_c]
+
+            # Solving implicit parent columns
+            for p in self.f_params[len(parent_c):]:
+                if p not in parent_columns_name:
+                    raise ValueError('Could not find any correspondence to the not optional parameter: %s.' % (p,))
+                parent_c.append(p)
 
             # Check own columns
-            if n_out is None:
-                n_out = len(own_c)
-            elif n_out != len(own_c):
-                raise ValueError('Columns mapping should have the same number of new columns (n_out: %i)!' % n_out)
-
             for c_id, c in enumerate(own_c):
-                for _ in own_columns:
-                    if _.name == c:
-                        raise ValueError('%s is already a column of %s!' % (c, self.dataset_name))
-                # Try to infer column shape and type
-                c_shape = None
-                c_dtype = None
-                c_format = DSColumnFormat.Base(None, None)
-                if same_size_type:
-                    _ = dataset.column_by_name(parent_c[c_id])
-                    c_shape = _.shape
-                    c_dtype = _.dtype
-                    c_format = _.format
+                if c in self._single_col_mapping:
+                    raise ValueError('%s is already a column of %s!' % (c, self.dataset_name))
 
                 # Apply column
-                own_columns.append(DSColumn(c, c_shape, c_dtype, self, c_format))
-                self._columns_parent[c] = parent_c
-            self._apply_col_dict[own_c] = parent_c
-            self._apply_columns += own_c
+                own_columns.append(DSColumn(c, None, None, self, None))
+                self._single_col_mapping[c] = parent_c
+            self._columns_mapping[own_c] = parent_c
 
-        self._columns = parent_shared_columns + own_columns
-        for c in parent_shared_columns:
-            self._columns_parent[c.name] = (c.name,)
+        self._columns = own_columns + parent_copied_columns
 
         # ---  HANDLE FUNCTION  ---
         self._f = function
-        self._elemwise = 'x' in f_params
-        self._f_columns = [_ for _ in dataset.columns_name() if _ in f_params]
-        self._f_kwargs = {c.name+'_shape': c.shape for c in self._columns}
-        self._n = 1
+        self._batchwise = batchwise
+        self._n_factor = n_factor
 
-        # ---  INFER COLUMN SHAPE AND TYPE  ---
-        if same_size_type:
-            columns_type_shape = {c_own: (dataset.column_by_name(c_par).dtype, dataset.column_by_name(c_par).shape)
-                                  for c_own, c_par in columns.items()}
-        if columns_type_shape is not None and len(columns_type_shape) == len(columns):
-            for c_own in self._apply_col_dict.keys():
-                for c in c_own:
-                    col = self.column_by_name(c)
-                    col._dtype = columns_type_shape[c][0]
-                    col._shape = columns_type_shape[c][1]
-                    col.format = None
-        else:
-            sample = dataset.read_one(0, columns=self.f_columns([_.name for _ in own_columns]), extract=False)
-            for c_own, c_parent in self._apply_col_dict.items():
-                if len(c_parent) == 1:
-                    c_parent = c_parent[0]
-                kwargs = self._f_kwargs.copy()
-                if self._elemwise:
-                    kwargs.update({_: sample[0, _] for _ in self._f_columns})
-                    c_samples = match_params(self._f, x=sample[0, c_parent], column=c_parent, n=0, **kwargs)
-                else:
-                    kwargs.update({_: sample[_] for _ in self._f_columns})
-                    c_samples = match_params(self._f, batch=sample[c_parent], column=c_parent, n=1, **kwargs)
-                if not isinstance(c_samples, tuple):
-                    c_samples = [c_samples]
-                else:
-                    c_samples = list(c_samples)
-                if isinstance(c_samples[0], list):
-                    if not self._elemwise:
-                        raise ValueError('Multiple rows return is not handled with batch-wise function.')
-                    self._n = len(c_samples[0])
-                    for c_sample_id, c_sample in enumerate(c_samples):
-                        if len(c_sample) != self._n:
-                            raise ValueError('All returned element should have the same length (n: %i)' % self._n)
-                        c_samples[c_sample_id] = c_sample[0]
-                elif not self._elemwise:
-                    c_samples = [_[0] for _ in c_samples]
+        # ---  INFER COLUMN SHAPE, TYPE and FORMAT ---
+        if cols_format == 'same':
+            cols_format = {c_own: None for c_own in self._single_col_mapping}
+        elif cols_format is None:
+            cols_format = {}
+        if not isinstance(cols_format, dict):
+            raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
+                             % type(cols_format).__name__)
 
-                for c_name, c_sample in zip(c_own, c_samples):
-                    col = self.column_by_name(c_name)
+        # Try to infer
+        unknown_columns_format = []
+        for c in self._single_col_mapping:
+            if c in cols_format:
+                # Check if format was given explicitly
+                col_format = cols_format[c]
+                if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name):
+                    # Try to infer format from homonym
+                    parent_column = dataset.column_by_name(c, False)
+                    if parent_column is not None:
+                        cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                    # Infer format from first parent
+                    parent_column = dataset.column_by_name(self._single_col_mapping[c][0])
+                    cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif isinstance(col_format, str) and col_format in dataset.columns_name:
+                    parent_column = dataset.column_by_name(col_format)
+                    cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif not isinstance(col_format, tuple) or len(col_format) not in (1, 2, 3):
+                    unknown_columns_format.append(c)
+            else:
+                unknown_columns_format.append(c)
+
+        # Read format from function
+        if self._n_factor is None and len(unknown_columns_format) == 0:
+            unknown_columns_format.append(list(self._single_col_mapping.keys())[0])
+
+        if unknown_columns_format:
+            sample = dataset.read_one(0, columns=self.col_parents(unknown_columns_format), extract=False)
+            while unknown_columns_format:
+                unkown_col = unknown_columns_format[0]
+
+                # Find arguments and return definition
+                c_parent = self._single_col_mapping[unkown_col]
+                c_own = self.col_sibling(unkown_col)
+
+                # Call the function
+                c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own)
+
+                # Read format
+                for c_name, c_sample in c_samples.items():
+                    if self._n_factor is None:
+                        self._n_factor = c_sample.shape[0]
+                        if self._n_factor == 1:
+                            self.pk._dtype = dataset.pk.dtype
+                    elif self._n_factor != c_sample.shape[0]:
+                        raise ValueError('The function returned %i rows for columns %s, but %i was expected.'
+                                         % (c_sample.shape[0], c_name, self._n_factor))
+
+                    c_sample = c_sample[0]
                     if isinstance(c_sample, np.ndarray):
-                        col._shape = c_sample.shape
-                        col._dtype = c_sample.dtype
-                        col.format = None
+                        cols_format[c_name] = (c_sample.dtype, c_sample.shape)
                     else:
-                        col._shape = ()
-                        col._dtype = type(c_sample) if type(c_sample) != str else 'O'
-                        col.format = None
-        self._f_kwargs = {c.name + '_shape': c.shape for c in self._columns}
+                        cols_format[c_name] = (np.dtype(type(c_sample)))
+                    if c_name in unknown_columns_format:
+                        unknown_columns_format.remove(c_name)
+
+        # Apply the format
+        for c_name, c_format in cols_format.items():
+            col = self.column_by_name(c_name)
+            col._dtype = c_format[0]
+            col._shape = c_format[1] if len(c_format) > 1 else ()
+            col.format = c_format[2] if len(c_format) > 2 else None
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
         n = gen_context.n
         columns = gen_context.columns
 
-        if self._elemwise:
-            parent_gen = gen_context.generator(self._parent, n=1, columns=self.f_columns(columns),
-                                               start=gen_context.start_id//self._n, end=gen_context.end_id//self._n)
-        else:
-            parent_gen = gen_context.generator(self._parent, columns=self.f_columns(columns),
-                                               start=gen_context.start_id//self._n, end=gen_context.end_id//self._n)
+        copy_columns = [c for c in columns if c not in self._single_col_mapping]
+        columns_mapping = {}
+        for c_own, c_parent in self._columns_mapping.items():
+            for c in c_own:
+                if c in columns:
+                    columns_mapping[c_own] = c_parent
+                    break
 
-        kwargs = self._f_kwargs.copy()
+        parent_n = int(np.ceil(n / self._n_factor))
+        parent_gen = gen_context.generator(self._parent, columns=self.col_parents(columns), n=parent_n,
+                                           start=gen_context.start_id//self._n_factor, end=gen_context.end_id // self._n_factor)
+
 
         result = None
         f_results = {}
+        i_f = i_global % self._n_factor
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
+            for i in range(n):
+                # Retrieve data, store f results in f_results
+                if result is None:
+                    parent_n = int(np.ceil((n-i) / self._n_factor))
+                    if self._n_factor==1:
+                        result = parent_gen.next(copy={c: r[i:i+parent_n, c] for c in copy_columns}, limit=parent_n, r=r)
+                    else:
+                        result = parent_gen.next(limit=parent_n, r=r)
+                    f_results = {}
+                    for c_own, c_parent in columns_mapping.items():
+                        f_results.update(self.compute_f(args=result[c_parent], rkeys=c_own))
 
-            if self._elemwise:
-                # Element wise
-                for i in range(n):
+                for c in r.columns_name():  # Store f results
+                    if c in self._single_col_mapping:
+                        r[i, c] = f_results[c][i_f]
 
-                    # Retreive data, store f results in f_results
-                    if result is None:
-                        result = parent_gen.next(copy={c: r[i:i+1, c] for c in r.columns_name() if c not in self._apply_columns},
-                                                 limit=1, r=r)
-                        kwargs.update({_: result[0, _] for _ in self._f_columns})
-                        f_results = {}
-                        for c in r.columns_name():
-                            if c in self._apply_columns and c not in f_results:
-                                for c_own, c_parent in self._apply_col_dict.items():
-                                    if c not in c_own:
-                                        continue
-                                    if len(c_parent) == 1:
-                                        c_parent = c_parent[0]
-                                    f_result = match_params(self._f, x=result[0, c_parent], columns=c_parent, n=0,
-                                                            **kwargs)
-                                    if not isinstance(f_result, tuple):
-                                        f_result = [f_result]
-                                    if self._n == 1:
-                                        f_result = [[_] for _ in f_result]
-                                    for c_name, c_data in zip(c_own, f_result):
-                                        if len(c_data) != self._n:
-                                            raise ValueError('Data returned by apply function has length %i '
-                                                             'but should be %i' % (len(c_data), self._n))
-                                        f_results[c_name] = c_data
-                                    f_result = None
-                                    c_data = None
-                        for _ in self._f_columns:
-                            del kwargs[_]
+                if self._n_factor != 1:     # Manual copy
+                    for c in copy_columns:
+                        r[i, c] = result[i_f//self._n_factor, c]
 
-                    for c in r.columns_name():
-                        if c in self._apply_columns:
-                            r[i, c] = f_results[c][(i + i_global) % self._n]
-                    if 'pk' not in self._apply_columns:
-                        if self._n > 1:
-                            r[i, 'pk'] = result[0, 'pk']+str((i+i_global) % self._n)
-                        else:
-                            r[i, 'pk'] = result[0, 'pk']
-                    # Clean
-                    if (i+n+i_global) % self._n == 0:
-                        f_keys = list(f_results.keys())
-                        for f in f_keys:
-                            del f_results[f]
-                        del result
-                        result = None
-            else:
-                # Batch wise (n=1)
-                result = parent_gen.next(copy={c: r[c] for c in r.columns_name() if c not in self._apply_columns},
-                                         limit=n, r=r)
-                kwargs.update({_: result[_] for _ in self._f_columns})
-                f_results = {}
-                for c in r.columns_name():
-                    if c in self._apply_columns:
-                        if c not in f_results:
-                            for c_own, c_parent in self._apply_col_dict.items():
-                                if c not in c_own:
-                                    continue
-                                if len(c_parent) == 1:
-                                    c_parent = c_parent[0]
-                                f_result = match_params(self._f, batch=result[c_parent], column=c_parent, n=result.size,
-                                                        **kwargs)
-                                if len(c_own) == 1 and not isinstance(f_result, list) and not isinstance(f_result, tuple):
-                                    f_results[list(c_own)[0]] = f_result
-                                else:
-                                    for c_name, c_data in zip(c_own, f_result):
-                                        f_results[c_name] = c_data
-                                f_result = None
-                                c_data = None
-                        r[c] = f_results[c]
-                r['pk'] = result['pk']
+                if 'pk' not in self._single_col_mapping:    # Handle primary key
+                    if self._n_factor > 1:
+                        r[i, 'pk'] = str(result[0, 'pk'])+str((i+i_global) % self._n_factor)
+                    else:
+                        r[i, 'pk'] = result[0, 'pk']
 
                 # Clean
-                f_results = {}
-                del result
-                result = None
+                i_f += 1
+                if i_f == parent_n*self._n_factor:
+                    for f in list(f_results.keys()):
+                        del f_results[f]
+                    del result
+                    result = None
+                    i_f = 0
             r = None
             yield weakref
 
     @property
     def size(self):
-        return self._parent.size * self._n
+        return self._parent.size * self._n_factor
 
-    def f_columns(self, columns):
-        r = set(self._f_columns)
+    def col_parents(self, columns):
+        r = set()
         for c in columns:
-            if c != 'pk':
-                r.update(self._columns_parent[c])
+            if c in self._single_col_mapping:
+                r.update(self._single_col_mapping[c])
+            else:
+                r.add(c)
         return list(r)
+
+    def col_sibling(self, column):
+        for c_own in self._columns_mapping:
+            if column in c_own:
+                return c_own
+        return None
+
+    def compute_f(self, args, rkeys):
+        args_n = args[0].shape[0]
+
+        if not self._batchwise:
+            r = {_: [] for _ in rkeys}
+            for i in range(args_n):
+                kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
+                f_result = self._f(**kwargs)
+                del kwargs
+
+                if not isinstance(f_result, list):
+                    if self._n_factor == 1 or self._n_factor is None:
+                        f_result = [f_result]
+                    else:
+                        raise ValueError('Function return a single row but %i was expected.' % self._n_factor)
+                else:
+                    if self._n_factor is not None and len(f_result) != self._n_factor:
+                        raise ValueError('The function returned %i rows but %i was expected.'
+                                         % (len(f_result), self._n_factor))
+                if not isinstance(f_result[0], tuple):
+                    if len(rkeys) != 1:
+                        raise ValueError('The function returned a single column but %i was expected.'
+                                         % len(rkeys))
+                    else:
+                        r[rkeys[0]] += f_result                 # return [row1, row2, row3, ...]
+                else:
+                    f_result = list(zip(f_result))
+                    if len(f_result) != len(rkeys):
+                        raise ValueError('The function returned %i columns but %i was expected.'
+                                         % (len(f_result), len(rkeys)))
+                    for c_name, c_data in zip(rkeys, f_result):
+                        r[c_name].append(np.stack(c_data))      # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+
+            return {n: np.stack(d) for n, d in r.items()}
+        else:
+            kwargs = {arg: c for arg, c in zip(self.f_params, args)}
+            f_result = self._f(**kwargs)
+            del kwargs
+
+            r = {}
+
+            if not isinstance(f_result, tuple):
+                if len(rkeys) != 1:
+                    raise ValueError('The function returned a single column but %i was expected.'
+                                     % len(rkeys))
+                else:
+                    r[rkeys[0]] = f_result[0]
+            else:
+                if len(rkeys) != len(f_result):
+                    raise ValueError('The function returned %i columns but %i was expected.'
+                                     % (len(f_result), len(rkeys)))
+
+            for c_name, c_data in zip(rkeys, f_result):
+                if self._n_factor is not None and c_data.shape[0] != self._n_factor*args_n:
+                    raise ValueError('The function returned %i rows for columns %s, but %i was expected.'
+                                     % (c_data.shape[0], c_name, self._n_factor*args_n))
+                else:
+                    r[c_name] = c_data
+            return r

@@ -44,7 +44,7 @@ class DataSetResult:
         self._ipywidget = None
 
     @staticmethod
-    def create_empty(n, start_id, columns=None, dataset=None, assign=None):
+    def create_empty(n, start_id=0, columns=None, dataset=None, assign=None):
         """
 
         :param dataset:
@@ -141,6 +141,7 @@ class DataSetResult:
 
         w.columns_name = '|'.join(columns_description)
         w.retreive_data = retreive_data
+        w.retreive_fullscreen = retreive_data
         w.length = self.size
 
         self._ipywidget = w
@@ -284,13 +285,13 @@ class DataSetResult:
                 columns = key[1]
             else:
                 raise NotImplementedError
-            if isinstance(indexes, int):
-                indexes = slice(indexes, indexes+1)
             if columns in self:
                 if isinstance(value, np.ndarray):
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
                     self._data_dict[columns][indexes] = value
+            else:
+                raise KeyError('Unknown column: %s' % columns)
         elif isinstance(key, str):
             self._data_dict[key][:] = value
         else:
@@ -341,6 +342,13 @@ class DataSetResult:
             self._data_dict[_] = data[:n]
         self._size = n
         return self
+
+    def __iter__(self):
+        for i in range(self.size):
+            yield tuple(np.array(self._data_dict[_][i]) for _ in self.keys())
+
+    def to_row_list(self):
+        return list(self)
 
     class Trace:
         def __init__(self, r):
@@ -634,6 +642,7 @@ class DataSetSmartGenerator:
             if (limit is not None) and not self.__warn_limit_copy:
                 log.warn("%s's generator is executed asynchronously, data sharing and size limit will be ignored."
                          % self.dataset.dataset_name)
+                self.__warn_limit_copy = True
 
             return self.poll(timeout=None, copy=copy, r=affiliated_result)
 

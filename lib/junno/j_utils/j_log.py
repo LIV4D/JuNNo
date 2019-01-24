@@ -846,6 +846,7 @@ class Process(Logs):
             step = '%i/%i' % (self.step, self.max_step)
         elif self.max_step == 1:
             step = '%.2f%%' % self.step*100
+            print(step)
         else:
             step = '%i' % self.step
 
