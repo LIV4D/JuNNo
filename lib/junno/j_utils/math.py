@@ -204,7 +204,6 @@ def apply_scale(a, range=None, domain=None, clip=None):
         a[a > clip.max] = clip.max
     return a
 
-
 ########################################################################################################################
 #              -------- THEANO IMPROVMENTS -------
 def merge_axis(a, keep_axis=None, shape=None):

@@ -19,6 +19,24 @@ def abs_path(path, f=None):
     return path
 
 
+_pytables_files = {}
+
+
+def open_pytable(path):
+    path = abspath(path)
+    f = _pytables_files.get(path, None)
+    if f is not None and f() is not None:
+        return f()
+
+    import tables
+    import weakref
+    os.makedirs(dirname(path), exist_ok=True)
+    f = tables.open_file(path, mode='a')
+    _pytables_files[path] = weakref.ref(f)
+
+    return f
+
+
 class ZippedProject:
     def __init__(self, path, tmp_suffix, auto_recover=True, overwrite=False):
         self._path = path

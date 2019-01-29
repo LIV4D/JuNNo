@@ -121,7 +121,8 @@ class FilesCollection(AbstractDataSet):
                     if ext:
                         pk = pk[:-len(ext)-1]
                 r[i, 'pk'] = pk
-                r[i, 'name'] = name
+                if 'name' in r:
+                    r[i, 'name'] = name
                 if 'data' in r:
                     sample = self._read_files(path)
                     if sample is not None:

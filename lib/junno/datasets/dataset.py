@@ -69,6 +69,7 @@ The module is composed of the classes:
 """
 from abc import ABCMeta, abstractmethod
 import base64
+from collections import OrderedDict
 from functools import partial
 import multiprocessing as mp
 import numpy as np
@@ -82,7 +83,7 @@ from ..j_utils.j_log import log, Process
 from ..j_utils.function import not_optional_args, to_callable, optional_args
 from ..j_utils.parallelism import N_CORE
 from ..j_utils.math import interval, apply_scale
-from ..j_utils.collections import AttributeDict, Interval, if_none
+from ..j_utils.collections import AttributeDict, Interval, if_none, is_dict
 
 
 class AbstractDataSet(metaclass=ABCMeta):
@@ -282,6 +283,8 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         if columns is None:
             columns = self._columns.copy()
+        elif isinstance(columns, (tuple, set)):
+            columns = list(columns)
         elif not isinstance(columns, list):
             columns = [columns]
         else:
@@ -396,7 +399,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             columns_description = []
             for c in dataset._columns:
                 columns.append(c)
-                c_name = c.name + ';' + c.sql_type
+                c_name = c.name + ';' + c.format.dtype_name
                 if len(c.shape) > 0:
                     c_name += ' [' + ('x'.join([str(_) for _ in c.shape])) + ']'
                 columns_description.append(c_name)
@@ -440,15 +443,8 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     #   ---   Export   ---
     def export(self, cb, n=1, start=0, end=None, columns=None, determinist=True, ncore=None):
-        if columns is None:
-            columns = self.columns_name()
-        start %= self.size
-        if end is None:
-            end = self.size
-        elif end != 0:
-            end %= self.size
-            if end == 0:
-                end = self.size
+        columns = self.interpret_columns(columns)
+        start, end = interval(self.size, start, end)
 
         size = end-start
         if size <= 0:
@@ -723,6 +719,127 @@ class AbstractDataSet(metaclass=ABCMeta):
         elif metadata_format is 'json':
             dataframe.to_json(folder_path+'meta.json')
 
+    def export_folder(self, path, start=0, end=None, columns=None, filename_column=None, metadata_file='.xlsx',
+                      determinist=True, ncore=None, overwrite=True):
+        import pandas
+        #   ---  HANDLE PARAMETERS ---
+
+        # Create path
+        os.makedirs(path, exist_ok=True)
+
+        # Handle columns
+        exported_columns = set()
+        columns_mapping = OrderedDict()
+        single_column = False
+
+        if isinstance(columns, (list, tuple, set)):
+            columns = OrderedDict()
+            for _ in columns:
+                columns[_] = _
+
+        if isinstance(columns, str):
+            if columns not in self.columns_name():
+                raise ValueError('Unknown column %s' % columns)
+            columns_mapping = {'': columns}
+            exported_columns = {columns}
+            single_column = True
+        elif isinstance(columns, DSColumn):
+            if columns.dataset is not self:
+                raise ValueError('%s is not a column of %s' % (columns.name, self.dataset_name))
+            columns_mapping = {'': columns.name}
+            exported_columns = {columns.name}
+            single_column = True
+        elif is_dict(columns):
+            for c_name, c in columns.items():
+                if not isinstance(c_name, str):
+                    raise ValueError('columns key should be str (received: %s)' % type(c_name).__name__)
+                if isinstance(c, DSColumn):
+                    if c.dataset is not self:
+                        raise ValueError('%s is not a column of %s' % (c.name, self.dataset_name))
+                    c = c.name
+                if isinstance(c, str):
+                    if c not in self.columns_name():
+                        raise ValueError('Unknown column %s' % c)
+                    exported_columns.add(c)
+                    columns_mapping[c_name] = c
+                else:
+                    raise ValueError('Invalid columns value. Expected type is str or DSColumn, received %s.'
+                                     % type(c).__name__)
+
+        # Handle filename_column
+        if filename_column is None:
+            for n in ('name', 'filename'):
+                if n in self.columns_name():
+                    filename_column = n
+            else:
+                filename_column = 'pk'
+        exported_columns.add(filename_column)
+
+        # Handle metadata_file
+        metadata_sheet = self.dataset_name
+        if ':' in metadata_file:
+            metadata_file, metadata_sheet = metadata_file.rsplit(':', 1)
+        if metadata_file.startswith('.'):
+            f = list(exported_columns)[0] if single_column else self.dataset_name
+            metadata_file = f + metadata_file
+        metadata_file = join(path, metadata_file)
+
+        if exists(metadata_file):
+            if overwrite:
+                os.remove(metadata_file)
+            else:
+                raise RuntimeError('%s already exists.' % metadata_file)
+
+        meta_name_column = filename_column if filename_column not in columns_mapping else None
+
+        # Handle start stop
+        start, stop = interval(self.size, start, end)
+
+        with Process('Exporting '+self.dataset_name, total=start-end, verbose=False) as p:
+            from .dataset_generator import DataSetResult
+            def write_cb(r: DataSetResult):
+                metadata = OrderedDict()
+                filename = r[0, filename_column]
+                for c_to, c in columns_mapping.items():
+                    c_data = r[0, c]
+                    col = self.column_by_name(c)
+                    c_path = path if single_column else join(path, c_to)
+
+                    meta = col.format.export_file(data=c_data, path=c_path, filename=filename, overwrite=overwrite)
+                    if meta is not None:
+                        metadata[c_to] = meta
+                if metadata:
+                    meta_exists = exists(metadata_file)
+                    meta_columns = [] if meta_name_column is None else [meta_name_column]
+                    meta_columns += list(metadata.keys())
+
+                    if metadata_file.endswith('xlsx'):
+                        if meta_exists:
+                            initial_df = pandas.read_excel(metadata_file)
+                        else:
+                            initial_df = pandas.DataFrame(columns=meta_columns)
+                        writer = pandas.ExcelWriter(metadata_file)
+                        initial_df.to_excel(writer, sheet_name=metadata_sheet, index=False)
+
+                        if meta_name_column is not None:
+                            metadata[meta_name_column] = filename
+                        df = pandas.DataFrame(metadata)
+                        df.to_excel(writer, sheet_name=metadata_sheet, index=False, startrow=r.start_id)
+                        writer.save()
+
+                    elif metadata_file.endswith('csv'):
+                        if not meta_exists:
+                            pandas.DataFrame(columns=meta_columns).to_csv(metadata_file, header=True, mode='w')
+
+                        if meta_name_column is not None:
+                            metadata[meta_name_column] = filename
+                        pandas.DataFrame(metadata).to_csv(metadata_file, header=False, mode='a')
+
+                p.update(1)
+
+            self.export(cb=write_cb, start=start, end=end, columns=exported_columns, n=1,
+                        determinist=determinist, ncore=ncore)
+
     def to_pytorch_dataset(self, ncore=1, intime='process'):
         from torch.utils.data import Dataset
 
@@ -774,6 +891,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         import tables
         from .dataset_generator import DataSetResult
         from collections import OrderedDict
+        from ..j_utils.path import open_pytable
 
         start, end = interval(self.size, start, end)
         if columns is None:
@@ -799,10 +917,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                     path, table_name = ondisk_split
                 else:
                     raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
-                path = abspath(path)
-                os.makedirs(dirname(path), exist_ok=True)
 
-                hdf_f = tables.open_file(path, mode='a')
+                hdf_f = open_pytable(path)
                 if not table_name.startswith('/'):
                     table_name = '/' + table_name
                 table_path, table_name = table_name.rsplit('/', maxsplit=1)
@@ -851,7 +967,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             if ncore > 1:
                 with Process('Allocating %s' % label, end-start, verbose=False) as p:
                     empty = DataSetResult.create_empty(dataset=self, n=1).to_row_list()[0]
-                    print([_.shape for _ in empty])
+
                     for i in range(0, end-start):
                         hdf_t.append([empty]*min(chunck_size, end-i))
                         p.step = i
@@ -868,16 +984,76 @@ class AbstractDataSet(metaclass=ABCMeta):
                         hdf_t.append(r.to_row_list())
                         p.update(r.size)
 
-        if ondisk:
-            hdf_f.close()
-            hdf_f = tables.open_file(path, 'r')
-            hdf_t = hdf_f.get_node(table_path, table_name, 'Table')
-
         from .datasets_core import PyTableDataSet
         hdfDataset = PyTableDataSet(hdf_t, name=name)
         for c in columns:
             hdfDataset.col[c].format = self.col[c].format
         return hdfDataset
+
+    #   --- Global operator ---
+    def sum(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, str)
+        columns = self.interpret_columns(columns)
+        for c in columns:
+            c = self.column_by_name(c)
+            if not np.issubdtype(c.dtype, np.number):
+                raise ValueError('Only numeric columns can be summed. (%s is not numeric, dtype: %s).'
+                                 % (c.name, c.dtype))
+
+        from .dataset_generator import DataSetResult
+        result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+
+        def write_cb(r):
+            for c in r.keys():
+                result[0, 0, c] += r[:, c].sum(axis=0)
+
+        self.export(write_cb, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
+        return result[columns[0]] if single_column else result
+
+    def mean(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, str)
+        columns = self.interpret_columns(columns)
+        for c in columns:
+            c = self.column_by_name(c)
+            if not np.issubdtype(c.dtype, np.number):
+                raise ValueError('Only numeric columns can be averaged. (%s is not numeric, dtype: %s).'
+                                 % (c.name, c.dtype))
+
+        start, end = interval(self.size, start, end)
+        from .dataset_generator import DataSetResult
+        result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+
+        def write_cb(r):
+            for c in columns:
+                result[0, c] += r[:, c].sum(axis=0)/(end-start)
+
+        self.export(write_cb, columns=columns, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
+        return result[0, columns[0]] if single_column else result
+
+    def std(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, str)
+        columns = self.interpret_columns(columns)
+        for c in columns:
+            c = self.column_by_name(c)
+            if not np.issubdtype(c.dtype, np.number):
+                raise ValueError('Only numeric columns can be averaged. (%s is not numeric, dtype: %s).'
+                                 % (c.name, c.dtype))
+
+        start, end = interval(self.size, start, end)
+        from .dataset_generator import DataSetResult
+        result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+        mean_result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+
+        def write_cb(r):
+            for c in columns:
+                result[0, c] += np.square(r[:, c]).sum(axis=0) / (end - start)
+                mean_result[0, c] += r[:, c].sum(axis=0) / (end - start)
+
+        self.export(write_cb, columns=columns, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
+        for c in result.keys():
+            result[0, c] = np.sqrt(result[0, c]-np.square(mean_result[0, c]))
+        del mean_result
+        return result[0, columns[0]] if single_column else result
 
     #   ---   Operations   ---
     @classmethod
@@ -968,10 +1144,37 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
 
-    def apply(self, columns, function, cols_format=None, n_factor=1, batchwise=False, name='apply'):
+    def apply(self, columns, function, cols_format=None, n_factor=1, batchwise=False, name=None):
+        if name is None:
+            name = getattr(function, '__name__', 'apply')
+            if name == '<lambda>':
+                name = "apply"
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name,
                             cols_format=cols_format, batchwise=batchwise, n_factor=n_factor)
+
+    def cv_apply(self, columns, function, cols_format=None, n_factor=1, name=None):
+        if name is None:
+            name = getattr(function, '__name__', 'apply')
+            if name == '<lambda>':
+                name = "apply"
+        from .datasets_core import DataSetApplyCV
+        return DataSetApplyCV(self, function=function, columns=columns, name=name,
+                              cols_format=cols_format, n_factor=n_factor)
+
+    def apply_map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
+        from .datasets_core import DataSetApply
+        from ..j_utils.image import prepare_lut
+        if default is None:
+            default = mapping.pop('default', None)
+        f_lut = prepare_lut(mapping, default=default, sampling=sampling)
+        return DataSetApply(self, function=f_lut, columns=columns, name=name,
+                            cols_format=None, batchwise=True, n_factor=1)
+
+    def as_label(self, columns, mapping, map_format=None, name="label"):
+        if isinstance(mapping, dict):
+            sources = []
+            dest = []
 
     def reshape(self, columns, shape, label_columns=None, keep_original=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
@@ -1244,9 +1447,10 @@ class DSColumn:
     def __init__(self, name, shape, dtype, dataset=None, format=None):
         self._name = name
         self._shape = shape
-        # if dtype == str:
-        #     self._dtype = 'O'
-        self._dtype = np.dtype(dtype)
+        if dtype == str or (isinstance(dtype, str) and dtype in ('str', 'string')):
+            self._dtype = np.str_
+        else:
+            self._dtype = np.dtype(dtype)
 
         self._format = None
         self._dataset = None if dataset is None else weakref.ref(dataset)
@@ -1323,9 +1527,10 @@ class DSColumn:
 
 class DSColumnFormat:
     class Base:
-        def __init__(self, dtype, shape):
+        def __init__(self, dtype, shape, is_label=False):
             self.__dtype = dtype
             self.__shape = shape
+            self._is_label = is_label
             self.check_type(dtype, shape)
             self.html_fullscreen = False
 
@@ -1345,12 +1550,28 @@ class DSColumnFormat:
             return self.__dtype
 
         @property
+        def dtype_name(self):
+            if self.shape != ():
+                return 'array(%s)' % str(self.dtype)
+            if 'int' in str(self.dtype):
+                return 'INTEGER'
+            elif 'float' in str(self.dtype):
+                return 'FLOAT'
+            elif str(self.dtype) in ('str', 'O') or self.dtype == np.str_:
+                return 'TEXT'
+            return 'UNKNOWN'
+
+        @property
         def shape(self):
             return self.__shape
 
         @property
         def format_name(self):
             return self.__class__.__name__
+
+        @property
+        def is_label(self):
+            return self._is_label
 
         def preformat(self, data):
             preformat = None
@@ -1370,7 +1591,7 @@ class DSColumnFormat:
         def format_data(self, data):
             return data
 
-        def write_file(self, data, path, filename):
+        def write_file(self, data, path, filename, overwrite=True):
             return self.format_data(data)
 
         def export_html(self, data, fullscreen=None):
@@ -1379,8 +1600,8 @@ class DSColumnFormat:
         def export_data(self, data):
             return self.format_data(self.preformat(data))
 
-        def export_file(self, data, path, filename):
-            return self.write_file(self.preformat(data), path, filename)
+        def export_file(self, data, path, filename, overwrite=True):
+            return self.write_file(self.preformat(data), path, filename, overwrite)
 
     class Number(Base):
         def __init__(self, dtype, shape):
@@ -1407,7 +1628,7 @@ class DSColumnFormat:
 
     class Label(Base):
         def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.Label, self).__init__(dtype, shape)
+            super(DSColumnFormat.Label, self).__init__(dtype, shape, is_label=True)
             self.mapping = if_none(mapping, dict())
             self.default = if_none(default, mapping['default'] if 'default' in mapping else None)
 
@@ -1422,8 +1643,8 @@ class DSColumnFormat:
             return 'DSColumnFormat.Label(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
     class Matrix(Base):
-        def __init__(self, dtype, shape):
-            super(DSColumnFormat.Matrix, self).__init__(dtype, shape)
+        def __init__(self, dtype, shape, is_label=False):
+            super(DSColumnFormat.Matrix, self).__init__(dtype, shape, is_label=is_label)
             self._domain = Interval()
             self._range = Interval()
             self._clip = Interval()
@@ -1442,7 +1663,9 @@ class DSColumnFormat:
         def format_data(self, data):
             return str(data)
 
-        def write_file(self, data, path, filename):
+        def write_file(self, data, path, filename, overwrite=True):
+            if not overwrite and exists(join(path, filename+'.npy')):
+                return None
             np.save(join(path, filename+'.npy'), data)
 
         @property
@@ -1471,21 +1694,21 @@ class DSColumnFormat:
 
     class LabelMatrix(Matrix):
         def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.LabelMatrix, self).__init__(dtype, shape)
+            super(DSColumnFormat.LabelMatrix, self).__init__(dtype, shape, is_label=True)
             self.mapping = if_none(mapping, dict())
             self.default = default
 
         def _preformat(self, data):
-            from ..j_utils.image import map_values
-            return map_values(data, self.mapping, default=self.default)
+            from ..j_utils.image import apply_lut
+            return apply_lut(data, self.mapping, default=self.default)
 
         def __repr__(self):
             return 'DSColumnFormat.LabelMatrix(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
     class Image(Matrix):
-        def __init__(self, dtype, shape):
+        def __init__(self, dtype, shape, is_label=False):
             from ..j_utils.math import dimensional_split
-            super(DSColumnFormat.Image, self).__init__(dtype, shape)
+            super(DSColumnFormat.Image, self).__init__(dtype, shape, is_label=is_label)
             self.html_fullscreen = True
             self.clip = 0, 255
             self.range = 0, 255
@@ -1519,14 +1742,14 @@ class DSColumnFormat:
             MAX_FULL_SIZE = (1024, 1024)
 
             import cv2
-            h, w = data.shape[-2:]
+            c, h, w = data.shape
             ratio = h / w
 
             if fullscreen is None:
-                if self.channels_count % 3 == 0:
-                    gen_channels = tuple(data[_:_+3].transpose((1, 2, 0)) for _ in range(0, self.channels_count, 3))
+                if c % 3 == 0:
+                    gen_channels = tuple(data[_:_+3].transpose((1, 2, 0)) for _ in range(0, c, 3))
                 else:
-                    gen_channels = tuple(data[_] for _ in range(0, self.channels_count))
+                    gen_channels = tuple(data[_] for _ in range(0, c))
 
                 n = len(gen_channels)
                 nw = self.html_columns(n) if callable(self.html_columns) else self.html_columns
@@ -1536,14 +1759,15 @@ class DSColumnFormat:
                 for channel_data in gen_channels:
                     html_height = self.html_height(h) if callable(self.html_height) else self.html_height
                     th = html_height//nh
-                    thumbnail = cv2.resize(channel_data, (th, int(np.round(th / ratio))), interpolation=cv2.INTER_AREA)
+                    tw = int(np.round(th/ratio))
+                    thumbnail = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA)
                     png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
-                    html = '<img src="data:image/png;base64, %s" style="height: %ipx;" />' % (png, th)
+                    html = '<img src="data:image/png;base64, %s" style="height: %ipx; min-width: %ipx" />' % (png, th, tw)
                     d.append(html)
 
                 return '#%i,%i|' % (nh, nw) + ' '.join(d)
             else:
-                if self.channels_count % 3 == 0:
+                if c % 3 == 0:
                     d = data[3*fullscreen:3*fullscreen+3].transpose((1, 2, 0))
                 else:
                     d = data[fullscreen]
@@ -1571,23 +1795,59 @@ class DSColumnFormat:
             import cv2
             return [cv2.imencode('png', d)[0] for d in data]
 
-        def write_file(self, data, filename, path):
+        def write_file(self, data, filename, path, overwrite=True):
             import cv2
             for i, d in enumerate(data):
-                cv2.imwrite(join(path, filename+str(i)+'.png'), d)
+                f = join(path, filename+str(i)+'.png')
+                if not overwrite and exists(f):
+                    continue
+                cv2.imwrite(f, d)
 
     class LabelImage(Image):
         def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape)
-            self.mapping = if_none(mapping, dict())
+            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape, is_label=True)
             self.default = default
+            self._lut = None
+            self.mapping = if_none(mapping, dict())
 
         def _preformat(self, data):
-            from ..j_utils.image import map_values
-            return map_values(data, self.mapping, default=self.default)
+            if len(self.shape) == 2:
+                data = data[0]
+            if self._lut is not None:
+                data = self._lut(data)
+            if data.ndim == 2:
+                return data.reshape((1,)+data.shape)
+            return data
 
         def __repr__(self):
             return 'DSColumnFormat.LabelImage(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
+
+        @property
+        def mapping(self):
+            return self._mapping
+
+        @mapping.setter
+        def mapping(self, m):
+            if not m:
+                self._mapping = m
+                self._lut = None
+                return
+
+            mapping = {}
+            for k, v in m.items():
+                if isinstance(v, str):
+                    from ..j_utils.image import str2color
+                    v = str2color(v, bgr=True, uint8=True)
+                if k == "default":
+                    self.default = v
+                else:
+                    if len(self.shape) == 3 and np.array(k).ndim == 0:
+                        k = (k,)
+                    mapping[k] = v
+            self._mapping = mapping
+
+            from ..j_utils.image import prepare_lut
+            self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
 
     @staticmethod
     def auto_format(dtype, shape, info=None):
@@ -1618,9 +1878,13 @@ class DSColumnFormat:
                     return DSColumnFormat.LabelImage(dtype, shape, mapping=info)
                 else:
                     return DSColumnFormat.Label(dtype, shape, mapping=info)
+            elif is_img and isinstance(info, tuple) and len(info) == 2:
+                f = DSColumnFormat.Image(dtype, shape)
+                f.domain = info
+                return f
             else:
                 if is_img:
                     return DSColumnFormat.Image(dtype, shape)
                 else:
-                    return DSColumnFormat.LabelMatrix(dtype, shape)
+                    return DSColumnFormat.Matrix(dtype, shape)
         return DSColumnFormat.Base(dtype, shape)

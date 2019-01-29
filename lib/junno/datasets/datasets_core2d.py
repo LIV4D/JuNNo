@@ -47,7 +47,8 @@ class DataSetReshape(AbstractDataSet):
             if len(column.shape) not in (2, 3):
                 raise ValueError('%s does not support reshaping' % c)
 
-            column_shape = tuple(k if isinstance(k, int) else int(k * s) for k, s in zip(shape, column.shape[-2:]))
+            column_shape = tuple(k if k > 1 and isinstance(k, int) else int(k * s)
+                                 for k, s in zip(shape, column.shape[-2:]))
             if not keep_original:
 
                 column._shape = column._shape[:-2] + column_shape

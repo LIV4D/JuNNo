@@ -76,6 +76,11 @@ class DataSetResult:
 
         data_dict = {}
         for c in columns:
+            if isinstance(c, str):
+                if dataset is not None:
+                    c = dataset.column_by_name(c)
+                else:
+                    raise ValueError('No dataset was specified, refering column by their name is disabled.')
             if c.name in assign:
                 a = assign[c.name]
                 if a.shape != (n,) + tuple(c.shape):
@@ -126,7 +131,7 @@ class DataSetResult:
         columns_description = []
         for c in self.columns:
             columns_name.append(c.name)
-            c_name = c.name + ';' + c.sql_type
+            c_name = c.name + ';' + c.format.dtype_name
             if len(c.shape) > 0:
                 c_name += ' [' + ('x'.join([str(_) for _ in c.shape])) + ']'
             columns_description.append(c_name)

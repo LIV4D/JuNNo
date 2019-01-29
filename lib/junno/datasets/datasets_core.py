@@ -1,5 +1,4 @@
 import numpy as np
-import tables
 import time
 
 from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
@@ -46,7 +45,7 @@ class NumPyDataSet(AbstractDataSet):
 
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
-    def __init__(self, pytable: tables.Table, where=None, sortby=None, name='PyTableDataset'):
+    def __init__(self, pytable, where=None, sortby=None, name='PyTableDataset'):
         if pytable.description._v_is_nested:
             raise NotImplementedError('PyTable with nested columns are not supported.')
 
@@ -77,13 +76,13 @@ class PyTableDataSet(AbstractDataSet):
     def _solve_where(self):
         if self.where is None:
             self._filtered_rows = None
-            if self._sorted_rows:
+            if self._sorted_rows is not None:
                 self._rows = self._sorted_rows
             else:
                 self._rows = None
         else:
             self._filtered_rows = self.pytable.get_where_list(self.where, condvars=None)
-            if self._sorted_rows:
+            if self._sorted_rows is not None:
                 rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
                 rows[self._filtered_rows] = 1
                 self._rows = self._sorted_rows[rows[self._sorted_rows]]
@@ -93,7 +92,7 @@ class PyTableDataSet(AbstractDataSet):
     def _solve_sortby(self):
         if self.sortby is None:
             self._sorted_rows = None
-            if self._filtered_rows:
+            if self._filtered_rows is not None:
                 self._rows = self._filtered_rows
             else:
                 self._rows = None
@@ -102,25 +101,12 @@ class PyTableDataSet(AbstractDataSet):
             sortby = self.sortby[1:] if reversed_sort else self.sortby
             if not getattr(self.pytable.cols, sortby).is_indexed:
                 # Create a full index
-                hdf_f = None
-                if self.pytable._v_file.mode == 'r':
-                    filename = self.pytable._v_file.filename
-                    t_pathname = self.pytable._v_parent._v_pathname
-                    t_name = self.pytable._v_name
-                    self.pytable._v_file.close()
-                    hdf_f = tables.open_file(filename, mode='a')
-                    self.pytable = hdf_f.get_node(t_pathname, t_name, 'Table')
                 getattr(self.pytable.cols, sortby).create_csindex()
-                if hdf_f:
-                    hdf_f.close()
-                    del hdf_f
-                    hdf_f = tables.open_file(filename, mode='r')
-                    self.pytable = hdf_f.get_node(t_pathname, t_name, 'Table')
 
             self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False)
-            if reversed_sort:
+            if reversed_sort is not None:
                 self._sorted_rows = self._sorted_rows[::-1]
-            if self._filtered_rows:
+            if self._filtered_rows is not None:
                 rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
                 rows[self._filtered_rows] = 1
                 self._rows = self._sorted_rows[rows[self._sorted_rows]]
@@ -129,8 +115,8 @@ class PyTableDataSet(AbstractDataSet):
 
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
-        import tables
-        f = tables.open_file(path, mode='r')
+        from ..j_utils.path import open_pytable
+        f = open_pytable(path)
         table_path, table_name = table.rsplit('/', 1)
         if not table_path.startswith('/'):
             table_path = '/'+table_path
@@ -140,6 +126,7 @@ class PyTableDataSet(AbstractDataSet):
     @staticmethod
     def from_numpy(data_dict, cache_path=None, name='PyTableDataset'):
         import tables
+        from ..j_utils.path import open_pytable
         from ..j_utils.collections import is_dict
 
         if is_dict(data_dict):
@@ -158,7 +145,7 @@ class PyTableDataSet(AbstractDataSet):
             else:
                 raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
 
-            f = tables.File(path, mode='a')
+            f = open_pytable(path)
             table_path, table_name = table_name.rsplit('/', maxsplit=1)
             if not table_path.startswith('/'):
                 table_path = '/' + table_path
@@ -195,6 +182,9 @@ class PyTableDataSet(AbstractDataSet):
             yield weakref
 
     def select(self, where):
+        """
+        See PyTables expressions syntax: https://www.pytables.org/usersguide/condition_syntax.html.
+        """
         d = PyTableDataSet(self.pytable, name=self.dataset_name)
         d.sortby = self.sortby
         d._sorted_rows = self._sorted_rows
@@ -214,6 +204,16 @@ class PyTableDataSet(AbstractDataSet):
         d._solve_sortby()
         for c_name, c in self.columns.items():
             d.col[c_name].format = c.format
+        return d
+
+    def __call__(self, where=None, sortby=None):
+        if where is None:
+            if sortby is None:
+                return self
+            return self.sort(sortby)
+        if sortby is None:
+            return self.where(sortby)
+        d = PyTableDataSet(self.pytable, where=where, sortby=sortby, name=self.dataset_name)
         return d
 
 
@@ -749,7 +749,7 @@ class DataSetJoin(AbstractDataSet):
         datasets_columns[self._pk_foreign_col[0]].append(self._pk_foreign_col[1])
         reverse_columns_map[self._pk_foreign_col[0]][self._pk_foreign_col[1]] = 'pk'
         ngen = len(datasets_columns)
-        generators = [None, -1] * ngen
+        generators = [[None, -1] for _ in range(ngen)]
 
         intime_gens = [False] + [i < gen_context.ncore for i in reversed(range(1, ngen))]
         if gen_context.ncore <= ngen:
@@ -771,7 +771,7 @@ class DataSetJoin(AbstractDataSet):
                         dataset = self.parent_datasets[dataset_id]
                         generators[dataset_id][0] = gen_context.generator(dataset, start=needed_index, end=dataset.size,
                                                                           n=1, columns=datasets_columns[dataset_id],
-                                                                          intime=intime_gens[dataset_id],
+                                                                          parallel=intime_gens[dataset_id],
                                                                           ncore=ncore_gens[dataset_id])
                         generators[dataset_id][1] = needed_index
 
@@ -953,7 +953,7 @@ class DataSetApply(AbstractDataSet):
     Apply a function to some columns of a dataset, all other columns are copied
     """
     def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
-                 batchwise=True, name='apply'):
+                 batchwise=False, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
         :param function: the function to apply to the dataset. The function can be apply element-wise or batch-wise.
@@ -975,7 +975,7 @@ class DataSetApply(AbstractDataSet):
                                     Should the function return several values, the keys must be tuples of column names.
                                     The values specify the column on which the function is applied (which columns should
                                     be passed as a parameter of the function). It must be a **dataset** column name or a
-                                    tuple of those or None. If the number of columns specified is lesser than the number
+                                    tuple of those or None. If the number of columns specified is fewer than the number
                                     of not-optional arguments of the function, the left-over arguments must be named as
                                     **dataset** columns.
 
@@ -1262,7 +1262,7 @@ class DataSetApply(AbstractDataSet):
                     raise ValueError('The function returned a single column but %i was expected.'
                                      % len(rkeys))
                 else:
-                    r[rkeys[0]] = f_result[0]
+                    f_result = (f_result,)
             else:
                 if len(rkeys) != len(f_result):
                     raise ValueError('The function returned %i columns but %i was expected.'
@@ -1275,3 +1275,23 @@ class DataSetApply(AbstractDataSet):
                 else:
                     r[c_name] = c_data
             return r
+
+
+class DataSetApplyCV(DataSetApply):
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
+                 name='apply'):
+        super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns,
+                                             remove_parent_columns=remove_parent_columns, cols_format=cols_format,
+                                             n_factor=n_factor, name=name)
+
+    def compute_f(self, args, rkeys):
+        for i, a in enumerate(args):
+            if isinstance(a, np.ndarray) and a.ndim == 3 and a.shape[0] in (1, 3):
+                args[i] = a.transpose((1, 2, 0))
+
+        d = super(DataSetApplyCV, self).compute_f(args=args, rkeys=rkeys)
+
+        for k, a in d.items():
+            if isinstance(a, np.ndarray) and a.ndim == 3 and a.shape[2] in (1, 3):
+                d[k] = a.transpose((2, 0, 1))
+        return d

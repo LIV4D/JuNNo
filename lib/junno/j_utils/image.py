@@ -77,56 +77,43 @@ _last_map = None
 _last_lut = None
 
 
-def map_values(array, map, axis=None, sampling=None, default=None):
+def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
     assert isinstance(map, dict) and len(map)
 
+    from .j_log import log
     import numpy as np
     from .collections import if_none
 
+    add_empty_axis = False
     if axis:
         if isinstance(axis, int):
-            axis=[axis]
+            axis = np.array([axis])
         elif isinstance(axis, (list, tuple, np.ndarray)):
-            array = np.moveaxis(array, source=axis, destination=np.arange(len(axis)))
+            axis = np.array(axis)
         else:
             raise ValueError('Invalid axis parameter: %s (should be one or a list of axis)' % repr(axis))
     elif axis is None:
-        axis = np.arange(len(np.array(next(iter(map.keys()))).shape))
-
-    if sampling is None:
-        if 'float' in str(array.dtype) and array.min() >= 0 and array.max() <= 1:
-            sampling = 1/255
-    if not sampling:
-        sampling = 1
-    else:
-        array = array / sampling
-
-    if 'int' not in str(array.dtype):
-        from .j_log import log
-        log.warn('Array passed to map_values was converted to int32. Numeric precision may have been lost.')
-        array = array.astype(dtype=np.int32)
+        axis = np.arange(np.array(next(iter(map.keys()))).ndim)
+        if len(axis) == 0:
+            axis = [0]
+            add_empty_axis = True
 
     # Read shape
     n_axis = len(axis)
-    source_size = np.prod(tuple(array.shape[_] for _ in range(n_axis)))
-    map_shapes = tuple(array.shape[_] for _ in range(n_axis, array.ndim))
-    array = array.reshape((source_size,)+map_shapes)
+    source_sample = np.array([1]) if add_empty_axis else np.array(next(iter(map.keys())))
+    source_shape = source_sample.shape
+    source_size = int(np.prod(source_shape))
     dest_sample = np.array(next(iter(map.values())))
     dest_shape = dest_sample.shape
     dest_size = int(np.prod(dest_shape))
+    dest_axis = sorted(axis)[0]
 
     # Prepare lut table
-    a = array.reshape((source_size, np.prod(map_shapes)))
-    mins = a.min(axis=-1)
-    maxs = a.max(axis=-1)
-    stride = np.cumprod([1]+list((maxs-mins+1)[1::-1]))[::-1]
-    array = array.reshape((source_size,) + map_shapes)
-
     sources = []
     lut_dests = [if_none(default, np.zeros_like(dest_sample))]
     lut_color = [np.zeros((3,), dtype=np.uint8) if not isinstance(default, str) else str2color(default)]
     for k, v in map.items():
-        source = (np.array(k)/sampling).astype(dtype=array.dtype).flatten()
+        source = np.array(k, dtype=np.int).flatten()
         dest = np.array(v)
         if dest.shape:
             dest = dest.flatten()
@@ -142,33 +129,128 @@ def map_values(array, map, axis=None, sampling=None, default=None):
             except ValueError:
                 pass
 
-    array = np.sum((array.T - mins) * stride, axis=1)
-
-    if np.all(sources > mins) and np.all(sources < maxs):
-        sources = np.array(sources, dtype=array.dtype)-mins
-    lut_sources = np.zeros((np.prod(maxs-mins+1),), dtype=np.uint32)
-    for s_id, s in enumerate(sources):
-        lut_sources[np.sum((s-mins)*stride)] = s_id+1
-
     if len(lut_color) == len(lut_dests):
         lut_dests = lut_color
+        dest_shape = (3,)
+
+    sources = np.array(sources, dtype=source_dtype)
     lut_dests = np.array(lut_dests)
 
-    # Map values
-    array = lut_sources[array]
-    array = lut_dests[array]
+    mins = sources.min(axis=0)
+    maxs = sources.max(axis=0)
 
-    # Reshape
-    array = array.reshape(map_shapes+dest_shape)
-    f_axis = sorted(axis)[0]
+    if sampling is None:
+        if 'float' in str(sources.dtype) and mins.min() >= 0 and maxs.max() <= 1:
+            sampling = 1 / 255
+    elif sampling == 'nearest':
+        sampling = np.zeros(sources.shape[1:], dtype=np.float)
+        for i in range(sources.shape[0]):
+            sampling[i] = 1 / np.gcd.reduce(sources[i])
+    if not sampling:
+        sampling = 1
 
-    return np.moveaxis(array, np.arange(len(map_shapes), array.ndim),
-                       np.arange(f_axis, f_axis+len(dest_shape)) if len(dest_shape)!=len(axis) else axis)
+    sources = (sources / sampling).astype(np.int)
+    mins = sources.min(axis=0)
+    maxs = sources.max(axis=0)
+    stride = np.cumprod([1] + list((maxs - mins + 1)[1:][::-1]), dtype=np.uint)[::-1]
+
+    flatten_sources = np.sum((sources-mins) * stride, dtype=np.uint, axis=1)
+    id_sorted = flatten_sources.argsort()
+    flatten_sources = flatten_sources[id_sorted]
+    lut_dests[1:] = lut_dests[1:][id_sorted]
+
+    if np.all(flatten_sources == np.arange(len(flatten_sources))):
+        lut_sources = None
+    else:
+        lut_sources = np.zeros((int(np.prod(maxs - mins + 1)),), dtype=np.uint)
+        for s_id, s in enumerate(flatten_sources):
+            lut_sources[s] = s_id + 1
+
+    def f_lut(array):
+        if len(axis) > 1 and axis != np.arange(len(axis)):
+            array = np.moveaxis(array, source=axis, destination=np.arange(len(axis)))
+        elif add_empty_axis:
+            array = array.reshape((1,) + array.shape)
+
+        if 'int' not in str(array.dtype):
+            log.warn('Array passed to apply_lut was converted to int32. Numeric precision may have been lost.')
+
+        # Read array shape
+        a_source_shape = array.shape[:n_axis]
+        map_shape = array.shape[n_axis:]
+        map_size = int(np.prod(map_shape))
+
+        # Check source shape
+        if a_source_shape != source_shape:
+            raise ValueError('Invalid dimensions on axis: %s. (expected: %s, received: %s)'
+                             % (str(axis), str(source_shape), str(a_source_shape)))
+
+        # Prepare table
+        if sampling == 1:
+            array = array.astype(np.int)
+        else:
+            array = (array / sampling).astype(np.int)
+
+        a = np.moveaxis(array.reshape(source_shape + (map_size,)), -1, 0).reshape((map_size, source_size))
+        id_mapped = np.logical_not(np.any(np.logical_or(a > maxs, a < mins), axis=1))
+        array = np.sum((a - mins) * stride, axis=1).astype(np.uint)
+
+        # Map values
+        a = np.zeros(shape=(map_size,), dtype=np.uint)
+        if lut_sources is not None:
+            a[id_mapped] = lut_sources[array[id_mapped]]
+        else:
+            a[id_mapped] = array[id_mapped]+1
+        array = lut_dests[a]
+
+        del a
+        del id_mapped
+
+        # Reshape
+        array = array.reshape(map_shape + dest_shape)
+
+        return np.moveaxis(array, np.arange(len(map_shape), array.ndim),
+                           np.arange(dest_axis, dest_axis + len(dest_shape)) if len(dest_shape) != len(axis) else axis)
+
+    return f_lut
+
+
+def apply_lut(array, map, axis=None, sampling=None, default=None):
+    # import numpy as np
+    #
+    # a = array
+    # if axis:
+    #     if isinstance(axis, int):
+    #         axis = np.array([axis])
+    #     elif isinstance(axis, (list, tuple, np.ndarray)):
+    #         axis = np.array(axis)
+    #         a = np.moveaxis(a, source=axis, destination=np.arange(len(axis)))
+    #     else:
+    #         raise ValueError('Invalid axis parameter: %s (should be one or a list of axis)' % repr(axis))
+    # elif axis is None:
+    #     axis = np.arange(np.array(next(iter(map.keys()))).ndim)
+    #     if len(axis) == 0:
+    #         axis = None
+    #         a = array.reshape((1,) + a.shape)
+    #
+    # n_axis = len(axis) if axis else 1
+    # source_shape = a.shape[:n_axis]
+    # source_size = int(np.prod(source_shape))
+    # map_shape = a.shape[n_axis:]
+    # map_size = int(np.prod(map_shape))
+    #
+    # a = a.reshape((source_size, map_size))
+    # mins = a.min(axis=-1)
+    # maxs = a.max(axis=-1)
+    # a_minmax = (mins, maxs)
+
+    f_lut = prepare_lut(map, source_dtype=array.dtype, axis=axis, sampling=sampling, default=default)
+    return f_lut(array)
 
 
 def str2color(str_color, bgr=True, uint8=True):
     import numpy as np
-    if not str_color or not isinstance(str_color, 'str'):
+    if not str_color or not isinstance(str_color, str):
         return np.zeros((3,), dtype=np.uint8 if uint8 else np.float16)
 
     c = str_color.split('.')
@@ -183,17 +265,17 @@ def str2color(str_color, bgr=True, uint8=True):
 
     try:
         c = dict(
-            red=(255,0,0),
-            magenta=(255,0,255),
             blue=(0,0,255),
-            cyan=(0,255,255),
-            green=(0,255,0),
+            magenta=(255,0,255),
+            red=(255,0,0),
             yellow=(255,255,0),
-            orange=(255,127,0),
-            apple_green=(127,255,0),
+            green=(0,255,0),
+            cyan=(0,255,255),
             turquoise=(0,255,127),
             sky_blue=(0,127,255),
-            purple=(127,0,255),
+            orange=(255,127,0),
+            apple_green=(127,255,0),
+            pruple=(127,0,255),
             pink=(255,0,127),
             white=(255,255,255),
             black=(0,0,0)
