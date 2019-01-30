@@ -289,6 +289,8 @@ class DataAugmentation:
         :param x: Input array of form c*h*w
         :return:
         """
+        if x.ndim == 2:
+            return [np.expand_dims(x, axis=0)]
         initial_shape = x.shape
         nb_canal = initial_shape[0]
         if nb_canal == 1 or nb_canal == 3:

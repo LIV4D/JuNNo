@@ -4,7 +4,7 @@ import cv2
 from .dataset import AbstractDataSet, DSColumn
 from ..j_utils.function import identity_function, not_optional_args, match_params
 from ..j_utils.parallelism import parallel_exec
-from ..j_utils.j_log import log
+from ..j_utils.j_log import log, Process
 
 
 ########################################################################################################################
@@ -54,7 +54,7 @@ class DataSetReshape(AbstractDataSet):
                 column._shape = column._shape[:-2] + column_shape
                 self._reshaped_columns[c] = c
             else:
-                self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype)
+                self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
                 self._reshaped_columns[c + '_reshaped'] = c
 
         if label_columns is None:
@@ -239,7 +239,7 @@ class DataSetPatches(AbstractDataSet):
                     self._columns.remove(c)
 
             column_shape = parent_c.shape[:-2] + patch_shape
-            self.add_column(name=column, shape=column_shape, dtype=parent_c.dtype, format='image')
+            self.add_column(name=column, shape=column_shape, dtype=parent_c.dtype, format=parent_c.format)
 
         # Initialize patch function
         if post_process is None:
@@ -255,7 +255,12 @@ class DataSetPatches(AbstractDataSet):
         if n is None:
             cache_center = True
 
-        p_params = not_optional_args(self._patches_function)
+        if isinstance(self._patches_function, str):
+            if self._patches_function not in dataset.columns_name():
+                raise ValueError("%s is not  a column of %s" % (self._patches_function, dataset.dataset_name))
+            p_params = [self._patches_function]
+        else:
+            p_params = not_optional_args(self._patches_function)
         self._kwargs_columns = [_ for _ in self.columns_name() if _ in p_params]
 
         static_kwargs = {}
@@ -280,7 +285,7 @@ class DataSetPatches(AbstractDataSet):
         elif cache_center:
             self._saved_patch_center = self.generate_all_patches_center()
         else:
-            self._saved_patch_center = [None] * self.parent_dataset.size
+            self._saved_patch_center = None
         self._cache_center = cache_center
 
         if center_pos:
@@ -288,16 +293,27 @@ class DataSetPatches(AbstractDataSet):
 
     def _setup_determinist(self):
         if not self._cache_center:
-            self._saved_patch_center = self.generate_all_patches_center()
+            if self._saved_patch_center is not None:
+                return
+            self._saved_patch_center = [None] * self.parent_dataset.size
+            with Process("Caching center positions", self.parent_dataset.size) as p:
+                def store_result(c):
+                    self._saved_patch_center[c[0, 0]] = c
+                    p.update(1)
+                parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
 
     def generate_all_patches_center(self):
-        centers = [0]
-        def store_result(c):
-            if c.shape[0]:
-                centers.append(c)
-                centers[0] += c.shape[0]
+        with Process("Caching center positions", self.parent_dataset.size) as p:
+            centers = [0]
 
-        parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
+            def store_result(c):
+                if c.shape[0]:
+                    centers.append(c)
+                    centers[0] += c.shape[0]
+                p.update(1)
+
+            parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
+
         n = centers[0]
         centers = centers[1:]
 
@@ -352,13 +368,13 @@ class DataSetPatches(AbstractDataSet):
                                         start=self._saved_patch_center[gen_context.start_id, 0],
                                         end=self._saved_patch_center[gen_context.end_id, 0])
 
-        if not self.is_patch_invariant() and not self._cache_center:
+        if not self._cache_center:
             if gen_context.determinist:
                 saved_centers = self._saved_patch_center
             else:
                 saved_centers = [None] * self.parent_dataset.size
         else:
-            saved_centers = None
+            saved_centers = self._saved_patch_center
 
         result = None
         if self._n is None:
@@ -451,6 +467,8 @@ class DataSetPatches(AbstractDataSet):
         return self._is_patch_invariant
 
     def patches_function(self, **kwargs):
+        if isinstance(self._patches_function, str):
+            return self._post_process_function(kwargs[self._patches_function])
         return self._post_process_function(match_params(self._patches_function, **kwargs))
 
     @property
@@ -540,7 +558,7 @@ class DataSetUnPatch(AbstractDataSet):
                         del self._columns[self.column_index(c)]
                     parent_column = self.patch_dataset.parent_dataset.column_by_name(own_column)
                     self._unpatched_columns[own_column] = list(child_columns.keys())
-                    self.add_column(name=own_column, dtype=parent_column.dtype, format='image',
+                    self.add_column(name=own_column, dtype=parent_column.dtype, format=parent_column.format,
                                     shape=patch_layer_shape+parent_column.shape[-2:])
         else:
             # Dataset will assemble patches into separated columns

@@ -805,6 +805,10 @@ class DataSetJoin(AbstractDataSet):
         return sub
 
 
+def join(datasets, **kwargs):
+    return DataSetJoin(datasets, **kwargs)
+
+
 ########################################################################################################################
 class DataSetConcatenate(AbstractDataSet):
     def __init__(self, datasets, columns=None, name='DataSetConcatenate'):

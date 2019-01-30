@@ -119,7 +119,7 @@ class FilesCollection(AbstractDataSet):
                 if self.remove_extension:
                     name, ext = splitext(name)
                     if ext:
-                        pk = pk[:-len(ext)-1]
+                        pk = pk[:-len(ext)]
                 r[i, 'pk'] = pk
                 if 'name' in r:
                     r[i, 'name'] = name
@@ -128,7 +128,7 @@ class FilesCollection(AbstractDataSet):
                     if sample is not None:
                         if len(self.columns.data.shape):
                             shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
-                            r[i, 'data'][[slice(_) for _ in shape]] = sample[[slice(_) for _ in shape]]
+                            r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
                             r[i, 'data'] = sample
                         del sample
@@ -305,7 +305,7 @@ class DataSetPandaDF(AbstractDataSet):
         pk_dtype = panda_dataframe.axes[0].dtype
         super(DataSetPandaDF, self).__init__(name, pk_type=pk_dtype)
         self._df = panda_dataframe
-        if mapping is not None:
+        if mapping and isinstance(mapping, dict):
             self.column_index = {}
             for c_name, c in mapping.items():
                 if isinstance(c, str):
@@ -354,4 +354,5 @@ def csv_dataset(path, mapping=None, **kwargs):
     df = pandas.read_csv(path)
     if mapping is not None:
         kwargs.update(mapping)
+
     return DataSetPandaDF(df, mapping=kwargs, name=basename(path))

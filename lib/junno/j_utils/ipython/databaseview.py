@@ -70,7 +70,6 @@ class SimpleDatabaseView(AutoImportDOMWidget):
                     # --- SHOW IN FULLSCREEN ---
                     data = self.retreive_fullscreen(row, col, channel)
                     comm.send('$' + data)
-                    log.debug('$', data)
             except:
                 error_msg = 'Error when retreiving [%i,%i]...\n' % (row, col)
                 error_msg += traceback.format_exc()

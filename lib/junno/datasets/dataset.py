@@ -1171,10 +1171,35 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApply(self, function=f_lut, columns=columns, name=name,
                             cols_format=None, batchwise=True, n_factor=1)
 
-    def as_label(self, columns, mapping, map_format=None, name="label"):
+    def as_label(self, columns, mapping, map_format=None, sampling=None, name="label"):
+        f_mapping = None
+        infered_format = {}
         if isinstance(mapping, dict):
-            sources = []
-            dest = []
+            from ..j_utils.image import prepare_lut
+            map = {}
+            for k, v in mapping.items():
+                k = np.uint32(k)
+                if isinstance(v, (tuple, list)):
+                    for _ in v:
+                        map[_] = k
+                    infered_format[k] = v[0]
+                else:
+                    map[v] = k
+                    infered_format[k] = v
+            f_mapping = prepare_lut(map=map, sampling=sampling)
+        elif callable(mapping):
+            f_mapping = mapping
+        else:
+            raise NotImplementedError
+        dataset = self.apply(columns, f_mapping, name=name)
+
+        if isinstance(map_format, dict):
+            infered_format = map_format
+        for c in dataset._single_col_mapping.keys():
+            col = dataset.column_by_name(c)
+            col.format = infered_format
+
+        return dataset
 
     def reshape(self, columns, shape, label_columns=None, keep_original=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
@@ -1246,13 +1271,15 @@ class AbstractDataSet(metaclass=ABCMeta):
         dict_params['function2avoid'] = function2avoid
 
         # Initialize columns
-        if not isinstance(columns, list):
+        c_tmp = []
+        if isinstance(columns, str):
             columns = [columns]
         for c_id, c in enumerate(columns):
             if isinstance(c, str):
                 if c not in self.columns_name():
                     raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                columns[c_id] = self.column_by_name(c)
+                c_tmp.append(self.column_by_name(c))
+        columns = c_tmp
 
         img_shape = columns[0].shape[-2:]
         for c in columns[1:]:
@@ -1351,7 +1378,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetPatches(self, patch_shape=patches_def, patches_function=patchify,
                               center_pos=center_pos, name=name)
 
-    def random_patches(self, columns=None, patch_shape=(128,128), n=10, proba_map=None, rng=None,
+    def random_patches(self, columns=None, patch_shape=(128, 128), n=10, proba_map=None, rng=None,
                        center_pos=False, name='randomPatch'):
         """Generate patches randomly from specific columns.
 
@@ -1387,16 +1414,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         if isinstance(patch_shape, dict) and columns is not None:
             raise ValueError("If columns is defined, patch_shape can't be a dictionary of patch shapes.")
         if columns is not None:
+            columns = self.interpret_columns(columns)
             if not isinstance(patch_shape, tuple):
                 patch_shape = (patch_shape, patch_shape)
 
-            if not isinstance(columns, list):
-                if isinstance(columns, DSColumn):
-                    columns = columns.name
-                patches_def[columns] = (columns, patch_shape)
             for c_id, c in enumerate(columns):
-                if isinstance(c, DSColumn):
-                    c = c.name
                 patches_def[c] = (c, patch_shape)
         else:
             if not isinstance(patch_shape, dict):
@@ -1426,6 +1448,13 @@ class AbstractDataSet(metaclass=ABCMeta):
                                  % (proba_map.shape, img_shape))
             proba_map = proba_map / proba_map.sum()
             proba_map = to_callable(proba_map)
+        elif isinstance(proba_map, (str, DSColumn)):
+            if isinstance(proba_map, DSColumn):
+                if proba_map.dataset is not self:
+                    raise ValueError("%s is not a column of %s." % (proba_map.name, self.dataset_name))
+                proba_map = proba_map.name
+            else:
+                self.column_by_name(proba_map)
         elif not callable(proba_map):
             raise NotImplementedError
 
@@ -1447,8 +1476,10 @@ class DSColumn:
     def __init__(self, name, shape, dtype, dataset=None, format=None):
         self._name = name
         self._shape = shape
+        self._is_text = False
         if dtype == str or (isinstance(dtype, str) and dtype in ('str', 'string')):
-            self._dtype = np.str_
+            self._dtype = np.dtype('O')
+            self._is_text = True
         else:
             self._dtype = np.dtype(dtype)
 
@@ -1488,7 +1519,7 @@ class DSColumn:
             return 'INTEGER'
         elif 'float' in str(self.dtype):
             return 'FLOAT'
-        elif str(self.dtype) in ('str', 'O'):
+        elif self._is_text or str(self.dtype) in ('str', 'string', 'U'):
             return 'TEXT'
         return 'UNKNOWN'
 
@@ -1519,7 +1550,7 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self._dtype, self._shape, f)
+            self._format = DSColumnFormat.auto_format(self._dtype if not self._is_text else 'str', self._shape, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -1557,7 +1588,7 @@ class DSColumnFormat:
                 return 'INTEGER'
             elif 'float' in str(self.dtype):
                 return 'FLOAT'
-            elif str(self.dtype) in ('str', 'O') or self.dtype == np.str_:
+            elif str(self.dtype) in ('str', 'U') or self.dtype == np.str_:
                 return 'TEXT'
             return 'UNKNOWN'
 
@@ -1695,15 +1726,48 @@ class DSColumnFormat:
     class LabelMatrix(Matrix):
         def __init__(self, dtype, shape, mapping=None, default=None):
             super(DSColumnFormat.LabelMatrix, self).__init__(dtype, shape, is_label=True)
-            self.mapping = if_none(mapping, dict())
             self.default = default
+            self._lut = None
+            self.mapping = if_none(mapping, dict())
 
         def _preformat(self, data):
-            from ..j_utils.image import apply_lut
-            return apply_lut(data, self.mapping, default=self.default)
+            if len(self.shape) == 2:
+                data = data[0]
+            if self._lut is not None:
+                data = self._lut(data)
+            if data.ndim == 2:
+                return data.reshape((1,)+data.shape)
+            return data
 
         def __repr__(self):
             return 'DSColumnFormat.LabelMatrix(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
+
+        @property
+        def mapping(self):
+            return self._mapping
+
+        @mapping.setter
+        def mapping(self, m):
+            if not m:
+                self._mapping = m
+                self._lut = None
+                return
+
+            mapping = {}
+            for k, v in m.items():
+                if isinstance(v, str):
+                    from ..j_utils.image import str2color
+                    v = str2color(v, bgr=True, uint8=True)
+                if k == "default":
+                    self.default = v
+                else:
+                    if len(self.shape) == 3 and np.array(k).ndim == 0:
+                        k = (k,)
+                    mapping[k] = v
+            self._mapping = mapping
+
+            from ..j_utils.image import prepare_lut
+            self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
 
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False):
@@ -1877,7 +1941,7 @@ class DSColumnFormat:
                 if is_img:
                     return DSColumnFormat.LabelImage(dtype, shape, mapping=info)
                 else:
-                    return DSColumnFormat.Label(dtype, shape, mapping=info)
+                    return DSColumnFormat.LabelMatrix(dtype, shape, mapping=info)
             elif is_img and isinstance(info, tuple) and len(info) == 2:
                 f = DSColumnFormat.Image(dtype, shape)
                 f.domain = info
