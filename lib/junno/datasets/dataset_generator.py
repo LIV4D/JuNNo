@@ -195,7 +195,7 @@ class DataSetResult:
         return self._start_id
 
     @property
-    def end_id(self):
+    def stop_id(self):
         """
         Index of the ending of this subset in the parent dataset
         :rtype: int
@@ -342,10 +342,12 @@ class DataSetResult:
         for c_name in self.keys():
             yield c_name, self._data_dict[c_name]
 
-    def truncate(self, n):
+    def truncate(self, *args, start=None, stop=None):
+        from ..j_utils.math import interval
+        start, stop = interval(self.size, start, stop, args)
         for _, data in self._data_dict.items():
-            self._data_dict[_] = data[:n]
-        self._size = n
+            self._data_dict[_] = data[start:stop]
+        self._size = stop-start
         return self
 
     def __iter__(self):
@@ -508,10 +510,10 @@ class DataSetSmartGenerator:
     """
 
     class Context:
-        def __init__(self, start_id, end_id, n, columns, dataset, determinist, ncore, parallelism):
+        def __init__(self, start_id, stop_id, n, columns, dataset, determinist, ncore, parallelism):
             self.start_n = n
             self.start_id = start_id
-            self.end_id = end_id
+            self.stop_id = stop_id
             self.columns = columns
             self.dataset = dataset
             self.determinist = determinist
@@ -524,20 +526,20 @@ class DataSetSmartGenerator:
             self.id = start_id
 
         def __getstate__(self):
-            return self.start_n, self.start_id, self.end_id, self.columns, self.dataset, self.determinist, \
+            return self.start_n, self.start_id, self.stop_id, self.columns, self.dataset, self.determinist, \
                    self.ncore, self.parallelism, self.n, self.id
 
         def __setstate__(self, state):
-            self.start_n, self.start_id, self.end_id, self.columns, self.dataset, self.determinist, \
+            self.start_n, self.start_id, self.stop_id, self.columns, self.dataset, self.determinist, \
             self.ncore, self.parallelism, self.n, self.id = state
             self._copy = {}
             self._r = None
 
-        def generator(self, dataset, start=None, end=None, n=None, columns=None, parallel=False, ncore=None):
+        def generator(self, dataset, start=None, stop=None, n=None, columns=None, parallel=False, ncore=None):
             if start is None:
                 start = self.id
-            if end is None:
-                end = min(self.end_id, dataset.size)
+            if stop is None:
+                stop = min(self.stop_id, dataset.size)
             if n is None:
                 n = self.n
             if columns is None:
@@ -545,7 +547,7 @@ class DataSetSmartGenerator:
             if ncore is None:
                 ncore = self.ncore
 
-            gen = dataset.generator(start=start, end=end, n=n, columns=columns,
+            gen = dataset.generator(start=start, stop=stop, n=n, columns=columns,
                                     determinist=self.determinist, intime=parallel, ncore=ncore)
 
             return gen
@@ -567,10 +569,10 @@ class DataSetSmartGenerator:
                 return self.id, n, r
 
         def is_last(self):
-            return self.id + self.n >= self.end_id
+            return self.id + self.n >= self.stop_id
 
         def ended(self):
-            return self.id >= self.end_id
+            return self.id >= self.stop_id
 
         def lite_copy(self):
             r = copy(self)
@@ -579,9 +581,9 @@ class DataSetSmartGenerator:
 
         @property
         def id_length(self):
-            return self.end_id-self.start_id
+            return self.stop_id-self.start_id
 
-    def __init__(self, dataset: AbstractDataSet, n, start_id, end_id, columns=None, determinist=True,
+    def __init__(self, dataset: AbstractDataSet, n, start_id, stop_id, columns=None, determinist=True,
                  ncore=None, intime=False):
         if columns is None:
             columns = dataset.columns_name()
@@ -596,12 +598,12 @@ class DataSetSmartGenerator:
         else:
             start_id %= dataset.size
 
-        if end_id is None:
-            end_id = dataset.size
-        elif end_id != 0:
-            end_id %= dataset.size
-            if end_id == 0:
-                end_id = dataset.size
+        if stop_id is None:
+            stop_id = dataset.size
+        elif stop_id != 0:
+            stop_id %= dataset.size
+            if stop_id == 0:
+                stop_id = dataset.size
 
         if not intime:
             intime = False
@@ -611,7 +613,7 @@ class DataSetSmartGenerator:
             raise ValueError('Invalid intime argument: %s \n(should be either "process" or "thread")'
                              % repr(intime))
 
-        self._context = DataSetSmartGenerator.Context(start_id=int(start_id), end_id=int(end_id), n=int(n),
+        self._context = DataSetSmartGenerator.Context(start_id=int(start_id), stop_id=int(stop_id), n=int(n),
                                                       columns=columns, dataset=dataset,
                                                       determinist=determinist, ncore=ncore, parallelism=intime)
 
@@ -641,7 +643,7 @@ class DataSetSmartGenerator:
 
         if limit is None:
             limit = self._context.start_n
-        self._context.n = min(self.end_id - self.current_id, limit)
+        self._context.n = min(self.stop_id - self.current_id, limit)
 
         if self._asynchronous_exec:
             if (limit is not None) and not self.__warn_limit_copy:
@@ -705,13 +707,13 @@ class DataSetSmartGenerator:
             raise RuntimeError('An error occurred when executing  %s on a sub process:\n| %s'
                                % (str(self.dataset), r[1].replace('\n', '\n| '))) from r[0]
         elif r is None:
-            self._context.id = self.end_id
+            self._context.id = self.stop_id
             raise StopIteration
 
         if ask_next:
             self.ask()
 
-        self._context.n = min(self.end_id - self.current_id, self._context.start_n)
+        self._context.n = min(self.stop_id - self.current_id, self._context.start_n)
 
         if copy is not None:
             for c, d in copy.items():
@@ -729,7 +731,7 @@ class DataSetSmartGenerator:
 
         return r
 
-    def reset(self, start=None, end=None, columns=None, n=None, determinist=None):
+    def reset(self, start=None, stop=None, columns=None, n=None, determinist=None):
         if columns is None:
             columns = self.columns
 
@@ -742,27 +744,27 @@ class DataSetSmartGenerator:
             start = self.current_id
         else:
             start %= self.dataset.size
-        if end is None:
-            end = self.end_id
-        elif end != 0:
-            end %= self.dataset.size
-            if end == 0:
-                end = self.dataset.size
-        start = int(start); end = int(end); n = int(n)
+        if stop is None:
+            stop = self.stop_id
+        elif stop != 0:
+            stop %= self.dataset.size
+            if stop == 0:
+                stop = self.dataset.size
+        start = int(start); stop = int(stop); n = int(n)
         self._context.start_id = start
 
-        if start == self.current_id and end == self.end_id and columns == self.columns and n == self.n \
+        if start == self.current_id and stop == self.stop_id and columns == self.columns and n == self.n \
                 and determinist == self._context.determinist:
             return
 
         if self._asynchronous_exec:
             while self._generator_conn.poll(timeout=0):
                 self._generator_conn.recv()     # Discard previous samples
-            self._send_to_subprocess(dict(start=start, end=end, columns=columns, n=n, determinist=determinist))
+            self._send_to_subprocess(dict(start=start, stop=stop, columns=columns, n=n, determinist=determinist))
         else:
             self.clean()
 
-        self._context.end_id = end
+        self._context.stop_id = stop
         self._context.columns = columns
         self._context.start_n = n
         self._context.determinist = determinist
@@ -784,7 +786,7 @@ class DataSetSmartGenerator:
         try:
             self._generator_conn.send(d)
         except IOError as e:
-            self.context.id = self.end_id
+            self.context.id = self.stop_id
             self._generator_conn = None
             if log_broken_pipe:
                 log.warn("WARNING: %s generator's pipe was closed unexpectedly.")
@@ -860,15 +862,15 @@ class DataSetSmartGenerator:
         return self._context.start_id
 
     @property
-    def end_id(self):
-        return self._context.end_id
+    def stop_id(self):
+        return self._context.stop_id
 
     @property
     def intime(self):
         return self._context.parallelism
 
     def __len__(self):
-        return np.ceil((self.end_id-self.current_id)/self.n)
+        return np.ceil((self.stop_id-self.current_id)/self.n)
 
     @property
     def ncore(self):
@@ -888,8 +890,8 @@ class DataSetSmartGenerator:
 def parallel_generator_exec(gen_context, conn):
     SmartGen = DataSetSmartGenerator
 
-    def reset_gen(start, end, n, columns, determinist):
-        new_context = SmartGen.Context(start_id=start, end_id=end, n=n,
+    def reset_gen(start, stop, n, columns, determinist):
+        new_context = SmartGen.Context(start_id=start, stop_id=stop, n=n,
                                        columns=columns, dataset=gen_context.dataset,
                                        determinist=determinist,
                                        ncore=gen_context.ncore, parallelism=gen_context.parallelism)

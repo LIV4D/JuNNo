@@ -146,25 +146,25 @@ def cartesian(arrays, out=None):
     return out
 
 
-def interval(size, start=None, end=None, args=()):
+def interval(size, start=None, stop=None, args=()):
     if len(args)==1:
-        end = args[0]
+        stop = args[0]
         start = 0
     elif len(args)==2:
         start = args[0]
-        end = args[1]
+        stop = args[1]
 
     if start is None:
         start = 0
-    if end is None:
-        end = size
-    elif end < 0:
-        end += size
-    elif end < start:
-        end = start + 1
-    if end > size:
-        raise ValueError('%i is not a valid index: size is %i' % (end, size))
-    return start, end
+    if stop is None:
+        stop = size
+    elif stop < 0:
+        stop += size
+    elif stop < start:
+        stop = start + 1
+    if stop > size:
+        raise ValueError('%i is not a valid index: size is %i' % (stop, size))
+    return start, stop
 
 
 def softmax(x, axis=0):

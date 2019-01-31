@@ -180,23 +180,23 @@ class AbstractDataSet(metaclass=ABCMeta):
         return fullname
 
     #   ---   Data direct access   ---
-    def read(self, start: int = None, end: int = None, columns=None, extract=False, n=None):
+    def read(self, start: int = None, stop: int = None, columns=None, extract=False, n=None):
         if start is None:
             start = 0
-        if end is None:
-            end = self.size
-        elif end < 0:
-            end -= self.size
-        elif end < start:
-            end = start + 1
-        if end > self.size:
-            raise ValueError('%i is not a valid index: dataset size is %i' % (end, self.size))
+        if stop is None:
+            stop = self.size
+        elif stop < 0:
+            stop -= self.size
+        elif stop < start:
+            stop = start + 1
+        if stop > self.size:
+            raise ValueError('%i is not a valid index: dataset size is %i' % (stop, self.size))
 
         d = self
         if n is not None:
             d = d.subgen(n)
 
-        gen = d.generator(end - start, start=start, columns=columns)
+        gen = d.generator(stop - start, start=start, columns=columns)
         r = next(gen)
 
         if not extract:
@@ -210,9 +210,9 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     def gen_read(self, id, n=1, columns=None, gen_context=None, clear_weakref=False):
         if gen_context is not None:
-            gen = gen_context.generator(self, start=id, end=id+n, n=n, columns=columns)
+            gen = gen_context.generator(self, start=id, stop=id+n, n=n, columns=columns)
         else:
-            gen = self.generator(start=id, end=id+n, n=n, columns=columns)
+            gen = self.generator(start=id, stop=id+n, n=n, columns=columns)
         r = gen.next()
         gen.clean()
         if clear_weakref:
@@ -231,7 +231,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param columns: Columns of the wanted elements (None mean all of them)
         :param extract: If true, the data is extracted from the DataSetResult.
         """
-        r = self.read(start=row, end=row + 1, columns=columns, extract=False)
+        r = self.read(start=row, stop=row + 1, columns=columns, extract=False)
 
         if not extract:
             return r
@@ -246,7 +246,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return self.read_one(row=row, columns=columns, extract=False)
 
     #   ---   Generators   ---
-    def generator(self, n=1, start=None, end=None, columns=None, determinist=True, intime=False, ncore=1):
+    def generator(self, n=1, start=None, stop=None, columns=None, determinist=True, intime=False, ncore=1):
         """Creates a generator which iterate through data.
 
         :param n:  Number of element to return (maximum) by iteration
@@ -261,7 +261,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         """
         self.clear_sample()
         from .dataset_generator import DataSetSmartGenerator
-        return DataSetSmartGenerator(dataset=self, n=n, start_id=start, end_id=end, columns=columns,
+        return DataSetSmartGenerator(dataset=self, n=n, start_id=start, stop_id=stop, columns=columns,
                                      determinist=determinist, intime=intime, ncore=ncore)
 
     @abstractmethod
@@ -442,11 +442,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         self._sample = None
 
     #   ---   Export   ---
-    def export(self, cb, n=1, start=0, end=None, columns=None, determinist=True, ncore=None):
+    def export(self, cb, n=1, start=0, stop=None, columns=None, determinist=True, ncore=None):
         columns = self.interpret_columns(columns)
-        start, end = interval(self.size, start, end)
+        start, stop = interval(self.size, start, stop)
 
-        size = end-start
+        size = stop-start
         if size <= 0:
             return
 
@@ -459,9 +459,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             gens = []
             for id_gen in range(ncore):
                 start_id = start + np.round(size / ncore * id_gen)
-                end_id = start + np.round(size / ncore * (id_gen + 1))
+                stop_id = start + np.round(size / ncore * (id_gen + 1))
 
-                g = self.generator(n=n, start=start_id, end=end_id, columns=columns, intime=True,
+                g = self.generator(n=n, start=start_id, stop=stop_id, columns=columns, intime=True,
                                    determinist=determinist)
                 g.setup()
                 gens.append(g)
@@ -485,10 +485,10 @@ class AbstractDataSet(metaclass=ABCMeta):
                     del gens[gen_id]
 
         else:
-            for r in self.generator(n=n, start=start, end=end, columns=columns, determinist=determinist):
+            for r in self.generator(n=n, start=start, stop=stop, columns=columns, determinist=determinist):
                 cb(r)
 
-    def sql_write(self, database_path, table_name, start=0, end=0, n=10,
+    def sql_write(self, database_path, table_name, start=0, stop=0, n=10,
                   compress_img=True, include_pk=False, replace_table=False, show_progression=True, compress_format='.png'):
         """Write the current dataset in a SQLite file.
 
@@ -531,8 +531,8 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         if start < 0:
             start += self.size
-        if end <= 0:
-            end += self.size
+        if stop <= 0:
+            stop += self.size
 
         data_gen = self.generator(start=start)
         i_global = start
@@ -561,7 +561,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     return d
 
         def format_gen(p):
-            for i in range(min(n, end-i_global)):
+            for i in range(min(n, stop-i_global)):
                 try:
                     r = next(data_gen)
                 except StopIteration:
@@ -587,8 +587,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                                               column_name=(['pk'] if include_pk else []) + columns,
                                               column_constraint=column_constraint,
                                               table_constraint="PRIMARY KEY (pk)" if include_pk else None))
-        with Process('Saving %s' % self._name, end-start) as p:
-            for i in range(start, end, n):
+        with Process('Saving %s' % self._name, stop-start) as p:
+            for i in range(start, stop, n):
                 access.execute_query(InsertQuery(table_or_subquery=table_name,
                                                  replace=True,
                                                  column_name=['pk' if include_pk else 'rowid'] + columns,
@@ -597,7 +597,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 i_global += n
         access.write_db('PRAGMA journal_mode=DELETE')
 
-    def folder_write(self, folder_path, start=0, end=0, columns=None, determinist=True,
+    def folder_write(self, folder_path, start=0, stop=0, columns=None, determinist=True,
                      compress_format='png', metadata_format='csv', compress_img=True,
                      column_for_filename=None):
 
@@ -637,8 +637,8 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         if start < 0:
             start += self.size
-        if end <= 0:
-            end += self.size
+        if stop <= 0:
+            stop += self.size
         gen_columns = columns.copy()
         if column_for_filename is not 'pk' and column_for_filename not in gen_columns:
             gen_columns.append(column_for_filename)
@@ -667,8 +667,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                 return d
 
         dataframe = pd.DataFrame(columns=metadata_columns)
-        with Process('Saving %s' % self._name, end - start) as p:
-            for i in range(start, end):
+        with Process('Saving %s' % self._name, stop - start) as p:
+            for i in range(start, stop):
                 # Read data
                 try:
                     r = next(data_gen)
@@ -719,7 +719,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         elif metadata_format is 'json':
             dataframe.to_json(folder_path+'meta.json')
 
-    def export_folder(self, path, start=0, end=None, columns=None, filename_column=None, metadata_file='.xlsx',
+    def export_folder(self, path, start=0, stop=None, columns=None, filename_column=None, metadata_file='.xlsx',
                       determinist=True, ncore=None, overwrite=True):
         import pandas
         #   ---  HANDLE PARAMETERS ---
@@ -793,9 +793,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         meta_name_column = filename_column if filename_column not in columns_mapping else None
 
         # Handle start stop
-        start, stop = interval(self.size, start, end)
+        start, stop = interval(self.size, start, stop)
 
-        with Process('Exporting '+self.dataset_name, total=start-end, verbose=False) as p:
+        with Process('Exporting '+self.dataset_name, total=start-stop, verbose=False) as p:
             from .dataset_generator import DataSetResult
             def write_cb(r: DataSetResult):
                 metadata = OrderedDict()
@@ -837,7 +837,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
                 p.update(1)
 
-            self.export(cb=write_cb, start=start, end=end, columns=exported_columns, n=1,
+            self.export(cb=write_cb, start=start, stop=stop, columns=exported_columns, n=1,
                         determinist=determinist, ncore=ncore)
 
     def to_pytorch_dataset(self, ncore=1, intime='process'):
@@ -861,13 +861,13 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return CustomDataLoader(self)
 
-    def as_cache(self, n=1, start=0, end=None, columns=None, ncore=1, name=None):
-        start, end = interval(self.size, start, end)
+    def as_cache(self, n=1, start=0, stop=None, columns=None, ncore=1, name=None):
+        start, stop = interval(self.size, start, stop)
         if columns is None:
             columns = self.columns_name()
 
         from .dataset_generator import DataSetResult
-        data = DataSetResult.create_empty(dataset=self, n=end - start, start_id=start, columns=columns)
+        data = DataSetResult.create_empty(dataset=self, n=stop - start, start_id=start, columns=columns)
 
         if name is None:
             label = self._name
@@ -875,25 +875,25 @@ class AbstractDataSet(metaclass=ABCMeta):
         else:
             label = name
 
-        with Process('Caching %s' % label, end - start, verbose=False) as p:
+        with Process('Caching %s' % label, stop - start, verbose=False) as p:
             def write_back(r):
-                data[r.start_id-start:r.end_id-start] = r
+                data[r.start_id-start:r.stop_id-start] = r
                 p.update(r.size)
-            self.export(write_back, n=n, start=start, end=end, columns=columns, ncore=ncore)
+            self.export(write_back, n=n, start=start, stop=stop, columns=columns, ncore=ncore)
 
         from .datasets_core import NumPyDataSet
         dataset = NumPyDataSet(data, name=name)
         dataset._parents = [self]
         return dataset
 
-    def cache(self, start=0, end=None, columns=None, ncore=1, ondisk=None, name=None,
+    def cache(self, start=0, stop=None, columns=None, ncore=1, ondisk=None, name=None,
               overwrite='auto'):
         import tables
         from .dataset_generator import DataSetResult
         from collections import OrderedDict
         from ..j_utils.path import open_pytable
 
-        start, end = interval(self.size, start, end)
+        start, stop = interval(self.size, start, stop)
         if columns is None:
             columns = self.columns_name()
 
@@ -962,25 +962,25 @@ class AbstractDataSet(metaclass=ABCMeta):
                     desc[col.name] = tables.Col.from_sctype(col.dtype.type, col.shape, pos=i)
             hdf_t = hdf_f.create_table(table_path, table_name, description=desc, expectedrows=self.size,
                                      createparents=True, track_times=False)
-            chunck_size = min(end - start, hdf_t.chunkshape[0])
+            chunck_size = min(stop - start, hdf_t.chunkshape[0])
 
             if ncore > 1:
-                with Process('Allocating %s' % label, end-start, verbose=False) as p:
+                with Process('Allocating %s' % label, stop-start, verbose=False) as p:
                     empty = DataSetResult.create_empty(dataset=self, n=1).to_row_list()[0]
 
-                    for i in range(0, end-start):
-                        hdf_t.append([empty]*min(chunck_size, end-i))
+                    for i in range(0, stop-start):
+                        hdf_t.append([empty]*min(chunck_size, stop-i))
                         p.step = i
 
-                with Process('Caching %s' % label, end-start, verbose=False) as p:
+                with Process('Caching %s' % label, stop-start, verbose=False) as p:
                     from .dataset_generator import DataSetResult
                     def write_back(r: DataSetResult):
-                        hdf_t.modify_rows(start=r.start_id-start, stop=r.end_id-start, rows=r.to_row_list())
+                        hdf_t.modify_rows(start=r.start_id-start, stop=r.stop_id-start, rows=r.to_row_list())
                         p.update(r.size)
-                    self.export(write_back, n=chunck_size, start=start, end=end, columns=columns, ncore=ncore)
+                    self.export(write_back, n=chunck_size, start=start, stop=stop, columns=columns, ncore=ncore)
             else:
-                with Process('Caching %s' % label, end-start, verbose=False) as p:
-                    for r in self.generator(n=chunck_size, start=start, end=end, determinist=True, columns=columns):
+                with Process('Caching %s' % label, stop-start, verbose=False) as p:
+                    for r in self.generator(n=chunck_size, start=start, stop=stop, determinist=True, columns=columns):
                         hdf_t.append(r.to_row_list())
                         p.update(r.size)
 
@@ -991,8 +991,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         return hdfDataset
 
     #   --- Global operator ---
-    def sum(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, str)
+    def sum(self, columns=None, start=0, stop=None, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, (str, DSColumn))
         columns = self.interpret_columns(columns)
         for c in columns:
             c = self.column_by_name(c)
@@ -1007,11 +1007,11 @@ class AbstractDataSet(metaclass=ABCMeta):
             for c in r.keys():
                 result[0, 0, c] += r[:, c].sum(axis=0)
 
-        self.export(write_cb, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
+        self.export(write_cb, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
         return result[columns[0]] if single_column else result
 
-    def mean(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, str)
+    def mean(self, columns=None, start=0, stop=None, std=False, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, (str, DSColumn))
         columns = self.interpret_columns(columns)
         for c in columns:
             c = self.column_by_name(c)
@@ -1019,41 +1019,46 @@ class AbstractDataSet(metaclass=ABCMeta):
                 raise ValueError('Only numeric columns can be averaged. (%s is not numeric, dtype: %s).'
                                  % (c.name, c.dtype))
 
-        start, end = interval(self.size, start, end)
+        start, stop = interval(self.size, start, stop)
         from .dataset_generator import DataSetResult
-        result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+        result = DataSetResult.create_empty(n=2 if std else 1, dataset=self, columns=columns)
 
-        def write_cb(r):
-            for c in columns:
-                result[0, c] += r[:, c].sum(axis=0)/(end-start)
+        if std:
+            def write_cb(r):
+                for c in columns:
+                    result[0, c] += r[:, c].sum(axis=0) / (stop - start)
+                    result[1, c] += np.square(r[:, c]).sum(axis=0) / (stop - start)
+        else:
+            def write_cb(r):
+                for c in columns:
+                    result[0, c] += r[:, c].sum(axis=0)/(stop-start)
 
-        self.export(write_cb, columns=columns, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
+        self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
+
+        if std:
+            for c in result.keys():
+                result[1, c] = np.sqrt(result[1, c]-np.square(result[1, c]))
+            return result[:, columns[0]] if single_column else result
         return result[0, columns[0]] if single_column else result
 
-    def std(self, columns=None, start=0, end=None, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, str)
+    def std(self, columns=None, start=0, stop=None, ncore=1, n=1, determinist=True):
+        single_column = isinstance(columns, (str, DSColumn))
         columns = self.interpret_columns(columns)
-        for c in columns:
-            c = self.column_by_name(c)
-            if not np.issubdtype(c.dtype, np.number):
-                raise ValueError('Only numeric columns can be averaged. (%s is not numeric, dtype: %s).'
-                                 % (c.name, c.dtype))
+        result = self.mean(columns=columns, start=start, stop=stop, ncore=ncore, n=n, determinist=determinist, std=True)
+        return result[1, columns[0]] if single_column else result.truncate(start=1)
 
-        start, end = interval(self.size, start, end)
-        from .dataset_generator import DataSetResult
-        result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
-        mean_result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
+    def confusion_matrix(self, columns=None, mode='row', start=0, stop=None, ncore=1, n=1, determinist=True):
+        from sklearn.metrics import confusion_matrix
 
-        def write_cb(r):
-            for c in columns:
-                result[0, c] += np.square(r[:, c]).sum(axis=0) / (end - start)
-                mean_result[0, c] += r[:, c].sum(axis=0) / (end - start)
+        single_column = isinstance(columns, (str, DSColumn))
+        columns = self.interpret_columns(columns)
+        mode = mode.lower()
+        start, stop = interval(self.size, start, stop)
 
-        self.export(write_cb, columns=columns, n=n, start=start, end=end, ncore=ncore, determinist=determinist)
-        for c in result.keys():
-            result[0, c] = np.sqrt(result[0, c]-np.square(mean_result[0, c]))
-        del mean_result
-        return result[0, columns[0]] if single_column else result
+        if mode == 'row':
+            def write_cb(r):
+                confusion_matrix()
+
 
     #   ---   Operations   ---
     @classmethod
@@ -1062,10 +1067,10 @@ class AbstractDataSet(metaclass=ABCMeta):
             raise AttributeError('%s method name already exist in AbstractDataset.' % func.__name__)
         setattr(cls, func.__name__, func)
 
-    def subset(self, start=0, end=None, name='subset', *args):
+    def subset(self, start=0, stop=None, name='subset', *args):
         from .datasets_core import DataSetSubset
-        start, end = interval(self.size, start, end, args)
-        return DataSetSubset(self, start, end, name=name)
+        start, stop = interval(self.size, start, stop, args)
+        return DataSetSubset(self, start, stop, name=name)
 
     def subgen(self, n=1, name='subgen'):
         from .datasets_core import DataSetSubgen
@@ -1171,7 +1176,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApply(self, function=f_lut, columns=columns, name=name,
                             cols_format=None, batchwise=True, n_factor=1)
 
-    def as_label(self, columns, mapping, map_format=None, sampling=None, name="label"):
+    def as_label(self, columns, mapping, format=None, sampling=None, name="label"):
         f_mapping = None
         infered_format = {}
         if isinstance(mapping, dict):
@@ -1193,8 +1198,10 @@ class AbstractDataSet(metaclass=ABCMeta):
             raise NotImplementedError
         dataset = self.apply(columns, f_mapping, name=name)
 
-        if isinstance(map_format, dict):
-            infered_format = map_format
+        if isinstance(format, int):
+            infered_format = (0, format)
+        elif isinstance(format, dict) or (isinstance(format, tuple) and len(format)==2):
+            infered_format = format
         for c in dataset._single_col_mapping.keys():
             col = dataset.column_by_name(c)
             col.format = infered_format

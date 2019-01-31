@@ -362,11 +362,11 @@ class DataSetPatches(AbstractDataSet):
 
         if not self._cache_center:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=gen_context.start_id//self._n, end=gen_context.end_id//self._n)
+                                        start=gen_context.start_id//self._n, stop=gen_context.stop_id//self._n)
         else:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
                                         start=self._saved_patch_center[gen_context.start_id, 0],
-                                        end=self._saved_patch_center[gen_context.end_id, 0])
+                                        stop=self._saved_patch_center[gen_context.stop_id, 0])
 
         if not self._cache_center:
             if gen_context.determinist:
@@ -410,7 +410,7 @@ class DataSetPatches(AbstractDataSet):
                     while result is None or img_id != result.start_id:
                         if img_id != gen.current_id:
                             gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns,
-                                                        end=saved_centers[gen_context.end_id, 0])
+                                                        stop=saved_centers[gen_context.stop_id, 0])
                         try:
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
@@ -625,7 +625,7 @@ class DataSetUnPatch(AbstractDataSet):
                     # Read patch
                     if gen is None or gen.current_id != start_patch+i_patch:
                         gen = gen_context.generator(self.parent_dataset, n=self.n_patches, columns=gen_columns,
-                                                    start=start_patch + i_patch, end=self.parent_dataset.size)
+                                                    start=start_patch + i_patch, stop=self.parent_dataset.size)
                     n_patches = min(self.n_patches, n_patch-i_patch)
                     result = gen.next(limit=n_patches, r=r)
 

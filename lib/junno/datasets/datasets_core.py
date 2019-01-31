@@ -162,7 +162,7 @@ class PyTableDataSet(AbstractDataSet):
     def _generator(self, gen_context):
         columns = gen_context.columns
         start = gen_context.start_id
-        stop = gen_context.end_id
+        stop = gen_context.stop_id
 
         if self._rows is not None:
             hd5_gen = self.pytable.itersequence(self._rows[start:stop])
@@ -219,34 +219,34 @@ class PyTableDataSet(AbstractDataSet):
 
 ########################################################################################################################
 class DataSetSubset(AbstractDataSet):
-    def __init__(self, dataset, start=0, end=None, name='subset'):
+    def __init__(self, dataset, start=0, stop=None, name='subset'):
         """
         :type dataset: AbstractDataSets
         """
         super(DataSetSubset, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
         self._columns = dataset.copy_columns(self)
-        self.start, self.end = interval(dataset.size, start, end)
+        self.start, self.stop = interval(dataset.size, start, stop)
 
     def _generator(self, gen_context):
         first_id = gen_context.start_id + self.start
-        last_id = gen_context.end_id + self.start
-        gen = gen_context.generator(self._parent, start=first_id, end=last_id, columns=gen_context.columns)
+        last_id = gen_context.stop_id + self.start
+        gen = gen_context.generator(self._parent, start=first_id, stop=last_id, columns=gen_context.columns)
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
             yield gen.next(copy={c: weakref()[c] for c in gen_context.columns})
 
     @property
     def size(self):
-        return self.end - self.start
+        return self.stop - self.start
 
-    def subset(self, start=0, end=None, *args):
+    def subset(self, start=0, stop=None, *args):
         if len(args) == 1:
             start = 0
-            end = args[0]
+            stop = args[0]
         elif len(args) == 2:
             start = args[0]
-            end = args[1]
-        return DataSetSubset(self._parent, start+self.start, min(self.start+end, self.end))
+            stop = args[1]
+        return DataSetSubset(self._parent, start + self.start, min(self.start + stop, self.stop))
 
 
 ########################################################################################################################
@@ -386,14 +386,14 @@ class DataSetShuffle(AbstractDataSet):
 
     def _generate_random_sequence(self):
         if self.subgen > 1:
-            # Compute (start, end) for each subgen
+            # Compute (start, stop) for each subgen
             subgen_range = [(int(round(_ * self.size / self.subgen)), int(round((_ + 1) * self.size / self.subgen)))
                         for _ in range(self.subgen)]
 
             # Create one-hot
             rand_seq = np.zeros((self.size, self.subgen), dtype=np.uint32)
-            for i, (start, end) in enumerate(subgen_range):
-                n = end-start
+            for i, (start, stop) in enumerate(subgen_range):
+                n = stop-start
                 rand_seq[start:start + n, :] = [1 if i == _ else 0 for _ in range(self.subgen)]
             # Shuffle one-hot
             self.rnd.shuffle(rand_seq)
@@ -402,7 +402,7 @@ class DataSetShuffle(AbstractDataSet):
             rand_seq_id = rand_seq*rand_seq.cumsum(axis=0)
 
             # Replace every one in the one-hot table by the starting index of its sub-generator
-            rand_seq_start = np.multiply(rand_seq, [start for (start, end) in subgen_range])
+            rand_seq_start = np.multiply(rand_seq, [start for (start, stop) in subgen_range])
 
             # Compute final random sequence by adding the sub-generators own indexes and starting index
             indices = np.asarray((rand_seq_start+rand_seq_id).sum(axis=1), dtype=np.uint32)-1
@@ -445,24 +445,24 @@ class DataSetShuffle(AbstractDataSet):
                 indices = self._generate_random_sequence()
                 subgen_range = None
 
-        #indices = indices[gen_context.start_id:gen_context.end_id]
+        #indices = indices[gen_context.start_id:gen_context.stop_id]
 
         # Setup subgenerators
         subgen = []
         subgen_index = None
         async_subgen = None
         if self.subgen > 1:
-            valid_indices = indices[gen_context.start_id:gen_context.end_id+1]
+            valid_indices = indices[gen_context.start_id:gen_context.stop_id+1]
             start = valid_indices.min()
-            end = valid_indices.max()+1
+            stop = valid_indices.max()+1
 
             valid_subgen = []
             valid_ranges = []
-            for i, (gen_start, gen_end) in enumerate(subgen_range):
-                if gen_start < end and end > start:
+            for i, (gen_start, gen_stop) in enumerate(subgen_range):
+                if gen_start < stop and stop > start:
                     gen_start = max(gen_start, start)
-                    gen_end = min(gen_end, end)
-                    valid_ranges.append((gen_start, gen_end))
+                    gen_stop = min(gen_stop, stop)
+                    valid_ranges.append((gen_start, gen_stop))
                     valid_subgen.append(i)
             subgen_range = valid_ranges
             valid_subgen = np.array(valid_subgen)
@@ -474,9 +474,9 @@ class DataSetShuffle(AbstractDataSet):
                 async_subgen = gen_context.ncore > len(subgen_range)
                 subgen_index = self.subgen_index
                 # Setup subgenerator
-                for i, (gen_start, gen_end) in enumerate(subgen_range):
+                for i, (gen_start, gen_stop) in enumerate(subgen_range):
                     is_last = i == len(subgen_range)-1
-                    gen = gen_context.generator(self._parent, start=gen_start, end=gen_end, n=1,
+                    gen = gen_context.generator(self._parent, start=gen_start, stop=gen_stop, n=1,
                                                 parallel=async_subgen and not is_last,
                                                 ncore=round(i*gen_context.ncore/len(subgen_range)))
                     if async_subgen:
@@ -492,8 +492,8 @@ class DataSetShuffle(AbstractDataSet):
                 for i in range(gen_context.ncore):  # For each core select the subset of valid subgen
                     i0 = round(i*len(subgen_range)/gen_context.ncore)
                     i1 = round((i+1)*len(subgen_range)/gen_context.ncore)
-                    for start, end in valid_ranges[i0:i1]:
-                        indices_map[start:end] = i
+                    for start, stop in valid_ranges[i0:i1]:
+                        indices_map[start:stop] = i
                     s_split.append((i0, i1))
                 subgen_index = indices_map[valid_indices]
                 del indices_map
@@ -513,7 +513,7 @@ class DataSetShuffle(AbstractDataSet):
                     gen.seq_id = None
                     subgen.append(gen)
             else:
-                subgen.append(gen_context.generator(self._parent, n=1, start=0, end=self._parent.size, ncore=1))
+                subgen.append(gen_context.generator(self._parent, n=1, start=0, stop=self._parent.size, ncore=1))
 
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
@@ -769,7 +769,7 @@ class DataSetJoin(AbstractDataSet):
                     needed_index = self._join[global_i + i, dataset_id]
                     if gen[1] != needed_index or gen[0] is None:
                         dataset = self.parent_datasets[dataset_id]
-                        generators[dataset_id][0] = gen_context.generator(dataset, start=needed_index, end=dataset.size,
+                        generators[dataset_id][0] = gen_context.generator(dataset, start=needed_index, stop=dataset.size,
                                                                           n=1, columns=datasets_columns[dataset_id],
                                                                           parallel=intime_gens[dataset_id],
                                                                           ncore=ncore_gens[dataset_id])
@@ -786,22 +786,22 @@ class DataSetJoin(AbstractDataSet):
             r = None
             yield weakref
 
-    def subset(self, start=0, end=None, *args):
+    def subset(self, start=0, stop=None, *args):
         from copy import deepcopy
         if len(args) == 1:
             start = 0
-            end = args[0]
+            stop = args[0]
         elif len(args) == 2:
             start = args[0]
-            end = args[1]
+            stop = args[1]
         if not 0 <= start < self.size:
             start = 0
-        if not start <= end < self.size:
-            end = self.size
+        if not start <= stop < self.size:
+            stop = self.size
 
         sub = deepcopy(self)
         sub._name += '_Subset'
-        sub._join = self._join[start:end, :]
+        sub._join = self._join[start:stop, :]
         return sub
 
 
@@ -897,7 +897,7 @@ class DataSetConcatenate(AbstractDataSet):
 
         copy_cols = []
         default_cols = []
-        gen_end_index = 0
+        gen_stop_index = 0
         parent_gen = None
 
         def read_from_parent(result, global_i, n):
@@ -919,15 +919,15 @@ class DataSetConcatenate(AbstractDataSet):
                     dataset_id = bisect_right(self._datasets_start_index, i_global+i)-1
                     dataset = self.parent_datasets[dataset_id]
                     gen_start_index = self._datasets_start_index[dataset_id]
-                    gen_end_index = min(gen_start_index + dataset.size, gen_context.end_id)
+                    gen_stop_index = min(gen_start_index + dataset.size, gen_context.stop_id)
 
                     copy_cols = [_ for _ in dataset.columns_name() if _ in columns]
                     default_cols = [_ for _ in columns if _ not in copy_cols]
                     parent_gen = gen_context.generator(dataset, n=N, columns=copy_cols,
                                                        start=i_global + i - gen_start_index,
-                                                       end=min(gen_context.end_id-gen_start_index, dataset.size))
+                                                       stop=min(gen_context.stop_id-gen_start_index, dataset.size))
 
-                n = min(N - i, gen_end_index - i_global - i)
+                n = min(N - i, gen_stop_index - i_global - i)
                 try:
                     result = parent_gen.next(copy={c: r[i:i + n, c] for c in copy_cols}, limit=n, r=r)
                 except StopIteration:
@@ -1155,7 +1155,7 @@ class DataSetApply(AbstractDataSet):
 
         parent_n = int(np.ceil(n / self._n_factor))
         parent_gen = gen_context.generator(self._parent, columns=self.col_parents(columns), n=parent_n,
-                                           start=gen_context.start_id//self._n_factor, end=gen_context.end_id // self._n_factor)
+                                           start=gen_context.start_id//self._n_factor, stop=gen_context.stop_id // self._n_factor)
 
 
         result = None
