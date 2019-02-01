@@ -557,7 +557,8 @@ class DataSetShuffle(AbstractDataSet):
                             subgen[sub_id].next(copy=r[i:i+1], r=r, seek=seq_id)
                         except StopIteration as e:
                             import traceback
-                            traceback.print_last()
+                            log.error("Subgen %i (stop_id=%i) of dataset %s raised StopIteration exception at index %i."
+                                      % (sub_id, subgen[sub_id].stop_id, self.dataset_fullname, seq_id))
                             raise e
             r = None
             yield weakref
