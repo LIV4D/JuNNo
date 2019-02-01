@@ -1047,18 +1047,122 @@ class AbstractDataSet(metaclass=ABCMeta):
         result = self.mean(columns=columns, start=start, stop=stop, ncore=ncore, n=n, determinist=determinist, std=True)
         return result[1, columns[0]] if single_column else result.truncate(start=1)
 
-    def confusion_matrix(self, columns=None, mode='row', start=0, stop=None, ncore=1, n=1, determinist=True):
+    def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False, start=0, stop=None, ncore=1, n=1, determinist=True):
         from sklearn.metrics import confusion_matrix
 
-        single_column = isinstance(columns, (str, DSColumn))
-        columns = self.interpret_columns(columns)
-        mode = mode.lower()
+        # Handle pred, true and weight
+        if isinstance(pred, DSColumn):
+            if pred.dataset is not self:
+                raise ValueError("%s is not a column of %s." % (pred.name, self.dataset_name))
+        elif isinstance(pred, str):
+            pred = self.column_by_name(pred)
+        else:
+            raise ValueError("Invalid type for pred. (Expected type: str or DSColumn, received: %s)" % type(pred))
+        pred_shape = pred.shape
+
+        if isinstance(true, DSColumn):
+            if true.dataset is not self:
+                raise ValueError("%s is not a column of %s." % (true.name, self.dataset_name))
+        elif isinstance(true, str):
+            true = self.column_by_name(true)
+        elif isinstance(true, np.ndarray):
+            pass
+        else:
+            raise ValueError("Invalid type for true. (Expected type: str or DSColumn, received: %s)" % type(true))
+        true_shape = true.shape
+
+        if weight is not None:
+            if isinstance(weight, DSColumn):
+                if weight.dataset is not self:
+                    raise ValueError("%s is not a column of %s." % (weight.name, self.dataset_name))
+            elif isinstance(weight, str):
+                weight = self.column_by_name(weight)
+            elif isinstance(weight, np.ndarray):
+                pass
+            else:
+                raise ValueError("Invalid type for weight. (Expected type: str or DSColumn, received: %s)" % type(weight))
+            weight_shape = weight.shape
+        else:
+            weight_shape = None
+
+        one_hot = False
+        if np.prod(pred_shape) != np.prod(true_shape):
+            if np.prod(pred_shape[1:]) == np.prod(true_shape):
+                one_hot = True
+                pred_shape = pred.shape[1:]
+            else:
+                raise ValueError("Error when computing the confusion matrix of %s and %s:\n"
+                                 "Shape mismatch: %s.shape=%s, %s.shape=%s"
+                                 % (pred.name, true.name, pred.name, pred.shape, true.name, true.shape))
+        if weight is not None and np.prod(true_shape) != np.prod(weight_shape):
+            raise ValueError("Error when computing the confusion matrix of %s and %s:\n"
+                             "Shape mismatch: %s.shape=%s, %s.shape=%s"
+                             % (true.name, weight.name, true.name, true.shape, weight.name, weight.shape))
+
         start, stop = interval(self.size, start, stop)
 
-        if mode == 'row':
-            def write_cb(r):
-                confusion_matrix()
+        conf_labels = label
+        n_class = len(conf_labels)
 
+        if rowwise:
+            confmat_name = pred.name+'_confmat'
+            kwargs = dict(name=confmat_name,
+                          cols_format=(np.uint32, (n_class, n_class),
+                                       DSColumnFormat.ConfMatrix(n_class)) )
+
+            def conf_mat(pred, true, weight):
+                if one_hot:
+                    pred = np.argmax(pred, axis=0)
+                return confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
+                                        labels=conf_labels)
+            if isinstance(true, DSColumn):
+                if isinstance(weight, DSColumn):
+                    return self.apply({confmat_name, (pred, true, weight)}, conf_mat, **kwargs)
+                else:
+                    return self.apply({confmat_name, (pred, true)}, **kwargs,
+                                      function=lambda pred, true: conf_mat(pred, true, weight))
+            else:
+                if isinstance(weight, DSColumn):
+                    return self.apply({confmat_name, (pred, weight)}, **kwargs,
+                                      function=lambda pred, weight: conf_mat(pred, true, weight))
+                else:
+                    return self.apply({confmat_name, (pred)}, **kwargs,
+                                      function=lambda pred: conf_mat(pred, true, weight))
+        else:
+            confmat = np.zeros((n_class, n_class), dtype=np.uint)
+
+            with Process('Confustion Matrix: %s' % label, stop - start, verbose=False) as p:
+                def write_cb(r):
+                    if one_hot:
+                        y_pred = np.argmax(r[pred.name], axis=1).flatten()
+                    else:
+                        y_pred = r[pred.name].flatten()
+
+                    if isinstance(true, DSColumn):
+                        y_true = r[true.name].flatten()
+                    else:
+                        y_true = true.flatten()
+
+                    if isinstance(weight, DSColumn):
+                        sample_weight = r[weight.name].flatten()
+                    else:
+                        sample_weight = weight.flatten()
+
+                    confmat[:] += confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=sample_weight,
+                                                   labels=conf_labels)
+
+                    p.update(r.size)
+
+                columns = [pred.name]
+                if isinstance(true, DSColumn):
+                    columns.append(true.name)
+                if isinstance(weight, DSColumn):
+                    columns.append(weight.name)
+
+                self.export(write_cb, n=n, start=start, stop=stop, columns=columns, determinist=determinist,
+                            ncore=ncore)
+
+            return confmat
 
     #   ---   Operations   ---
     @classmethod
@@ -1775,6 +1879,10 @@ class DSColumnFormat:
 
             from ..j_utils.image import prepare_lut
             self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
+
+    class ConfMatrix(Matrix):
+        def __init__(self, n_class):
+            super(DSColumnFormat.ConfMatrix, self).__init__(np.uint32, (n_class, n_class))
 
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False):

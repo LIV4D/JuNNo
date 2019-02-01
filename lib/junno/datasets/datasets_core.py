@@ -1027,7 +1027,7 @@ class DataSetApply(AbstractDataSet):
                 own_c = (own_c,)
             if parent_c is None or not parent_c:
                 parent_c = []
-            elif isinstance(parent_c, str):
+            elif isinstance(parent_c, (str, DSColumn)):
                 parent_c = [parent_c]
             elif isinstance(parent_c, tuple):
                 parent_c = list(parent_c)
@@ -1038,8 +1038,12 @@ class DataSetApply(AbstractDataSet):
             if len(parent_c) > len(self.f_params):
                 raise ValueError('Too many parent columns: function expect %i parameters, %i was given.'
                                  % (len(self.f_params), len(parent_c)))
-            for c in parent_c:
-                if c not in parent_columns_name:
+            for i, c in enumerate(parent_c):
+                if isinstance(c, DSColumn):
+                    if c.dataset is not dataset:
+                        raise ValueError('%s is not a columns of %s!' % (c.name, dataset.dataset_name))
+                    parent_c[i] = c.name
+                elif c not in parent_columns_name:
                     raise ValueError('%s is not a columns of %s!' % (c, dataset.dataset_name))
             # Removing explicit parent columns from
             if remove_parent_columns:
