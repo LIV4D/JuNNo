@@ -1987,16 +1987,17 @@ class DSColumnFormat:
             for i in range(0, data.shape[0], 3):
                 d = data[i:i+3]
                 if d.shape[0] in (1, 3):
-                    split_data.append(d)
+                    split_data.append(d.transpose((1, 2, 0)))
                 elif d.shape[0] == 2:
-                    split_data.append(d[0:1])
-                    split_data.append(d[1:2])
+                    split_data.append(d[0])
+                    split_data.append(d[1])
 
             if len(split_data) == 1:
                 f = join(path, filename + '.png')
                 if not overwrite and exists(f):
                     return
                 cv2.imwrite(f, split_data[0])
+                print(data.shape)
             else:
                 for i, d in enumerate(split_data):
                     f = join(path, filename+str(i)+'.png')

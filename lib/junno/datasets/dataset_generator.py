@@ -356,6 +356,26 @@ class DataSetResult:
 
     def to_row_list(self):
         return list(self)
+    
+    def to_torch(self, *args, device=None):
+        import torch
+        r = []
+
+        if isinstance(device, torch.nn.Module):
+            if hasattr(device, "device"):
+                device = device.device
+            else:
+                device = "cpu"
+
+        for c in args:
+            if c not in self:
+                raise ValueError("Unknown column %s" % str(c))
+            t = torch.from_numpy(self[c])
+            if device:
+                t = t.to(device)
+            r.append(t)
+
+        return tuple(r)
 
     class Trace:
         def __init__(self, r):
