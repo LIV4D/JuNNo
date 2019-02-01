@@ -342,7 +342,7 @@ class DataSetPandaDF(AbstractDataSet):
 
 
 ########################################################################################################################
-def excel_dataset(path, mapping=None, **kwargs):
+def load_excel(path, mapping=None, **kwargs):
     df = pandas.read_excel(path)
     if mapping is not None:
         kwargs.update(mapping)
@@ -350,9 +350,25 @@ def excel_dataset(path, mapping=None, **kwargs):
 
 
 ########################################################################################################################
-def csv_dataset(path, mapping=None, **kwargs):
+def load_csv(path, mapping=None, **kwargs):
     df = pandas.read_csv(path)
     if mapping is not None:
         kwargs.update(mapping)
 
     return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+
+
+########################################################################################################################
+def from_pandas(df, mapping=None, **kwargs):
+    if mapping is not None:
+        kwargs.update(mapping)
+
+    return DataSetPandaDF(df, mapping=kwargs, name='pandasDF')
+
+
+########################################################################################################################
+def images(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+    return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
+                            imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
+                            keep_proportion=keep_proportion)

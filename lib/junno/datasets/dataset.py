@@ -246,7 +246,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return self.read_one(row=row, columns=columns, extract=False)
 
     #   ---   Generators   ---
-    def generator(self, n=1, start=None, stop=None, columns=None, determinist=True, intime=False, ncore=1):
+    def generator(self, n=1, start=None, stop=None, columns=None, determinist=True, intime=False, ncore=0):
         """Creates a generator which iterate through data.
 
         :param n:  Number of element to return (maximum) by iteration
@@ -719,8 +719,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         elif metadata_format is 'json':
             dataframe.to_json(folder_path+'meta.json')
 
-    def export_folder(self, path, start=0, stop=None, columns=None, filename_column=None, metadata_file='.xlsx',
-                      determinist=True, ncore=None, overwrite=True):
+    def export_files(self, path, start=0, stop=None, columns=None, filename_column=None, metadata_file='.xlsx',
+                      determinist=True, ncore=1, overwrite=True):
         import pandas
         #   ---  HANDLE PARAMETERS ---
 
@@ -771,7 +771,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             for n in ('name', 'filename'):
                 if n in self.columns_name():
                     filename_column = n
-            else:
+                    break
+            if filename_column is None:
                 filename_column = 'pk'
         exported_columns.add(filename_column)
 
@@ -795,7 +796,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         # Handle start stop
         start, stop = interval(self.size, start, stop)
 
-        with Process('Exporting '+self.dataset_name, total=start-stop, verbose=False) as p:
+        with Process('Exporting '+self.dataset_name, total=stop-start, verbose=False) as p:
             from .dataset_generator import DataSetResult
             def write_cb(r: DataSetResult):
                 metadata = OrderedDict()
@@ -1253,13 +1254,13 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
 
-    def apply(self, columns, function, cols_format=None, n_factor=1, batchwise=False, name=None):
+    def apply(self, columns, function, cols_format=None, format=None, n_factor=1, batchwise=False, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
         from .datasets_core import DataSetApply
-        return DataSetApply(self, function=function, columns=columns, name=name,
+        return DataSetApply(self, function=function, columns=columns, name=name, format=format,
                             cols_format=cols_format, batchwise=batchwise, n_factor=n_factor)
 
     def cv_apply(self, columns, function, cols_format=None, n_factor=1, name=None):
@@ -1403,7 +1404,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetAugmentedData(self, columns=columns, n=N_augmented,
                                     da_engine=da_engine, keep_original=keep_original, column_transform=column_transform)
 
-    def patches(self, columns=None, patch_shape=(128, 128), stride=(0, 0), ignore_borders=False, mask=None,
+    def patches(self, columns=None, patch_shape=(128, 128), stride=(0, 0), ignore_borders=True, mask=None,
                 center_pos=False, name='patch'):
         """Generate patches from specific columns.
 
@@ -1486,8 +1487,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         patchify = partial(compute_regular_patch_centers, ignore_borders=ignore_borders, mask=mask, stride=stride)
 
         from .datasets_core2d import DataSetPatches
-        return DataSetPatches(self, patch_shape=patches_def, patches_function=patchify,
-                              center_pos=center_pos, name=name)
+        d = DataSetPatches(self, patch_shape=patches_def, patches_function=patchify,
+                           center_pos=center_pos, name=name)
+        d.stride = stride
+        d.ignore_borders = ignore_borders
+        return d
 
     def random_patches(self, columns=None, patch_shape=(128, 128), n=10, proba_map=None, rng=None,
                        center_pos=False, name='randomPatch'):
@@ -1599,11 +1603,12 @@ class DSColumn:
         self.format = format
 
     def __getstate__(self):
-        return self._name, self._shape, self._dtype
+        return self._name, self._shape, self._dtype, self._is_text
 
     def __setstate__(self, state):
-        self._name, self._shape, self._dtype = state
+        self._name, self._shape, self._dtype, self._is_text = state
         self._dataset = None
+        self._format = None
 
     @property
     def shape(self):
@@ -1974,13 +1979,30 @@ class DSColumnFormat:
             import cv2
             return [cv2.imencode('png', d)[0] for d in data]
 
-        def write_file(self, data, filename, path, overwrite=True):
+        def write_file(self, data, path, filename, overwrite=True):
             import cv2
-            for i, d in enumerate(data):
-                f = join(path, filename+str(i)+'.png')
+
+            split_data = []
+
+            for i in range(0, data.shape[0], 3):
+                d = data[i:i+3]
+                if d.shape[0] in (1, 3):
+                    split_data.append(d)
+                elif d.shape[0] == 2:
+                    split_data.append(d[0:1])
+                    split_data.append(d[1:2])
+
+            if len(split_data) == 1:
+                f = join(path, filename + '.png')
                 if not overwrite and exists(f):
-                    continue
-                cv2.imwrite(f, d)
+                    return
+                cv2.imwrite(f, split_data[0])
+            else:
+                for i, d in enumerate(split_data):
+                    f = join(path, filename+str(i)+'.png')
+                    if not overwrite and exists(f):
+                        continue
+                    cv2.imwrite(f, d)
 
     class LabelImage(Image):
         def __init__(self, dtype, shape, mapping=None, default=None):

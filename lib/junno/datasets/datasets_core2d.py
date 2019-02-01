@@ -637,9 +637,20 @@ class DataSetUnPatch(AbstractDataSet):
                         if self.patch_mix_method == 'replace':
                             for c, parent_c in unpatched_columns.items():
                                 for parent in parent_c:
-                                    s_patch = result[i_patches, parent].shape
+                                    patch = result[i_patches, parent]
+                                    patch_shape = result[i_patches, parent].shape[-2:]
+
+                                    if hasattr(self.patch_dataset, "stride"):
+                                        stride = self.patch_dataset.stride
+                                        if stride[0] < patch_shape[0] or stride[1] < patch_shape[1]:
+                                            y0 = max(0, (patch_shape[0] - stride[0]) // 2)
+                                            x0 = max(0, (patch_shape[1] - stride[1]) // 2)
+                                            h0 = min(patch_shape[0], stride[0])
+                                            w0 = min(patch_shape[1], stride[1])
+                                            patch = patch[..., y0:y0+h0, x0:x0+w0]
+                                            patch_shape = (h0, w0)
+
                                     s_out = r[i, c].shape
-                                    patch_shape = s_patch[-2:]
                                     h, w = s_out[-2:]
 
                                     half_x = patch_shape[1] // 2
@@ -661,7 +672,7 @@ class DataSetUnPatch(AbstractDataSet):
                                               [slice(y1, y1+h0), slice(x1, x1+w0)]
                                     win_patch = [slice(None, None)]*(len(s_out)-2) + \
                                                 [slice(y0, y0+h0), slice(x0, x0+w0)]
-                                    r[i, c][win_out] = result[i_patches, parent][win_patch]
+                                    r[i, c][win_out] = patch[win_patch]
                         else:
                             raise NotImplementedError
                     i_patch += n_patches

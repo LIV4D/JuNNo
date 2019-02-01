@@ -729,6 +729,10 @@ class DataSetSmartGenerator:
             if self.n > r.size:
                 r.truncate(self.n)
 
+        # Reapply column format
+        for c in r._columns:
+            c.format = self.dataset.column_by_name(c.name).format
+
         return r
 
     def reset(self, start=None, stop=None, columns=None, n=None, determinist=None):

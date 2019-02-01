@@ -321,6 +321,8 @@ class DataSetMap(AbstractDataSet):
         copy_columns = {}
         duplicate_columns = {}
         for c_name in columns:
+            if c_name == "pk":
+                continue
             c_parents = self.concatenation_map[c_name]
             gen_columns.update(set(c_parents))
             i = 0
@@ -336,7 +338,7 @@ class DataSetMap(AbstractDataSet):
                         duplicate_columns[c_parent] = d
                     d.append((c_name, i, n))
                 i += n
-            copy_columns['pk'] = ('pk', 0, 0)
+        copy_columns['pk'] = ('pk', 0, 0)
         gen_columns = list(gen_columns)
         gen = gen_context.generator(self._parent, columns=gen_columns)
 
@@ -437,10 +439,11 @@ class DataSetShuffle(AbstractDataSet):
 
         if gen_context.determinist or not self.random_indices:
             indices = self.indices
+            subgen_index = self.subgen_index
             subgen_range = self.subgen_range
         else:
-            if self.subgen:
-                indices, subgen_range = self._generate_random_sequence()
+            if self.subgen > 1:
+                indices, subgen_range, subgen_index = self._generate_random_sequence()
             else:
                 indices = self._generate_random_sequence()
                 subgen_range = None
@@ -449,7 +452,6 @@ class DataSetShuffle(AbstractDataSet):
 
         # Setup subgenerators
         subgen = []
-        subgen_index = None
         async_subgen = None
         if self.subgen > 1:
             valid_indices = indices[gen_context.start_id:gen_context.stop_id+1]
@@ -472,7 +474,6 @@ class DataSetShuffle(AbstractDataSet):
 
             if not 1 < gen_context.ncore <= len(subgen_range):
                 async_subgen = gen_context.ncore > len(subgen_range)
-                subgen_index = self.subgen_index
                 # Setup subgenerator
                 for i, (gen_start, gen_stop) in enumerate(subgen_range):
                     is_last = i == len(subgen_range)-1
@@ -495,16 +496,17 @@ class DataSetShuffle(AbstractDataSet):
                     for start, stop in valid_ranges[i0:i1]:
                         indices_map[start:stop] = i
                     s_split.append((i0, i1))
-                subgen_index = indices_map[valid_indices]
+                subgen_ids = indices_map[valid_indices]
                 del indices_map
                 for i, (i0, i1) in enumerate(s_split):  # For each core setup dataset and generator
                     is_last = i == len(s_split) - 1
-                    s_indices = indices[subgen_index == i]
+                    s_indices = indices[subgen_ids == i]
                     s_dataset = DataSetShuffle(self._parent, indices=s_indices, subgen=valid_ranges[i0:i1])
-                    s_dataset.subgen_index = valid_subgen[self.subgen_index[subgen_index == i]]-i0
+                    s_dataset.subgen_index = valid_subgen[subgen_index[subgen_ids == i]]-i0
                     gen = gen_context.generator(s_dataset, n=1, ncore=1, parallel='thread' if is_last else 'process')
                     gen.setup()
                     subgen.append(gen)
+                subgen_index = subgen_ids
         else:
             if gen_context.ncore > 1:
                 for i in range(gen_context.ncore):
@@ -549,7 +551,7 @@ class DataSetShuffle(AbstractDataSet):
                     for i, sub_id in enumerate(seq_subgens):
                         subgen[sub_id].next(copy=r[i:i+1], r=r)
                 else:               # -- Sync subgen --
-                    seq_indexes = self.indices[i_global:i_global + n]
+                    seq_indexes = indices[i_global:i_global + n]
                     for i, (sub_id, seq_id) in enumerate(zip(seq_subgens, seq_indexes)):
                         try:
                             subgen[sub_id].next(copy=r[i:i+1], r=r, seek=seq_id)
@@ -956,8 +958,8 @@ class DataSetApply(AbstractDataSet):
     """
     Apply a function to some columns of a dataset, all other columns are copied
     """
-    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
-                 batchwise=False, name='apply'):
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, format=None,
+                 n_factor=None, batchwise=False, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
         :param function: the function to apply to the dataset. The function can be apply element-wise or batch-wise.
@@ -990,6 +992,8 @@ class DataSetApply(AbstractDataSet):
                                 a similar behaviour will be attempted based on the column name.
                             Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
                             format will be copied from **dataset**.
+
+        :param format: the format of columns returned by the function
 
         :param n_factor: The number of rows generated for each row given to the function. If not specified,
                             the value will be read by passing the **dataset** first row to the function.
@@ -1094,7 +1098,8 @@ class DataSetApply(AbstractDataSet):
                         cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
                     # Infer format from first parent
                     parent_column = dataset.column_by_name(self._single_col_mapping[c][0])
-                    cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                    col_format = if_none(format, parent_column.format)
+                    cols_format[c] = (parent_column.dtype, parent_column.shape, col_format)
                 elif isinstance(col_format, str) and col_format in dataset.columns_name:
                     parent_column = dataset.column_by_name(col_format)
                     cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
@@ -1133,7 +1138,7 @@ class DataSetApply(AbstractDataSet):
                     if isinstance(c_sample, np.ndarray):
                         cols_format[c_name] = (c_sample.dtype, c_sample.shape)
                     else:
-                        cols_format[c_name] = (np.dtype(type(c_sample)))
+                        cols_format[c_name] = (np.dtype(type(c_sample)),)
                     if c_name in unknown_columns_format:
                         unknown_columns_format.remove(c_name)
 
@@ -1142,7 +1147,7 @@ class DataSetApply(AbstractDataSet):
             col = self.column_by_name(c_name)
             col._dtype = c_format[0]
             col._shape = c_format[1] if len(c_format) > 1 else ()
-            col.format = c_format[2] if len(c_format) > 2 else None
+            col.format = c_format[2] if len(c_format) > 2 else format
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
@@ -1190,9 +1195,9 @@ class DataSetApply(AbstractDataSet):
 
                 if 'pk' not in self._single_col_mapping:    # Handle primary key
                     if self._n_factor > 1:
-                        r[i, 'pk'] = str(result[0, 'pk'])+str((i+i_global) % self._n_factor)
+                        r[i, 'pk'] = str(result[i_f//self._n_factor, 'pk'])+str((i+i_global) % self._n_factor)
                     else:
-                        r[i, 'pk'] = result[0, 'pk']
+                        r[i, 'pk'] = result[i_f, 'pk']
 
                 # Clean
                 i_f += 1

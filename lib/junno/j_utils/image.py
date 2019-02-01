@@ -35,7 +35,7 @@ def crop_pad(img, shape):
     return r
 
 
-def compute_regular_patch_centers(patch_shapes, img_shape, stride=(1,1), ignore_borders=False, mask=None):
+def compute_regular_patch_centers(patch_shapes, img_shape, stride=None, ignore_borders=False, mask=None):
     max_x = max([_[1] for _ in patch_shapes])
     max_y = max([_[0] for _ in patch_shapes])
     half_x = max_x // 2
@@ -43,14 +43,24 @@ def compute_regular_patch_centers(patch_shapes, img_shape, stride=(1,1), ignore_
     half_y = max_y // 2
     odd_y = max_y % 2
 
-    y_range = (half_y+(0 if not ignore_borders else - half_y - odd_y + 1), img_shape[0] + (0 if ignore_borders else - half_y - odd_y + 1))
-    x_range = (half_x+(0 if not ignore_borders else - half_x - odd_x + 1), img_shape[1] + (0 if ignore_borders else - half_x - odd_x + 1))
+    if stride is None:
+        stride = patch_shapes
+
+    if not ignore_borders:
+        y_range = (half_y, img_shape[0])
+        x_range = (half_x, img_shape[1])
+    else:
+        pad_h = img_shape[0] % stride[0] // 2
+        pad_w = img_shape[1] % stride[1] // 2
+        y_range = (pad_h, img_shape[0] - pad_h + 1)
+        x_range = (pad_w, img_shape[1] - pad_w + 1)
     centers = []
 
     for y in range(y_range[0], y_range[1], stride[0]):
         for x in range(x_range[0], x_range[1], stride[1]):
             if mask is None or mask[y, x] > 0.5:
                 centers.append((y, x))
+
     return centers
 
 

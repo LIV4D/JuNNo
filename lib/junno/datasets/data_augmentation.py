@@ -80,7 +80,7 @@ class DataSetAugmentedData(AbstractDataSet):
                 # Compute augmented data
                 seed = i+i_global
                 if not gen_context.determinist:
-                    seed += gen_context.generator_id*self.size
+                    seed = np.random.randint(0, 100000)
 
                 self.da_engine.init_object(seed)
                 for c in columns:
