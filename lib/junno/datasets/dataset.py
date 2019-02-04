@@ -1254,23 +1254,24 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
 
-    def apply(self, columns, function, cols_format=None, format=None, n_factor=1, batchwise=False, name=None):
+    def apply(self, columns, function, cols_format=None, format=None, n_factor=1, batchwise=False, keep_parent=False,
+              name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
         from .datasets_core import DataSetApply
-        return DataSetApply(self, function=function, columns=columns, name=name, format=format,
-                            cols_format=cols_format, batchwise=batchwise, n_factor=n_factor)
+        return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
+                            remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise)
 
-    def cv_apply(self, columns, function, cols_format=None, n_factor=1, name=None):
+    def cv_apply(self, columns, function, cols_format=None, n_factor=1, keep_parent=False, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
         from .datasets_core import DataSetApplyCV
-        return DataSetApplyCV(self, function=function, columns=columns, name=name,
-                              cols_format=cols_format, n_factor=n_factor)
+        return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
+                              cols_format=cols_format, remove_parent_columns=not keep_parent)
 
     def apply_map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
         from .datasets_core import DataSetApply

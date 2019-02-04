@@ -1294,18 +1294,58 @@ class DataSetApply(AbstractDataSet):
 class DataSetApplyCV(DataSetApply):
     def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
                  name='apply'):
-        super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns,
+        super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns, batchwise=False,
                                              remove_parent_columns=remove_parent_columns, cols_format=cols_format,
                                              n_factor=n_factor, name=name)
 
     def compute_f(self, args, rkeys):
-        for i, a in enumerate(args):
-            if isinstance(a, np.ndarray) and a.ndim == 3 and a.shape[0] in (1, 3):
-                args[i] = a.transpose((1, 2, 0))
 
-        d = super(DataSetApplyCV, self).compute_f(args=args, rkeys=rkeys)
+        args_n = args[0].shape[0]
 
-        for k, a in d.items():
-            if isinstance(a, np.ndarray) and a.ndim == 3 and a.shape[2] in (1, 3):
-                d[k] = a.transpose((2, 0, 1))
-        return d
+        r = {_: [] for _ in rkeys}
+        for i in range(args_n):
+            kwargs = {}
+            for name, a in zip(self.f_params, args):
+                a = a[i]
+                if isinstance(a, np.ndarray):
+                    if a.ndim == 3 and a.shape[0] in (1, 3):
+                        a = a.transpose((1, 2, 0))
+                    if 'uint' not in str(a.dtype):
+                        a = (a * 255).astype(np.uint8)
+                kwargs[name] = a
+            f_result = self._f(**kwargs)
+            del kwargs
+
+            if not isinstance(f_result, list):
+                if self._n_factor == 1 or self._n_factor is None:
+                    f_result = [f_result]
+                else:
+                    raise ValueError('Function return a single row but %i was expected.' % self._n_factor)
+            else:
+                if self._n_factor is not None and len(f_result) != self._n_factor:
+                    raise ValueError('The function returned %i rows but %i was expected.'
+                                     % (len(f_result), self._n_factor))
+            if not isinstance(f_result[0], tuple):
+                if len(rkeys) != 1:
+                    raise ValueError('The function returned a single column but %i was expected.'
+                                     % len(rkeys))
+                else:
+                    r[rkeys[0]] += f_result  # return [row1, row2, row3, ...]
+            else:
+                f_result = list(zip(f_result))
+                if len(f_result) != len(rkeys):
+                    raise ValueError('The function returned %i columns but %i was expected.'
+                                     % (len(f_result), len(rkeys)))
+                for c_name, c_data in zip(rkeys, f_result):
+                    r[c_name].append(np.stack(c_data))  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+
+        f_result = {n: np.stack(d) for n, d in r.items()}
+        r = {}
+        for k, a in f_result.items():
+            if isinstance(a, np.ndarray) and a.ndim == 4 and a.shape[3] in (1, 3):
+                a = a.transpose((2, 0, 1))
+            if a.dtype == np.uint8:
+                a = a.astype(np.float)/255
+            r[k] = a
+
+        return r
