@@ -1998,7 +1998,6 @@ class DSColumnFormat:
                 if not overwrite and exists(f):
                     return
                 cv2.imwrite(f, split_data[0])
-                print(data.shape)
             else:
                 for i, d in enumerate(split_data):
                     f = join(path, filename+str(i)+'.png')
