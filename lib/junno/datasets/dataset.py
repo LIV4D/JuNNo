@@ -958,7 +958,10 @@ class AbstractDataSet(metaclass=ABCMeta):
             for i, c in enumerate(['pk']+columns):
                 col = self.column_by_name(c)
                 if col.shape == ():
-                    desc[col.name] = tables.Col.from_dtype(col.dtype, pos=i)
+                    if col.is_text:
+                        desc[col.name] = tables.StringCol(pos=i)
+                    else:
+                        desc[col.name] = tables.Col.from_dtype(col.dtype, pos=i)
                 else:
                     desc[col.name] = tables.Col.from_sctype(col.dtype.type, col.shape, pos=i)
             hdf_t = hdf_f.create_table(table_path, table_name, description=desc, expectedrows=self.size,
@@ -1657,6 +1660,10 @@ class DSColumn:
         if self._dataset is not None:
             return self._dataset()
         return None
+
+    @property
+    def is_text(self):
+        return self._is_text
 
     @property
     def format(self):
