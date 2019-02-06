@@ -1257,12 +1257,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
 
-    def apply(self, columns, function, cols_format=None, format=None, n_factor=1, batchwise=False, keep_parent=False,
+    def apply(self, columns, function, cols_format=None, format=None, n_factor=None, batchwise=False, keep_parent=False,
               name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
+        if n_factor is None and cols_format == 'auto':
+            n_factor = 1
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
                             remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise)
