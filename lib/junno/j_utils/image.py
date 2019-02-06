@@ -90,7 +90,6 @@ _last_lut = None
 def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
     assert isinstance(map, dict) and len(map)
 
-    from .j_log import log
     import numpy as np
     from .collections import if_none
 
@@ -201,24 +200,18 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
 
         # Check source shape
         if a_source_shape != source_shape:
-            print(array.shape)
             raise ValueError('Invalid dimensions on axis: %s. (expected: %s, received: %s)'
                              % (str(axis), str(source_shape), str(a_source_shape)))
 
-        log.debug(np.unique(array), sampling)
         # Prepare table
         if sampling == 1:
             array = array.astype(np.int32)
         else:
             array = (array / sampling).astype(np.int32)
 
-        log.debug(np.unique(array))
-
         a = np.moveaxis(array.reshape(source_shape + (map_size,)), -1, 0).reshape((map_size, source_size))
         id_mapped = np.logical_not(np.any(np.logical_or(a > maxs, a < mins), axis=1))
         array = np.sum((a - mins) * stride, axis=1).astype(np.uint32)
-
-        log.debug(np.unique(array), mins, stride, a.shape, np.unique(a))
 
         # Map values
         a = np.zeros(shape=(map_size,), dtype=np.uint32)
