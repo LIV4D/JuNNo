@@ -1022,7 +1022,10 @@ class DataSetApply(AbstractDataSet):
         if isinstance(columns, list):
             columns = {_: _ if _ in parent_columns_name else None for _ in columns}
         elif isinstance(columns, tuple):
-            columns = {columns: ()}
+            if all(_ in dataset.col for _ in columns):
+                columns = {columns: columns[:len(self.f_params)]}
+            else:
+                columns = {columns: ()}
         if not isinstance(columns, dict):
             raise ValueError('Columns should be of the following type str, tuple, list, dict.'
                              '(type provided: %s)' % type(columns).__name__)
@@ -1086,6 +1089,10 @@ class DataSetApply(AbstractDataSet):
             raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
                              % type(cols_format).__name__)
 
+        if not isinstance(format, dict):
+            format = {_:format for _ in self._single_col_mapping.keys()}
+
+
         # Try to infer
         unknown_columns_format = []
         for c in self._single_col_mapping:
@@ -1099,7 +1106,7 @@ class DataSetApply(AbstractDataSet):
                         cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
                     # Infer format from first parent
                     parent_column = dataset.column_by_name(self._single_col_mapping[c][0])
-                    col_format = if_none(format, parent_column.format)
+                    col_format = format.get(c, parent_column.format)
                     cols_format[c] = (parent_column.dtype, parent_column.shape, col_format)
                 elif isinstance(col_format, str) and col_format in dataset.columns_name:
                     parent_column = dataset.column_by_name(col_format)
@@ -1148,7 +1155,7 @@ class DataSetApply(AbstractDataSet):
             col = self.column_by_name(c_name)
             col._dtype = c_format[0]
             col._shape = c_format[1] if len(c_format) > 1 else ()
-            col.format = c_format[2] if len(c_format) > 2 else format
+            col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
@@ -1256,12 +1263,12 @@ class DataSetApply(AbstractDataSet):
                     else:
                         r[rkeys[0]] += f_result                 # return [row1, row2, row3, ...]
                 else:
-                    f_result = list(zip(f_result))
+                    f_result = list(zip(*f_result))
                     if len(f_result) != len(rkeys):
                         raise ValueError('The function returned %i columns but %i was expected.'
                                          % (len(f_result), len(rkeys)))
                     for c_name, c_data in zip(rkeys, f_result):
-                        r[c_name].append(np.stack(c_data))      # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+                        r[c_name] += c_data      # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
 
             return {n: np.stack(d) for n, d in r.items()}
         else:
@@ -1310,7 +1317,7 @@ class DataSetApplyCV(DataSetApply):
                 if isinstance(a, np.ndarray):
                     if a.ndim == 3 and a.shape[0] in (1, 3):
                         a = a.transpose((1, 2, 0))
-                    if 'uint' not in str(a.dtype):
+                    if 'float' in str(a.dtype):
                         a = (a * 255).astype(np.uint8)
                 kwargs[name] = a
             f_result = self._f(**kwargs)
@@ -1343,7 +1350,7 @@ class DataSetApplyCV(DataSetApply):
         r = {}
         for k, a in f_result.items():
             if isinstance(a, np.ndarray) and a.ndim == 4 and a.shape[3] in (1, 3):
-                a = a.transpose((2, 0, 1))
+                a = a.transpose((0, 3, 1, 2))
             if a.dtype == np.uint8:
                 a = a.astype(np.float)/255
             r[k] = a

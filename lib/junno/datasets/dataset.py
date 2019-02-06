@@ -794,7 +794,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         meta_name_column = filename_column if filename_column not in columns_mapping else None
 
         # Handle start stop
-        start, stop = interval(self.size, start, stop)
+        start, stop = interval(size=self.size, start=start, stop=stop)
 
         with Process('Exporting '+self.dataset_name, total=stop-start, verbose=False) as p:
             from .dataset_generator import DataSetResult
@@ -958,8 +958,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             for i, c in enumerate(['pk']+columns):
                 col = self.column_by_name(c)
                 if col.shape == ():
-                    if col.is_text:
-                        desc[col.name] = tables.StringCol(pos=i)
+                    if col.is_text or col.dtype in ('O', object):
+                        desc[col.name] = tables.StringCol(1024, pos=i)
                     else:
                         desc[col.name] = tables.Col.from_dtype(col.dtype, pos=i)
                 else:
@@ -1904,7 +1904,7 @@ class DSColumnFormat:
             self.html_fullscreen = True
             self.clip = 0, 255
             self.range = 0, 255
-            if 'int' in str(dtype):
+            if dtype == np.uint8:
                 self.domain = 0, 255
             else:
                 self.domain = 0, 1.0

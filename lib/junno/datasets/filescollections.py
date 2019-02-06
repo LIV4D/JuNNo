@@ -45,13 +45,13 @@ class FilesCollection(AbstractDataSet):
         :param recursive: If true the folder will be explored recursively (including all its sub-folders)
                           Otherwise only the files in the path folder will be listed
         """
-        super(FilesCollection, self).__init__(name, pk_type=str)
+        super(FilesCollection, self).__init__(name, pk_type=np.dtype(('U', 100)))
         self.path = path
         self.regexp = regexp
         self.filename_regexp = filename_regexp
         self.recursive = recursive
         self.remove_extension = remove_extension
-        self._files = np.zeros(shape=(), dtype=str)
+        self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
         self.update_files()
 
         if not len(self._files):
@@ -73,7 +73,7 @@ class FilesCollection(AbstractDataSet):
         self.len_path = len(abspath(self.path))
         self.len_path += 1 if self.len_path else 0
 
-        self.add_column('name', (), str)
+        self.add_column('name', (), np.dtype(('U', 100)))
         sample = self._read_files(self._files[0])
         if type(sample) == np.ndarray:
             self.add_column('data', sample.shape, sample.dtype)
