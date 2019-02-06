@@ -1090,7 +1090,9 @@ class DataSetApply(AbstractDataSet):
                              % type(cols_format).__name__)
 
         if not isinstance(format, dict):
-            format = {_:format for _ in self._single_col_mapping.keys()}
+            format = {_: format for _ in self._single_col_mapping.keys()}
+        elif not all(_ in self._single_col_mapping for _ in format.keys()):
+            format = {_: format for _ in self._single_col_mapping.keys()}
 
 
         # Try to infer
