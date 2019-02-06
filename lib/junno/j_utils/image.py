@@ -103,7 +103,7 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
     add_empty_axis = False
     for source, dest in map.items():
         if isinstance(source, str):
-            source = str2color(source, uint8=False)
+            source = str2color(source, uint8=str(source_dtype) == 'uint8')
         source = np.array(source)
         if source.ndim == 0:
             source = source.reshape((1,))
@@ -115,7 +115,7 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
         source_list.append(source)
 
         if isinstance(dest, str):
-            dest = str2color(dest, uint8=False)
+            dest = str2color(dest, uint8=str(source_dtype) == 'uint8')
         dest = np.array(dest)
         if dest.ndim == 0:
             dest = dest.reshape((1,))
@@ -152,7 +152,7 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
         sources.append(source)
         lut_dests.append(dest)
 
-    sources = np.array(sources, dtype=source_dtype)
+    sources = np.array(sources).astype(dtype=source_dtype)
     lut_dests = np.array(lut_dests)
 
     mins = sources.min(axis=0)
@@ -164,7 +164,7 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
     elif sampling == 'nearest':
         sampling = np.zeros(sources.shape[1:], dtype=np.float)
         for i in range(sources.shape[0]):
-            sampling[i] = 1 / np.gcd.reduce(sources[i])
+            sampling[i] = 1 / np.gcd.reduce(sources[i]) / 2
     if not sampling:
         sampling = 1
 
@@ -205,15 +205,20 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
             raise ValueError('Invalid dimensions on axis: %s. (expected: %s, received: %s)'
                              % (str(axis), str(source_shape), str(a_source_shape)))
 
+        log.debug(np.unique(array), sampling)
         # Prepare table
         if sampling == 1:
             array = array.astype(np.int32)
         else:
             array = (array / sampling).astype(np.int32)
 
+        log.debug(np.unique(array))
+
         a = np.moveaxis(array.reshape(source_shape + (map_size,)), -1, 0).reshape((map_size, source_size))
         id_mapped = np.logical_not(np.any(np.logical_or(a > maxs, a < mins), axis=1))
         array = np.sum((a - mins) * stride, axis=1).astype(np.uint32)
+
+        log.debug(np.unique(array), mins, stride, a.shape, np.unique(a))
 
         # Map values
         a = np.zeros(shape=(map_size,), dtype=np.uint32)

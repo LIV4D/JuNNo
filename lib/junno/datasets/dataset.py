@@ -1805,6 +1805,7 @@ class DSColumnFormat:
             self._domain = Interval()
             self._range = Interval()
             self._clip = Interval()
+            self.no_scaling = False
 
         def check_type(self, dtype, shape):
             if not np.issubdtype(dtype, np.number):
@@ -1814,8 +1815,9 @@ class DSColumnFormat:
             return True
 
         def _preformat(self, data):
-            d = apply_scale(data, self.range, self.domain, self.clip)
-            return d
+            if self.no_scaling:
+                return data
+            return apply_scale(data, self.range, self.domain, self.clip)
 
         def format_data(self, data):
             return str(data)
@@ -1877,6 +1879,7 @@ class DSColumnFormat:
             if not m:
                 self._mapping = m
                 self._lut = None
+                self.no_scaling = False
                 return
 
             mapping = {}
@@ -1894,6 +1897,7 @@ class DSColumnFormat:
 
             from ..j_utils.image import prepare_lut
             self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
+            self.no_scaling = True
 
     class ConfMatrix(Matrix):
         def __init__(self, n_class):
@@ -1908,14 +1912,16 @@ class DSColumnFormat:
             self.range = 0, 255
             if dtype == np.uint8:
                 self.domain = 0, 255
-            else:
+            elif 'float' in str(dtype):
                 self.domain = 0, 1.0
+            else:
+                self.domain = None, None
 
             self.html_height = lambda h: int(np.round(256*(1-np.exp(-h/128))))
             self.html_columns = lambda n: dimensional_split(n)[1]
 
         def check_type(self, dtype, shape):
-            if not np.issubdtype(dtype, np.number):
+            if not (np.issubdtype(dtype, np.number) or str(dtype) == 'bool'):
                 raise ValueError('Image format must be applied to number columns (not %s).' % repr(dtype))
             if len(shape) not in (2, 3):
                 raise ValueError('Image format can only be applied to columns with a non empty shape.')
@@ -2042,6 +2048,7 @@ class DSColumnFormat:
             if not m:
                 self._mapping = m
                 self._lut = None
+                self.no_scaling = False
                 return
 
             mapping = {}
@@ -2059,6 +2066,7 @@ class DSColumnFormat:
 
             from ..j_utils.image import prepare_lut
             self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
+            self.no_scaling = True
 
     @staticmethod
     def auto_format(dtype, shape, info=None):
