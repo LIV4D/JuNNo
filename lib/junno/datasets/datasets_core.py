@@ -809,6 +809,14 @@ class DataSetJoin(AbstractDataSet):
 
 
 def join(datasets, **kwargs):
+    if isinstance(datasets, str):
+        dataset_set = set()
+        for c in kwargs.values():
+            if isinstance(c, DSColumn):
+                dataset_set.add(c.dataset)
+            else:
+                raise ValueError('Error when joining on %s. %s is not a DSColumn.' % (datasets, repr(c)))
+        datasets = [_.column_by_name(datasets) for _ in dataset_set]
     return DataSetJoin(datasets, **kwargs)
 
 
