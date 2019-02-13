@@ -12,16 +12,16 @@ wget https://github.com/LIV4D/JuNNo/archive/dev_gabriel.zip
 Decompress the archive and go to the package main folder:
 ```
 unzip dev_gabriel.zip
-cd JuNNo-dev_gabriel/lib/junno/
+cd JuNNo-dev_gabriel/
 ```
-Optionally: activate the conda environment in which you want to install JuNNo (python>=3.5)
+Optionally: activate the conda environment in which you want to install JuNNo (requires python>=3.5)
 
 ```
 source activate <my-env>
 ```
 Then:
 ```
-python -m pip install . 
+python setup.py install 
 ```
 If you're not using a conda environment, please make sure that the python command corresponds to a python3 interpreter.
 
