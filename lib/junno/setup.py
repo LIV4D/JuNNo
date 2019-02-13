@@ -19,7 +19,7 @@ setup(
               'scipy(>=1.1.0)',
               'pandas(>=0.23.4)',
               'psutil(>=5.4.8)',
-              'ipython>=7.2.0)',
+              'ipython(>=7.2.0)',
               'scikit_learn(>=0.20.2)',
               'tables(>=3.4.4)']
 )
