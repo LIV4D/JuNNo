@@ -8,3 +8,6 @@ __pycache__/
 # Hidden files
 .directory
 *.pyc
+
+# Build from conda installation
+build/
