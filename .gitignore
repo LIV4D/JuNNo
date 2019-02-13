@@ -9,5 +9,7 @@ __pycache__/
 .directory
 *.pyc
 
-# Build from conda installation
+# Files/folders created by setup.py
 build/
+dist/
+*.egg-info
