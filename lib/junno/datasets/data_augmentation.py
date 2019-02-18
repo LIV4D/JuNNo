@@ -478,9 +478,9 @@ class GeometricOp:
                            border_value=0.0, mask=None):
         np.random.seed(GeometricOp.seed)
 
-        if input.dim == 3:
+        if input.ndim == 3:
             rows, cols, chan = input.shape
-        elif input.dim == 2:
+        elif input.ndim == 2:
             rows, cols = input.shape
         else:
             raise NotImplementedError
