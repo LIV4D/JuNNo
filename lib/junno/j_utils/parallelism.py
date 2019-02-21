@@ -9,14 +9,14 @@ from .j_log import log
 import gc
 import time
 
-N_THREAD = (os.cpu_count()*3//4)
+N_CORE = (os.cpu_count() * 3 // 4)
 
 
 def parallel_exec(f, seq, static_args=None, n_process=None, cb=None):
     if static_args is None:
         static_args = {}
     if n_process is None:
-        n_process = min(N_THREAD, len(seq))
+        n_process = min(N_CORE, len(seq))
 
     pool = []
     queue = Queue()

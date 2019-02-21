@@ -59,6 +59,29 @@ def optional_args(f):
     return {p_name: p.default for p_name, p in sig.parameters.items() if p.default != inspect._empty}
 
 
+def bind_args(f, *args, **kwargs):
+    bind = bind_args_partial(f, *args, **kwargs)
+    missing_args = set(not_optional_args(f)).intersection(bind.keys())
+    missing_args.difference_update({'self'})
+    if missing_args:
+        raise ValueError("%s() missing %i required arguments: '%s'"
+                         % (f.__name__, len(missing_args), "', '".join(missing_args)))
+    return bind
+
+
+def bind_args_partial(f, *args, **kwargs):
+    from collections import OrderedDict
+    params = list(inspect.signature(f).parameters.keys())
+    bind = OrderedDict()
+    for i, a in enumerate(args):
+        if params[i] in kwargs:
+            raise ValueError("%s() got multiple value for argument '%s'" % (f.__name__, params[i]))
+        bind[params[i]] = a
+    for k, a in kwargs.items():
+        bind[k] = a
+    return bind
+
+
 def function2str(f):
     src_lines = inspect.getsourcelines(f)
     useless_space_count = len(src_lines[0][0]) - len(src_lines[0][0].lstrip())

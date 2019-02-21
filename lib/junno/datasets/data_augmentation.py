@@ -19,7 +19,7 @@ import numpy as np
 from scipy.interpolate import RectBivariateSpline
 
 from ..j_utils.function import match_params
-from .dataset import AbstractDataSet, DataSetColumn
+from .dataset import AbstractDataSet, DSColumn
 
 
 ########################################################################################################################
@@ -32,12 +32,11 @@ class DataSetAugmentedData(AbstractDataSet):
         super(DataSetAugmentedData, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
 
         # Initialize columns
-
         self._columns = dataset.copy_columns(self)
         if not isinstance(columns, list):
             columns = [columns]
         for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 columns[c_id] = c.name
 
         self.column_transform = column_transform
@@ -67,7 +66,7 @@ class DataSetAugmentedData(AbstractDataSet):
             if 'transformation' not in self._parent.columns_name() and 'transformation' in columns_parent:
                 columns_parent.remove('transformation')
         gen = gen_context.generator(self._parent, n=1, columns=columns_parent,
-                                    start=gen_context.start_id // self.N_aug, end=gen_context.end_id // self.N_aug)
+                                    start=gen_context.start_id // self.N_aug, stop=gen_context.stop_id // self.N_aug)
         result = None
 
         while not gen_context.ended():
@@ -81,7 +80,7 @@ class DataSetAugmentedData(AbstractDataSet):
                 # Compute augmented data
                 seed = i+i_global
                 if not gen_context.determinist:
-                    seed += gen_context.generator_id*self.size
+                    seed = np.random.randint(0, 100000)
 
                 self.da_engine.init_object(seed)
                 for c in columns:
@@ -290,6 +289,8 @@ class DataAugmentation:
         :param x: Input array of form c*h*w
         :return:
         """
+        if x.ndim == 2:
+            return [np.expand_dims(x, axis=0)]
         initial_shape = x.shape
         nb_canal = initial_shape[0]
         if nb_canal == 1 or nb_canal == 3:
@@ -477,9 +478,9 @@ class GeometricOp:
                            border_value=0.0, mask=None):
         np.random.seed(GeometricOp.seed)
 
-        if input.dim == 3:
+        if input.ndim == 3:
             rows, cols, chan = input.shape
-        elif input.dim == 2:
+        elif input.ndim == 2:
             rows, cols = input.shape
         else:
             raise NotImplementedError

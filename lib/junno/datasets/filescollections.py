@@ -45,13 +45,13 @@ class FilesCollection(AbstractDataSet):
         :param recursive: If true the folder will be explored recursively (including all its sub-folders)
                           Otherwise only the files in the path folder will be listed
         """
-        super(FilesCollection, self).__init__(name, pk_type=str)
+        super(FilesCollection, self).__init__(name, pk_type=np.dtype(('U', 100)))
         self.path = path
         self.regexp = regexp
         self.filename_regexp = filename_regexp
         self.recursive = recursive
         self.remove_extension = remove_extension
-        self._files = np.zeros(shape=(), dtype=str)
+        self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
         self.update_files()
 
         if not len(self._files):
@@ -73,7 +73,7 @@ class FilesCollection(AbstractDataSet):
         self.len_path = len(abspath(self.path))
         self.len_path += 1 if self.len_path else 0
 
-        self.add_column('name', (), str)
+        self.add_column('name', (), np.dtype(('U', 100)))
         sample = self._read_files(self._files[0])
         if type(sample) == np.ndarray:
             self.add_column('data', sample.shape, sample.dtype)
@@ -119,15 +119,16 @@ class FilesCollection(AbstractDataSet):
                 if self.remove_extension:
                     name, ext = splitext(name)
                     if ext:
-                        pk = pk[:-len(ext)-1]
+                        pk = pk[:-len(ext)]
                 r[i, 'pk'] = pk
-                r[i, 'name'] = name
+                if 'name' in r:
+                    r[i, 'name'] = name
                 if 'data' in r:
                     sample = self._read_files(path)
                     if sample is not None:
                         if len(self.columns.data.shape):
                             shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
-                            r[i, 'data'][[slice(_) for _ in shape]] = sample[[slice(_) for _ in shape]]
+                            r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
                             r[i, 'data'] = sample
                         del sample
@@ -304,7 +305,7 @@ class DataSetPandaDF(AbstractDataSet):
         pk_dtype = panda_dataframe.axes[0].dtype
         super(DataSetPandaDF, self).__init__(name, pk_type=pk_dtype)
         self._df = panda_dataframe
-        if mapping is not None:
+        if mapping and isinstance(mapping, dict):
             self.column_index = {}
             for c_name, c in mapping.items():
                 if isinstance(c, str):
@@ -341,7 +342,7 @@ class DataSetPandaDF(AbstractDataSet):
 
 
 ########################################################################################################################
-def excel_dataset(path, mapping=None, **kwargs):
+def load_excel(path, mapping=None, **kwargs):
     df = pandas.read_excel(path)
     if mapping is not None:
         kwargs.update(mapping)
@@ -349,8 +350,25 @@ def excel_dataset(path, mapping=None, **kwargs):
 
 
 ########################################################################################################################
-def csv_dataset(path, mapping=None, **kwargs):
+def load_csv(path, mapping=None, **kwargs):
     df = pandas.read_csv(path)
     if mapping is not None:
         kwargs.update(mapping)
+
     return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+
+
+########################################################################################################################
+def from_pandas(df, mapping=None, **kwargs):
+    if mapping is not None:
+        kwargs.update(mapping)
+
+    return DataSetPandaDF(df, mapping=kwargs, name='pandasDF')
+
+
+########################################################################################################################
+def images(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+    return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
+                            imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
+                            keep_proportion=keep_proportion)

@@ -683,6 +683,23 @@ class Tree:
 
 ########################################################################################################################
 class AttributeDict(OrderedDict):
+
+    def __setitem__(self, key, value):
+        if not isinstance(key, str) or '.' in key:
+            raise ValueError('Invalid AttributeDict key: %s.' % repr(key))
+        super(AttributeDict, self).__setitem__(key, value)
+
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            k = list(self.keys())
+            if item > len(k):
+                raise IndexError('Index %i out of range (AttributeDict length: %s)' % (item, len(k)))
+            return super(AttributeDict, self).__getitem__(list(self.keys())[item])
+        elif isinstance(item, str):
+            return super(AttributeDict, self).__getitem__(item)
+        else:
+            return super(AttributeDict, self).__getitem__(str(item))
+
     def __getattr__(self, item):
         if item in self:
             return self[item]
@@ -691,6 +708,9 @@ class AttributeDict(OrderedDict):
     def __iter__(self):
         for v in self.values():
             yield v
+
+    def __len__(self):
+        return len(self.keys())
 
 
 ########################################################################################################################
@@ -890,3 +910,64 @@ class IntRange:
 
     def __len__(self):
         return sum(r[1]-r[0] for r in self._ranges)
+
+
+class Interval:
+    def __init__(self, *args, min=None, max=None):
+        self._max = None
+        self._min = None
+
+        if len(args) == 2:
+            min, max = args
+        elif len(args) == 1:
+            a = args[0]
+            if isinstance(a, (tuple, list)) and len(a) == 2:
+                min, max = a
+            elif isinstance(a, Interval):
+                min = a.min
+                max = a.max
+        self.min = min
+        self.max = max
+
+        if self and min > max:
+            raise ValueError('The min value of an Interval should be lower than the max value')
+
+    def __contains__(self, item):
+        return self.min > item > self.max
+
+    def __iter__(self):
+        yield self.min
+        yield self.max
+
+    def __bool__(self):
+        return self.min is not None and self.max is not None
+
+    @property
+    def min(self):
+        return self._min
+
+    @min.setter
+    def min(self, m):
+        if m is None:
+            self._min = None
+        else:
+            self._min = float(m)
+            if self._max is not None and self._max < self._min:
+                self._max = self._min
+
+    @property
+    def max(self):
+        return self._max
+
+    @max.setter
+    def max(self, m):
+        if m is None:
+            self._max = None
+        else:
+            self._max = float(m)
+            if self._min is not None and self._min > self._max:
+                self._min = self._max
+
+    @property
+    def length(self):
+        return self.max - self.min

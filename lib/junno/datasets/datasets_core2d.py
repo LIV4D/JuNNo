@@ -1,10 +1,10 @@
 import numpy as np
 import cv2
 
-from .dataset import AbstractDataSet, DataSetColumn, DataSetResult
+from .dataset import AbstractDataSet, DSColumn
 from ..j_utils.function import identity_function, not_optional_args, match_params
 from ..j_utils.parallelism import parallel_exec
-from ..j_utils.j_log import log
+from ..j_utils.j_log import log, Process
 
 
 ########################################################################################################################
@@ -33,7 +33,7 @@ class DataSetReshape(AbstractDataSet):
 
         self._reshaped_columns = {}
         for c_id, c in enumerate(columns):
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 columns[c_id] = c.name
                 c = c.name
             if isinstance(c, str):
@@ -47,13 +47,14 @@ class DataSetReshape(AbstractDataSet):
             if len(column.shape) not in (2, 3):
                 raise ValueError('%s does not support reshaping' % c)
 
-            column_shape = tuple(k if isinstance(k, int) else int(k * s) for k, s in zip(shape, column.shape[-2:]))
+            column_shape = tuple(k if k > 1 and isinstance(k, int) else int(k * s)
+                                 for k, s in zip(shape, column.shape[-2:]))
             if not keep_original:
 
                 column._shape = column._shape[:-2] + column_shape
                 self._reshaped_columns[c] = c
             else:
-                self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype)
+                self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
                 self._reshaped_columns[c + '_reshaped'] = c
 
         if label_columns is None:
@@ -63,7 +64,7 @@ class DataSetReshape(AbstractDataSet):
 
         self._label_columns = []
         for c in label_columns:
-            if isinstance(c, DataSetColumn):
+            if isinstance(c, DSColumn):
                 c = c.name
             if isinstance(c, str):
                 if c not in columns:
@@ -199,13 +200,13 @@ class DataSetPatches(AbstractDataSet):
             parent_column = column
             if isinstance(patch_def[0], int):
                 patch_shape = patch_def
-            elif isinstance(patch_def[0], str) or isinstance(patch_def[0], DataSetColumn):
+            elif isinstance(patch_def[0], str) or isinstance(patch_def[0], DSColumn):
                 parent_column = patch_def[0]
                 patch_shape = patch_def[1]
             else:
                 raise NotImplementedError('Patch definition should be either (column, (path_shape)) or (patch_shape).')
 
-            if isinstance(parent_column, DataSetColumn):
+            if isinstance(parent_column, DSColumn):
                 if parent_column.dataset is not self.parent_dataset:
                     raise ValueError('%s is not a column of the parent dataset %s' % (parent_column.name, self.parent_dataset))
                 parent_column = parent_column.name
@@ -238,8 +239,7 @@ class DataSetPatches(AbstractDataSet):
                     self._columns.remove(c)
 
             column_shape = parent_c.shape[:-2] + patch_shape
-            c = DataSetColumn(name=column, shape=column_shape, dtype=parent_c.dtype)
-            self._columns.append(c)
+            self.add_column(name=column, shape=column_shape, dtype=parent_c.dtype, format=parent_c.format)
 
         # Initialize patch function
         if post_process is None:
@@ -255,7 +255,12 @@ class DataSetPatches(AbstractDataSet):
         if n is None:
             cache_center = True
 
-        p_params = not_optional_args(self._patches_function)
+        if isinstance(self._patches_function, str):
+            if self._patches_function not in dataset.columns_name():
+                raise ValueError("%s is not  a column of %s" % (self._patches_function, dataset.dataset_name))
+            p_params = [self._patches_function]
+        else:
+            p_params = not_optional_args(self._patches_function)
         self._kwargs_columns = [_ for _ in self.columns_name() if _ in p_params]
 
         static_kwargs = {}
@@ -280,24 +285,35 @@ class DataSetPatches(AbstractDataSet):
         elif cache_center:
             self._saved_patch_center = self.generate_all_patches_center()
         else:
-            self._saved_patch_center = [None] * self.parent_dataset.size
+            self._saved_patch_center = None
         self._cache_center = cache_center
 
         if center_pos:
-            self._columns.append(DataSetColumn('center_pos', (2,), dtype=int, dataset=self))
+            self._columns.append(DSColumn('center_pos', (2,), dtype=int, dataset=self))
 
     def _setup_determinist(self):
         if not self._cache_center:
-            self._saved_patch_center = self.generate_all_patches_center()
+            if self._saved_patch_center is not None:
+                return
+            self._saved_patch_center = [None] * self.parent_dataset.size
+            with Process("Caching center positions", self.parent_dataset.size) as p:
+                def store_result(c):
+                    self._saved_patch_center[c[0, 0]] = c
+                    p.update(1)
+                parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
 
     def generate_all_patches_center(self):
-        centers = [0]
-        def store_result(c):
-            if c.shape[0]:
-                centers.append(c)
-                centers[0] += c.shape[0]
+        with Process("Caching center positions", self.parent_dataset.size) as p:
+            centers = [0]
 
-        parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
+            def store_result(c):
+                if c.shape[0]:
+                    centers.append(c)
+                    centers[0] += c.shape[0]
+                p.update(1)
+
+            parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
+
         n = centers[0]
         centers = centers[1:]
 
@@ -346,19 +362,19 @@ class DataSetPatches(AbstractDataSet):
 
         if not self._cache_center:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=gen_context.start_id//self._n, end=gen_context.end_id//self._n)
+                                        start=gen_context.start_id//self._n, stop=gen_context.stop_id//self._n)
         else:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
                                         start=self._saved_patch_center[gen_context.start_id, 0],
-                                        end=self._saved_patch_center[gen_context.end_id, 0])
+                                        stop=self._saved_patch_center[gen_context.stop_id, 0])
 
-        if not self.is_patch_invariant() and not self._cache_center:
+        if not self._cache_center:
             if gen_context.determinist:
                 saved_centers = self._saved_patch_center
             else:
                 saved_centers = [None] * self.parent_dataset.size
         else:
-            saved_centers = None
+            saved_centers = self._saved_patch_center
 
         result = None
         if self._n is None:
@@ -394,7 +410,7 @@ class DataSetPatches(AbstractDataSet):
                     while result is None or img_id != result.start_id:
                         if img_id != gen.current_id:
                             gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns,
-                                                        end=saved_centers[gen_context.end_id, 0])
+                                                        stop=saved_centers[gen_context.stop_id, 0])
                         try:
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
@@ -451,6 +467,8 @@ class DataSetPatches(AbstractDataSet):
         return self._is_patch_invariant
 
     def patches_function(self, **kwargs):
+        if isinstance(self._patches_function, str):
+            return self._post_process_function(kwargs[self._patches_function])
         return self._post_process_function(match_params(self._patches_function, **kwargs))
 
     @property
@@ -491,7 +509,7 @@ class DataSetUnPatch(AbstractDataSet):
                 if columns == '*':
                     columns = dataset.columns_name()
                 else:
-                    columns=[columns]
+                    columns = [columns]
 
         # Initialize columns
         self._columns = dataset.copy_columns(self)
@@ -540,8 +558,8 @@ class DataSetUnPatch(AbstractDataSet):
                         del self._columns[self.column_index(c)]
                     parent_column = self.patch_dataset.parent_dataset.column_by_name(own_column)
                     self._unpatched_columns[own_column] = list(child_columns.keys())
-                    self._columns.append(DataSetColumn(name=own_column, dtype=parent_column.dtype, dataset=self,
-                                                       shape=patch_layer_shape+parent_column.shape[-2:]))
+                    self.add_column(name=own_column, dtype=parent_column.dtype, format=parent_column.format,
+                                    shape=patch_layer_shape+parent_column.shape[-2:])
         else:
             # Dataset will assemble patches into separated columns
             if columns is None:
@@ -607,7 +625,7 @@ class DataSetUnPatch(AbstractDataSet):
                     # Read patch
                     if gen is None or gen.current_id != start_patch+i_patch:
                         gen = gen_context.generator(self.parent_dataset, n=self.n_patches, columns=gen_columns,
-                                                    start=start_patch + i_patch, end=self.parent_dataset.size)
+                                                    start=start_patch + i_patch, stop=self.parent_dataset.size)
                     n_patches = min(self.n_patches, n_patch-i_patch)
                     result = gen.next(limit=n_patches, r=r)
 
@@ -619,9 +637,20 @@ class DataSetUnPatch(AbstractDataSet):
                         if self.patch_mix_method == 'replace':
                             for c, parent_c in unpatched_columns.items():
                                 for parent in parent_c:
-                                    s_patch = result[i_patches, parent].shape
+                                    patch = result[i_patches, parent]
+                                    patch_shape = result[i_patches, parent].shape[-2:]
+
+                                    if hasattr(self.patch_dataset, "stride"):
+                                        stride = self.patch_dataset.stride
+                                        if stride[0] < patch_shape[0] or stride[1] < patch_shape[1]:
+                                            y0 = max(0, (patch_shape[0] - stride[0]) // 2)
+                                            x0 = max(0, (patch_shape[1] - stride[1]) // 2)
+                                            h0 = min(patch_shape[0], stride[0])
+                                            w0 = min(patch_shape[1], stride[1])
+                                            patch = patch[..., y0:y0+h0, x0:x0+w0]
+                                            patch_shape = (h0, w0)
+
                                     s_out = r[i, c].shape
-                                    patch_shape = s_patch[-2:]
                                     h, w = s_out[-2:]
 
                                     half_x = patch_shape[1] // 2
@@ -643,7 +672,7 @@ class DataSetUnPatch(AbstractDataSet):
                                               [slice(y1, y1+h0), slice(x1, x1+w0)]
                                     win_patch = [slice(None, None)]*(len(s_out)-2) + \
                                                 [slice(y0, y0+h0), slice(x0, x0+w0)]
-                                    r[i, c][win_out] = result[i_patches, parent][win_patch]
+                                    r[i, c][win_out] = patch[win_patch]
                         else:
                             raise NotImplementedError
                     i_patch += n_patches
