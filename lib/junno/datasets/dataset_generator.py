@@ -7,7 +7,7 @@ import time
 import weakref
 
 from ..j_utils.parallelism import N_CORE
-from ..j_utils.collections import istypeof_or_listof, istypeof_or_collectionof, if_none
+from ..j_utils.collections import istypeof_or_listof, istypeof_or_collectionof, if_none, AttributeDict
 from ..j_utils.j_log import log, float_to_str
 
 from .dataset import AbstractDataSet, DSColumn
@@ -34,6 +34,14 @@ class DataSetResult:
         self._trace = DataSetResult.Trace(self)
 
         self._ipywidget = None
+
+    def __copy__(self):
+        r = self.create_empty(n=self.size, start_id=self.start_id, columns=self._columns, dataset=self.dataset)
+        r[:] = self
+        return r
+
+    def copy(self):
+        return self.__copy__()
 
     def __getstate__(self):
         return self._data_dict, self._columns, self._start_id, self._size, self._trace
@@ -239,7 +247,14 @@ class DataSetResult:
 
     @property
     def columns(self):
-        return self._columns
+        a = AttributeDict()
+        for c in self._columns:
+            a[c.name] = c
+        return a
+
+    @property
+    def col(self):
+        return self.columns
 
     def __len__(self):
         return self._size
@@ -281,13 +296,10 @@ class DataSetResult:
                     raise ValueError('%s is not a valid value to assign to a dataset row...' % value)
 
         elif isinstance(key, tuple):
-            def istypeof_or_listof(o, t):
-                return isinstance(o, t) or (isinstance(o, t) and isinstance(o[0], t))
-
             if (isinstance(key[0], slice) or istypeof_or_listof(key[0], int)) and (
-                istypeof_or_listof(key[1], str) or istypeof_or_listof(key[1], list)):
+               isinstance(key[1], (str, DSColumn)) or istypeof_or_listof(key[1], list)):
                 indexes = key[0]
-                columns = key[1]
+                columns = key[1] if isinstance(key[1], str) else key[1].name
             else:
                 raise NotImplementedError
             if columns in self:
@@ -299,18 +311,23 @@ class DataSetResult:
                 raise KeyError('Unknown column: %s' % columns)
         elif isinstance(key, str):
             self._data_dict[key][:] = value
+        elif isinstance(key, DSColumn):
+            self._data_dict[key.name][:] = value
         else:
             raise NotImplementedError
 
     def __getitem__(self, item):
         if isinstance(item, str):
             return self._data_dict[item]
+        elif isinstance(item, DSColumn):
+            return self._data_dict[item.name]
         elif isinstance(item, (int, slice)):
             return self[item, set(self.columns_name() + ['pk'])]
         elif isinstance(item, list):
             return [self[_] for _ in item]
         elif isinstance(item, tuple):
-            if (isinstance(item[0], slice) or istypeof_or_listof(item[0], int)) and istypeof_or_collectionof(item[1], str, (list, tuple, set)):
+            if (isinstance(item[0], slice) or istypeof_or_listof(item[0], int)) and \
+               istypeof_or_collectionof(item[1], (str, DSColumn), (list, tuple, set)):
                 indexes = item[0]
                 columns = item[1]
             else:
@@ -318,11 +335,11 @@ class DataSetResult:
                                           '(here provided type is [%s, %s])' % (str(type(item[0])), str(type(item[1]))))
 
             if isinstance(columns, (list, tuple)):
-                return [self._data_dict[_][indexes] for _ in columns]
+                return [self._data_dict[_ if isinstance(_, str) else _.name][indexes] for _ in columns]
             elif isinstance(columns, set):
-                return {c: self._data_dict[c][indexes] for c in columns}
+                return {c: self._data_dict[c if isinstance(c, str) else c.name][indexes] for c in columns}
             else:
-                return self._data_dict[columns][indexes]
+                return self._data_dict[columns if isinstance(columns, str) else columns.name][indexes]
         else:
             raise NotImplementedError
 
@@ -334,6 +351,14 @@ class DataSetResult:
         :rtype: List[str]
         """
         return [_ for _ in self.keys() if _ != 'pk']
+
+    def column_by_name(self, name, raise_on_unknown=True):
+        for c in self._columns:
+            if c.name == name:
+                return c
+        if raise_on_unknown:
+            raise (ValueError('Unknown column %s' % name))
+        return None
 
     def keys(self):
         return [_.name for _ in self._columns]
@@ -356,6 +381,19 @@ class DataSetResult:
 
     def to_row_list(self):
         return list(self)
+
+    def to_array_rec(self, hdf_compatible=False):
+        array_list = []
+        names = []
+        dtypes = []
+        for n, a in self._data_dict.items():
+            names.append(n)
+            array_list.append(a)
+
+            col = self.column_by_name(n)
+            dtypes.append(np.dtype(col.dtype, col.shape))
+
+        return np.core.records.fromarrays(array_list)
     
     def to_torch(self, *args, device=None):
         import torch

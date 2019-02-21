@@ -44,7 +44,10 @@ def time2str(t, pretty=False):
         else:
             return time
     else:
-        return '%id' % t['d'] + time
+        if d > 0:
+            return '%id' % t['d'] + time
+        else:
+            return time
 
 
 def to_json(json_dict):
