@@ -233,7 +233,7 @@ class DataSetSubset(AbstractDataSet):
         gen = gen_context.generator(self._parent, start=first_id, stop=last_id, columns=gen_context.columns)
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
-            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns})
+            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns}, seek=i)
 
     @property
     def size(self):
@@ -269,7 +269,7 @@ class DataSetSubgen(AbstractDataSet):
 
             for i in range(0, N, max_n):
                 n = min(N-i, max_n)
-                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']})
+                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']}, seek=i_global+i)
 
             r = None
             yield weakref
@@ -343,10 +343,10 @@ class DataSetMap(AbstractDataSet):
         gen = gen_context.generator(self._parent, columns=gen_columns)
 
         while not gen_context.ended():
-            _, N, weakref = gen_context.create_result()
+            global_i, N, weakref = gen_context.create_result()
             r = weakref()
             result = gen.next(copy={c_parent: r[c_name][:, i:i+n] if n > 0 else r[:, c_name]
-                              for c_parent, (c_name, i, n) in copy_columns.items()}, limit=N, r=r)
+                              for c_parent, (c_name, i, n) in copy_columns.items()}, limit=N, r=r, seek=global_i)
             for c_parent, duplicates in duplicate_columns.items():
                 for c_name, i, n in duplicates:
                     r[c_name][:, i:i+n] = result[c_parent]

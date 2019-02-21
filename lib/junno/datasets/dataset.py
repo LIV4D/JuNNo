@@ -1410,6 +1410,13 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetAugmentedData(self, columns=columns, n=N_augmented,
                                     da_engine=da_engine, keep_original=keep_original, column_transform=column_transform)
 
+    def augment(self, data_augment, columns=None, N=1, original=False, name='augment'):
+        from .datasets_augment import DataSetAugment
+        if columns is None:
+            columns = [col.name for col in self.columns if col.ndim >= 2]
+        return DataSetAugment(dataset=self, data_augment=data_augment, columns=columns, N=N, original=original,
+                              name=name)
+
     def patches(self, columns=None, patch_shape=(128, 128), stride=(0, 0), ignore_borders=True, mask=None,
                 center_pos=False, name='patch'):
         """Generate patches from specific columns.
@@ -1623,6 +1630,10 @@ class DSColumn:
         :rtype: tuple 
         """
         return self._shape
+
+    @property
+    def ndim(self):
+        return len(self._shape)
 
     @property
     def dtype(self):

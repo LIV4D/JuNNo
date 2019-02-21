@@ -683,6 +683,23 @@ class Tree:
 
 ########################################################################################################################
 class AttributeDict(OrderedDict):
+
+    def __setitem__(self, key, value):
+        if not isinstance(key, str) or '.' in key:
+            raise ValueError('Invalid AttributeDict key: %s.' % repr(key))
+        super(AttributeDict, self).__setitem__(key, value)
+
+    def __getitem__(self, item):
+        if isinstance(item, int):
+            k = list(self.keys())
+            if item > len(k):
+                raise IndexError('Index %i out of range (AttributeDict length: %s)' % (item, len(k)))
+            return super(AttributeDict, self).__getitem__(list(self.keys())[item])
+        elif isinstance(item, str):
+            return super(AttributeDict, self).__getitem__(item)
+        else:
+            return super(AttributeDict, self).__getitem__(str(item))
+
     def __getattr__(self, item):
         if item in self:
             return self[item]
@@ -691,6 +708,9 @@ class AttributeDict(OrderedDict):
     def __iter__(self):
         for v in self.values():
             yield v
+
+    def __len__(self):
+        return len(self.keys())
 
 
 ########################################################################################################################

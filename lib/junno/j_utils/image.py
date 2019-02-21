@@ -230,6 +230,14 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
         return np.moveaxis(array, np.arange(len(map_shape), array.ndim),
                            np.arange(dest_axis, dest_axis + len(dest_shape)) if len(dest_shape) != len(axis) else axis)
 
+    f_lut.sources = sources
+    f_lut.lut_sources = lut_sources
+    f_lut.mins = mins
+    f_lut.maxs = maxs
+    f_lut.stride = stride
+    f_lut.lut_dests = lut_dests
+    f_lut.sampling = sampling
+    f_lut.source_dtype = source_dtype
     return f_lut
 
 

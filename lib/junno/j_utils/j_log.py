@@ -155,7 +155,7 @@ class LogPrinter(Thread):
             else:
                 r = p.formated_rate()
                 if r:
-                    time = '[%s, %.2fit/s]' % (second_to_str(p.elapsed_time()), r)
+                    time = '[%s, %s]' % (second_to_str(p.elapsed_time()), r)
                 else:
                     time = '[%s]' % second_to_str(p.elapsed_time())
                 status += '.' * (self.anim_step % 3 + 1)
