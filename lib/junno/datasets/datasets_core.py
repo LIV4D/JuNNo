@@ -419,11 +419,12 @@ class DataSetShuffle(AbstractDataSet):
 
     def _setup_determinist(self):
         if self.random_indices:
-            seq = self._generate_random_sequence()
-            if isinstance(seq, tuple):
-                self.indices, self.subgen_range, self.subgen_index = seq
-            else:
-                self.indices = seq
+            if self.indices is None:
+                seq = self._generate_random_sequence()
+                if isinstance(seq, tuple):
+                    self.indices, self.subgen_range, self.subgen_index = seq
+                else:
+                    self.indices = seq
         else:
             if self.subgen > 1:
                 if self.subgen_index is None:
