@@ -409,7 +409,7 @@ class DataSetAugment(AbstractDataSet):
 
     def get_augmented(self, x, rng=np.random.RandomState(1234), label=None):
         if isinstance(rng, int):
-            rng = np.random.RandomState(1234)
+            rng = np.random.RandomState(rng)
         if isinstance(x, DataSetResult):
             r = x.copy()
             for c in r.col:
@@ -421,9 +421,9 @@ class DataSetAugment(AbstractDataSet):
             return r
         else:
             if label:
-                return self._f_augment_label(x)
+                return self._f_augment_label(x, rng=rng)
             else:
-                return self._f_augment(x)
+                return self._f_augment(x, rng=rng)
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
