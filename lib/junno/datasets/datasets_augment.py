@@ -10,9 +10,10 @@ from ..j_utils.function import bind_args, bind_args_partial, match_params
 
 
 _augment_methods = {}
+_augment_by_type = {}
 
 
-def augment_method(cv=False):
+def augment_method(augment_type=None, cv=False):
     def decorator(func):
         @functools.wraps(func)
         def register_augment(self, *params, **kwargs):
@@ -20,7 +21,8 @@ def augment_method(cv=False):
             self._augment_stack.append((func.__name__, params))
             return self
 
-        _augment_methods[func.__name__] = func, cv
+        _augment_methods[func.__name__] = func, cv, augment_type
+        _augment_by_type[augment_type] = func.__name__
         return register_augment
 
     return decorator
@@ -58,31 +60,43 @@ class DataAugment:
 
     def __call__(self, x, **kwargs):
         f = self.compile(**kwargs)
-        f_nearest = None
+        f_label = None
 
         if isinstance(x, DataSetResult):
             r = x.copy()
             for c in r.col:
                 if c.ndim >= 2:
                     if c.format.is_label:
-                        if f_nearest is None:
+                        if f_label is None:
                             k = copy(kwargs)
                             k['interpolation'] = cv2.INTER_NEAREST
-                            f_nearest = self.compile(**k)
-                        r[c] = f_nearest(x[c])
+                            k['except_type'] = set(k.get('except_type', ())).union({'color'})
+                            f_label = self.compile(**k)
+                        r[c] = f_label(x[c])
                     else:
                         r[c] = f(x[c])
             return r
         else:
             return f(x)
 
-    def compile(self, **kwargs):
+    def compile(self, only_type=None, except_type=None, **kwargs):
         cv_kwargs = kwargs.pop('cv') if 'cv' in kwargs else False
+
+        if isinstance(only_type, str):
+            only_type = (only_type,)
+        if isinstance(except_type, str):
+            except_type = (except_type,)
 
         augment_stack = []
         cv = cv_kwargs
         for f_name, f_params in self._augment_stack:
-            f, f_cv = _augment_methods[f_name]
+            f, f_cv, a_type = _augment_methods[f_name][:3]
+
+            if a_type is not None\
+               and((only_type is not None and a_type not in only_type)
+               or (except_type is not None and a_type in except_type)):
+                continue
+
             if cv != f_cv:
                 augment_stack.append(DataAugment.split_cv if f_cv else DataAugment.merge_cv)
                 cv = f_cv
@@ -150,7 +164,7 @@ class DataAugment:
             x = x.astype(np.float32) / 255
         return [x]
 
-    @augment_method()
+    @augment_method('geometric')
     def flip(self, p_horizontal=0.5, p_vertical=0.5):
         h_flip = _RD.binary(p_horizontal)
         v_flip = _RD.binary(p_vertical)
@@ -169,7 +183,7 @@ class DataAugment:
     def flip_vertical(self, p=0.5):
         return self.flip(p_horizontal=0, p_vertical=p)
 
-    @augment_method(cv=True)
+    @augment_method('geometric', cv=True)
     def warp_affine(self, rotate=None, scale=None, translate=None, translate_direction=None, shear=None,
                     interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
         """ Rotates, scales, transforms and shears the image with random coefficients.
@@ -209,7 +223,6 @@ class DataAugment:
                           [0.0,  np.cos(alpha), -t_r*np.sin(t_theta)],
                           [0.0,            0.0,                  1.0]])
             M = np.matmul(cv2.getRotationMatrix2D(center=(w / 2, h / 2), angle=theta, scale=gamma), M)
-            print(M)
             dst = cv2.warpAffine(x, M, (w, h), flags=interpolation, borderMode=border_mode, borderValue=border_value)
             return dst.reshape(x.shape)
         return augment
@@ -236,7 +249,7 @@ class DataAugment:
         return self.warp_affine(shear=shear,
                                 interpolation=interpolation, border_mode=border_mode, border_value=border_value)
 
-    @augment_method(cv=True)
+    @augment_method('geometric', cv=True)
     def elastic_distortion(self, dist=10, sigma=2, scale=1, mask=None,
                            interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0.0):
         """Apply an elastic distortion on an image
@@ -298,7 +311,7 @@ class DataAugment:
             return dst.reshape(x.shape)
         return augment
 
-    @augment_method()
+    @augment_method('color')
     def color(self, brightness=None, contrast=None, gamma=None, r=None, g=None, b=None):
         if brightness is None:
             brightness = _RD.constant(0)
@@ -346,7 +359,16 @@ class DataAugment:
                               a_max=a_max[np.newaxis, :, np.newaxis, np.newaxis])
         return augment
 
-    @augment_method(cv=True)
+    def brightness(self, brightness=(-0.1, 0.1)):
+        return self.color(brightness=brightness)
+
+    def contrast(self, contrast=(-0.1, 0.1)):
+        return self.color(contrast=contrast)
+
+    def gamma(self, gamma=(-0.1, 0.1)):
+        return self.color(gamma=gamma)
+
+    @augment_method('color', cv=True)
     def hsv(self, hue=None, saturation=None, value=None):
         if hue is None:
             hue = _RD.constant(0)
@@ -371,9 +393,15 @@ class DataAugment:
             hsv = cv2.cvtColor(x, cv2.COLOR_BGR2HSV)
             hsv = hsv + np.array([h, s, v])
             hsv[:, :, 0] = hsv[:, :, 0] % 179
-            hsv[:, :, 0] = np.clip(hsv, a_min=a_min, a_max=a_max).astype(np.uint8)
+            hsv = np.clip(hsv, a_min=a_min, a_max=a_max).astype(np.uint8)
             return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
         return augment
+
+    def hue(self, hue=(-20, 20)):
+        return self.hsv(hue=hue)
+
+    def staturation(self, staturation=(-20, 20)):
+        return self.hsv(staturation=staturation)
 
 
 ########################################################################################################################
@@ -400,6 +428,7 @@ class DataSetAugment(AbstractDataSet):
                     k = {}
                     k.update(augment_kwargs)
                     k['interpolation'] = cv2.INTER_NEAREST
+                    k['except_type'] = set(k.get('except_type', ())).union({'color'})
                     self._f_augment_label = self.data_augment.compile(**k)
             else:
                 if self._f_augment is None:
