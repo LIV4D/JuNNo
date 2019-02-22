@@ -101,7 +101,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     """
 
-    def __init__(self, name='dataset', parent_datasets=None, pk_type=np.int):
+    def __init__(self, name='dataset', parent_datasets=None, pk_type=np.int, rng=None):
         """ Constructor of the class
 
         The constructor instanciates the specific attribute of the dataset (name and list of parents datasets) and
@@ -118,15 +118,19 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         if parent_datasets is None:
             parent_datasets = []
-        if isinstance(parent_datasets, tuple):
-            parent_datasets = list(parent_datasets)
-        if not isinstance(parent_datasets, list):
+        elif isinstance(parent_datasets, AbstractDataSet):
             parent_datasets = [parent_datasets]
+        elif not isinstance(parent_datasets, list):
+            parent_datasets = list(parent_datasets)
 
         self._parents = parent_datasets
         self._pk = DSColumn('pk', (), pk_type, self)
 
         self._sample = None
+        if rng is None and self.parent_dataset is not None:
+            self.rng = self.parent_dataset.rng
+        else:
+            self.rng = rng
 
     def __getstate__(self):
         d = self.__dict__
@@ -155,16 +159,23 @@ class AbstractDataSet(metaclass=ABCMeta):
         raise NotImplementedError
 
     @property
-    def rnd(self):
+    def rng(self):
         return self._rnd
 
-    @rnd.setter
-    def rnd(self, rnd):
+    @rng.setter
+    def rng(self, rnd):
         if rnd is None:
             rnd = np.random.RandomState(1234+os.getpid())
         elif isinstance(rnd, int):
             rnd = np.random.RandomState(rnd)
         self._rnd = rnd
+
+    def step_rng(self):
+        rng_states = []
+        for d in self.walk_parents():
+            if all(d.rng is not _ for _ in rng_states):
+                d.rng.uniform()  # Step
+                rng_states.insert(0, d.rng)
 
     @property
     def dataset_name(self):
@@ -364,6 +375,18 @@ class AbstractDataSet(metaclass=ABCMeta):
         while root.parent_dataset is not None:
             root = root.parent_dataset
         return root
+
+    def walk_parents(self):
+        """
+        Walk through all parent datasets
+        /!\ The same datasets may be listed multiple times if two or more of its child have been joined!
+        :return:
+        """
+        active = self.parent_datasets[:]
+        while active:
+            d = active.pop()
+            yield d
+            active += d.parent_datasets
 
     #   ---   Representation functions   ---
     def __str__(self):
@@ -1253,9 +1276,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetMap
         return DataSetMap(self, kwargs, keep_all_columns=False)
 
-    def shuffle(self, indices=None, subgen=0, rnd=None, name='shuffle'):
+    def shuffle(self, indices=None, subgen=0, rng=None, name='shuffle'):
         from .datasets_core import DataSetShuffle
-        return DataSetShuffle(self, subgen=subgen, indices=indices, rnd=rnd, name=name)
+        return DataSetShuffle(dataset=self, subgen=subgen, indices=indices, rng=rng, name=name)
 
     def apply(self, columns, function, cols_format=None, format=None, n_factor=None, batchwise=False, keep_parent=False,
               name=None):
