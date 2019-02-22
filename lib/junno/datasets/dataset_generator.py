@@ -854,8 +854,7 @@ class DataSetSmartGenerator:
                 log.warn("WARNING: %s generator's pipe was closed unexpectedly.")
 
     def __iter__(self):
-        while True:
-            yield self.next()
+        return self
 
     def setup(self):
         if self._generator_setup:
