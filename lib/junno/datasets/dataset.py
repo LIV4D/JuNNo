@@ -191,7 +191,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return fullname
 
     #   ---   Data direct access   ---
-    def read(self, start: int = None, stop: int = None, columns=None, extract=False, n=None):
+    def read(self, start: int = None, stop: int = None, columns=None, extract=False, n=None, determinist=True):
         if start is None:
             start = 0
         if stop is None:
@@ -207,7 +207,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         if n is not None:
             d = d.subgen(n)
 
-        gen = d.generator(stop - start, start=start, columns=columns)
+        gen = d.generator(stop - start, start=start, columns=columns, determinist=determinist)
         r = next(gen)
 
         if not extract:
@@ -257,7 +257,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return self.read_one(row=row, columns=columns, extract=False)
 
     #   ---   Generators   ---
-    def generator(self, n=1, start=None, stop=None, columns=None, determinist=True, intime=False, ncore=0):
+    def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0):
         """Creates a generator which iterate through data.
 
         :param n:  Number of element to return (maximum) by iteration
@@ -274,6 +274,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .dataset_generator import DataSetSmartGenerator
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, stop_id=stop, columns=columns,
                                      determinist=determinist, intime=intime, ncore=ncore)
+
+    def __iter__(self):
+        return self.generator(determinist=True, intime=False, ncore=0)
 
     @abstractmethod
     def _generator(self, gen_context):
