@@ -406,13 +406,13 @@ class DataAugment:
 
 ########################################################################################################################
 class DataSetAugment(AbstractDataSet):
-    def __init__(self, dataset, data_augment, columns, N=1, original=False, augment_kwargs=None, name="augment"):
+    def __init__(self, dataset, data_augment, columns, N=1, original=False, augment_kwargs=None, rng=None, name="augment"):
         self._data_augment = data_augment
         self.N = N
         self.original = original
         pk_type = dataset.pk.dtype if self.n_factor == 1 else str
 
-        super(DataSetAugment, self).__init__(name=name, parent_datasets=dataset, pk_type=pk_type)
+        super(DataSetAugment, self).__init__(name=name, parent_datasets=dataset, pk_type=pk_type, rng=rng)
         self._columns = dataset.copy_columns(self)
 
         self._f_augment = None
@@ -475,7 +475,7 @@ class DataSetAugment(AbstractDataSet):
                         copy['pk'] = r[i:i+1, 'pk']
                     result = gen.next(r=r, copy=copy, seek=(i_global+i)//self.n_factor)
                 # Compute augmented data
-                seed = i+i_global if gen_context.determinist else np.random.randint(0, 100000)
+                seed = i+i_global if gen_context.determinist else self.rng.randint(0, 100000)
                 for c in self.augmented_columns:
                     if c in self.augmented_columns and ((i + i_global) % self.n_factor != 0 or not self.original):
                         r[i, c] = self.get_augmented(result[c][0], label=r.col[c].format.is_label, rng=seed)
