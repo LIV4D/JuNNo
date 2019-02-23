@@ -262,7 +262,10 @@ class ImagesCollection(FilesCollection):
 
         # --- RESHAPE ---
         if self.file_reshape is not None:
-            h, w, c = img.shape
+            if img.ndim==3:
+                h, w, c = img.shape
+            else:
+                h, w = img.shape
             if self.r_shape is None:
                 self.r_shape = (int(h * self.r_f[1]), int(w * self.r_f[0]))
             original_ratio = h / w
