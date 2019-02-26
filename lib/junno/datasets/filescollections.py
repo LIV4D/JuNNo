@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import pandas
-from os import walk
+from os import walk, listdir
 from os.path import basename, join, abspath, dirname, normpath, splitext
 import inspect
 from re import search
@@ -24,8 +24,10 @@ class FilesCollection(AbstractDataSet):
     One should also provide a function which will read the file and
     """
 
-    def __init__(self, path, read_function, regexp='', remove_extension=True, filename_regexp=False, recursive=True,
-                 name='FileCollection'):
+    def __init__(self, path, read_function, regexp='',
+                 remove_extension=True, filename_regexp=False, recursive=True,
+                 name='FileCollection',
+                 is_seq=False):
         """
         :param path: Path of the folder to explore
         :param read_function: The function called to read data from a files.
@@ -46,12 +48,16 @@ class FilesCollection(AbstractDataSet):
                           Otherwise only the files in the path folder will be listed
         """
         super(FilesCollection, self).__init__(name, pk_type=np.dtype(('U', 100)))
+        self.is_seq = is_seq
         self.path = path
         self.regexp = regexp
         self.filename_regexp = filename_regexp
         self.recursive = recursive
         self.remove_extension = remove_extension
         self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
+        if self.is_seq:
+            self._sequences_sizes = np.zeros(shape=(), dtype=int)
+
         self.update_files()
 
         if not len(self._files):
@@ -76,7 +82,11 @@ class FilesCollection(AbstractDataSet):
         self.add_column('name', (), np.dtype(('U', 100)))
         sample = self._read_files(self._files[0])
         if type(sample) == np.ndarray:
-            self.add_column('data', sample.shape, sample.dtype)
+            if is_seq:
+                shape = sample.shape[1:]
+            else:
+                shape = sample.shape
+            self.add_column('data', shape, sample.dtype, nb_var_dims=1)
         else:
             self.add_column('data', (), type(sample))
 
@@ -85,23 +95,39 @@ class FilesCollection(AbstractDataSet):
         Update the files list. This may change the size property!
         """
         files_list = []
-        for root, dirs, files in walk(self.path, topdown=True):
-            abs_root = abspath(root)
-            for file in files:
-                filename = file if self.filename_regexp else normpath(join(root, file))
-                if isinstance(self.regexp, str):
-                    if search(self.regexp, filename) is None:
-                        continue
-                elif callable(self.regexp):
-                    if not match_params(self.regexp, args=[filename], filename=file, path=root,
-                                        filepath=normpath(join(abs_root, file)),  file=normpath(join(root, file))):
-                        continue
-                files_list.append(normpath(join(abs_root, file)))
-            if not self.recursive:
-                break
 
-        self._files = np.array(files_list, dtype='str')
-        self._files.sort()
+        if self.is_seq:
+            seq_size_list = []
+            for dirs in listdir(self.path):
+                files_list.append(dirs) # TODO implement regexp function for sequences
+                seq_size_list.append(self.get_seqs_size(join(self.path, dirs))) # TODO implement this function
+                self._files = np.asarray(files_list, dtype='str')
+                sorted_indices = np.argsort(self._files)
+                self._files.sort()
+                self._sequences_sizes = np.asarray(seq_size_list, dtype=int)[sorted_indices]
+
+
+        else:
+            for root, dirs, files in walk(self.path, topdown=True):
+                abs_root = abspath(root)
+                for file in files:
+                    filename = file if self.filename_regexp else normpath(join(root, file))
+                    if isinstance(self.regexp, str):
+                        if search(self.regexp, filename) is None:
+                            continue
+                    elif callable(self.regexp):
+                        if not match_params(self.regexp, args=[filename], filename=file, path=root,
+                                            filepath=normpath(join(abs_root, file)),  file=normpath(join(root, file))):
+                            continue
+                    files_list.append(normpath(join(abs_root, file)))
+                if not self.recursive:
+                    break
+
+            self._files = np.array(files_list, dtype='str')
+            self._files.sort()
+
+    def get_seqs_size(self, dir):
+        pass
 
     @property
     def files(self):
@@ -127,8 +153,11 @@ class FilesCollection(AbstractDataSet):
                     sample = self._read_files(path)
                     if sample is not None:
                         if len(self.columns.data.shape):
-                            shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
-                            r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
+                            if self.is_seq:
+                                r[i, 'data'] = sample
+                            else:
+                                shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
+                                r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
                             r[i, 'data'] = sample
                         del sample
@@ -165,7 +194,7 @@ class FilesCollection(AbstractDataSet):
 ########################################################################################################################
 class ImagesCollection(FilesCollection):
     def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
-                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False, is_seq=False):
         """
 
         :param path: Path of the folder to explore
@@ -231,8 +260,11 @@ class ImagesCollection(FilesCollection):
         # Finalize
         self.normalize = normalize
 
-        super(ImagesCollection, self).__init__(path=path, read_function=self.read_func, recursive=recursive,
-                                               regexp=regexp, filename_regexp=filename_regexp, name=name)
+        super(ImagesCollection, self).__init__(path=path, read_function=self.read_func if not is_seq else self.read_sequence,
+                                               recursive=recursive,
+                                               regexp=regexp,
+                                               filename_regexp=filename_regexp,
+                                               name=name, is_seq=is_seq)
 
     def __str__(self):
         return self.dataset_name + ' ' + self.path
@@ -262,7 +294,7 @@ class ImagesCollection(FilesCollection):
 
         # --- RESHAPE ---
         if self.file_reshape is not None:
-            if img.ndim==3:
+            if img.ndim == 3:
                 h, w, c = img.shape
             else:
                 h, w = img.shape
@@ -300,6 +332,20 @@ class ImagesCollection(FilesCollection):
         else:
             raise NotImplementedError
 
+    def read_sequence(self, path):
+        """
+        Read a list of images in folder
+        :param path:
+        :return:
+        """
+        sequence = []
+        folder = join(self.path, path)
+        for file in listdir(folder):
+            sequence.append(self.read_func(join(folder, file)))
+        return np.asarray(sequence)
+
+    def get_seqs_size(self, dir):
+        return len(listdir(dir))
 
 ########################################################################################################################
 ########################################################################################################################
@@ -375,3 +421,10 @@ def images(path, name='ImagesCollection', regexp=image_extensions(), filename_re
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
                             keep_proportion=keep_proportion)
+
+def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+
+    return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
+                            imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
+                            keep_proportion=keep_proportion, is_seq=True)
