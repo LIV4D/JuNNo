@@ -312,7 +312,7 @@ class DataSetMap(AbstractDataSet):
                 assert s[1:] == shape[1:]
                 shape = tuple([shape[0]+s[0]] + list(s[1:]))
 
-            self.add_column(name=column, shape=shape, dtype=c.dtype, format=c.format)
+            self.add_column(name=column, shape=shape, dtype=c.dtype, format=c.format, nb_var_dims=c.undef_dims)
 
     def _generator(self, gen_context):
         columns = gen_context.columns
@@ -661,14 +661,14 @@ class DataSetJoin(AbstractDataSet):
                 if not isinstance(column, tuple) or len(column) != 2:
                     continue
                 remote_c = datasets[dataset_id].column_by_name(foreign_name)
-                self.add_column(column_name, remote_c.shape, remote_c.dtype, remote_c.format)
+                self.add_column(column_name, remote_c.shape, remote_c.dtype, remote_c.format, nb_var_dims=remote_c.undef_dims)
                 self._columns_map[column_name] = (dataset_id, foreign_name)
         else:               # All columns of joined datasets will be used
             for dataset_id, (dataset, dataset_name) in enumerate(zip(datasets, datasets_name)):
                 for column in dataset.columns:
                     dataset_id = simp_dataset_map[dataset_id]
                     column_name = '%s_%s' % (dataset_name, column.name)
-                    self.add_column(column_name, column.shape, column.dtype, column.format)
+                    self.add_column(column_name, column.shape, column.dtype, column.format, column.undef_dims)
                     self._columns_map[column_name] = (dataset_id, column.name)
 
         #  ---  JOIN DATASETS  ---
@@ -780,8 +780,10 @@ class DataSetJoin(AbstractDataSet):
 
                 # Reading generators
                 for gen_id, gen in enumerate(generators):
-                    gen[0].next(copy={c: r[i:i+1, reverse_columns_map[gen_id][c]] for c in gen[0].columns
+                    gen[0].next(copy={c: r[i:i+1, reverse_columns_map[gen_id][c]]
+                                      for c in gen[0].columns
                                       if c in reverse_columns_map[gen_id]}, r=r)
+
 
                 # Updating generator index
                 for gen in generators:

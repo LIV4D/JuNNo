@@ -194,7 +194,8 @@ class FilesCollection(AbstractDataSet):
 ########################################################################################################################
 class ImagesCollection(FilesCollection):
     def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
-                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False, is_seq=False):
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
+                 is_seq=False, open_func=None):
         """
 
         :param path: Path of the folder to explore
@@ -259,7 +260,7 @@ class ImagesCollection(FilesCollection):
 
         # Finalize
         self.normalize = normalize
-
+        self.open_func = open_func
         super(ImagesCollection, self).__init__(path=path, read_function=self.read_func if not is_seq else self.read_sequence,
                                                recursive=recursive,
                                                regexp=regexp,
@@ -271,7 +272,10 @@ class ImagesCollection(FilesCollection):
 
     def read_func(self, path):
         # --- READ ---
-        img = cv2.imread(path, flags=self.imread_flags)
+        if self.open_func is None:
+            img = cv2.imread(path, flags=self.imread_flags)
+        else:
+            img = self.open_func(path)
         if img is None:
             log.error('%s is not an image!' % path)
             return None
@@ -423,8 +427,9 @@ def images(path, name='ImagesCollection', regexp=image_extensions(), filename_re
                             keep_proportion=keep_proportion)
 
 def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
-                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None,
+                     normalize=True, keep_proportion=False, open_func=None):
 
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
-                            keep_proportion=keep_proportion, is_seq=True)
+                            keep_proportion=keep_proportion, is_seq=True, open_func=open_func)

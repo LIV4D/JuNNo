@@ -1648,14 +1648,10 @@ class DSColumn:
 
     @property
     def shape(self):
-        """
-        Shape of the column, not including the varying dimensions size
-        :rtype: tuple 
-        """
-        if not self._undef_dims:
-            return self._shape
-        else:
-            return self._shape[self._undef_dims - 1:] # Index starts at 0
+        return self._shape
+
+    def get_undefined_dimensions(self):
+        return [True]*self.undef_dims+[False]*len(self._shape)
 
     @property
     def ndim(self):
@@ -1713,7 +1709,7 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self._dtype if not self._is_text else 'str', self._shape, f)
+            self._format = DSColumnFormat.auto_format(self._dtype if not self._is_text else 'str', self._shape, f, undef_dims=self.undef_dims)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -1941,9 +1937,10 @@ class DSColumnFormat:
             super(DSColumnFormat.ConfMatrix, self).__init__(np.uint32, (n_class, n_class))
 
     class Image(Matrix):
-        def __init__(self, dtype, shape, is_label=False):
+        def __init__(self, dtype, shape, is_label=False, undef_dims=None):
             from ..j_utils.math import dimensional_split
             super(DSColumnFormat.Image, self).__init__(dtype, shape, is_label=is_label)
+            self.undef_dims = undef_dims
             self.html_fullscreen = True
             self.clip = 0, 255
             self.range = 0, 255
@@ -1993,14 +1990,44 @@ class DSColumnFormat:
                 nh = int(np.ceil(n/nw))
 
                 d = []
-                for channel_data in gen_channels:
-                    html_height = self.html_height(h) if callable(self.html_height) else self.html_height
-                    th = html_height//nh
-                    tw = int(np.round(th/ratio))
-                    thumbnail = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA)
-                    png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
-                    html = '<img src="data:image/png;base64, %s" style="height: %ipx; min-width: %ipx" />' % (png, th, tw)
-                    d.append(html)
+
+                if self.undef_dims is None:
+
+                    for channel_data in gen_channels:
+                        html_height = self.html_height(h) if callable(self.html_height) else self.html_height
+                        th = html_height//nh
+                        tw = int(np.round(th/ratio))
+                        thumbnail = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA)
+                        png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
+                        html = '<img src="data:image/png;base64, %s" style="height: %ipx; min-width: %ipx" />' % (png, th, tw)
+                        d.append(html)
+                else:
+                    import matplotlib.pyplot as plt
+                    import matplotlib.animation as anim
+                    fig = plt.figure()
+                    DPI = fig.get_dpi()
+                    fig.set_size_inches((THUMBNAIL_SIZE[0]/float(DPI),THUMBNAIL_SIZE[1]/float(DPI)))
+                    ax = fig.add_axes([0, 0, 1, 1], frameon=False, aspect=1)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    images = []
+
+                    for channel_data in gen_channels:
+
+                        html_height = self.html_height(h) if callable(self.html_height) else self.html_height
+                        th = html_height // nh
+                        tw = int(np.round(th / ratio))
+                        thumbnail = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA)
+                        if thumbnail.ndim==2:
+                            plt_im = plt.imshow(thumbnail, animated=True, cmap='gray')
+                        else:
+                            plt_im = plt.imshow(thumbnail, animated=True)
+                        images.append([plt_im])
+
+
+                    ani = anim.ArtistAnimation(fig, images, interval=150, blit=True)
+                    from IPython.display import HTML
+                    return HTML(ani.to_html5_video()).data
 
                 return '#%i,%i|' % (nh, nw) + ' '.join(d)
             else:
@@ -2058,8 +2085,8 @@ class DSColumnFormat:
                     cv2.imwrite(f, d)
 
     class LabelImage(Image):
-        def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape, is_label=True)
+        def __init__(self, dtype, shape, mapping=None, default=None, undef_dims=None):
+            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape, is_label=True, undef_dims=undef_dims)
             self.default = default
             self._lut = None
             self.mapping = if_none(mapping, dict())
@@ -2106,7 +2133,7 @@ class DSColumnFormat:
             self.no_scaling = True
 
     @staticmethod
-    def auto_format(dtype, shape, info=None):
+    def auto_format(dtype, shape, info=None, undef_dims=None):
         if isinstance(info, DSColumnFormat.Base):
             return info.copy(dtype, shape)
         if shape == ():
@@ -2131,16 +2158,16 @@ class DSColumnFormat:
 
             if isinstance(info, dict):
                 if is_img:
-                    return DSColumnFormat.LabelImage(dtype, shape, mapping=info)
+                    return DSColumnFormat.LabelImage(dtype, shape, mapping=info, undef_dims=undef_dims)
                 else:
                     return DSColumnFormat.LabelMatrix(dtype, shape, mapping=info)
             elif is_img and isinstance(info, tuple) and len(info) == 2:
-                f = DSColumnFormat.Image(dtype, shape)
+                f = DSColumnFormat.Image(dtype, shape, undef_dims=undef_dims)
                 f.domain = info
                 return f
             else:
                 if is_img:
-                    return DSColumnFormat.Image(dtype, shape)
+                    return DSColumnFormat.Image(dtype, shape, undef_dims=undef_dims)
                 else:
                     return DSColumnFormat.Matrix(dtype, shape)
         return DSColumnFormat.Base(dtype, shape)

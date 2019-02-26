@@ -91,9 +91,13 @@ class DataSetResult:
                     raise ValueError('No dataset was specified, refering column by their name is disabled.')
             if c.name in assign:
                 a = assign[c.name]
-                if a.shape != (n,) + tuple(c.shape):
+                if c.is_seq:
+                    a_shape = (a.shape[0],) +tuple(a.shape[c.undef_dims+1:])
+                else:
+                    a_shape = a.shape
+                if a_shape != (n,) + tuple(c.shape):
                     raise ValueError('The shape of the assigned value for column %s is %s but should be %s.'
-                                     % (c.name, repr(a.shape), repr((n,)+c.shape)))
+                                     % (c.name, repr(a_shape), repr((n,)+c.shape)))
                 data_dict[c.name] = a
             else:
                 if c.is_seq:
@@ -326,7 +330,7 @@ class DataSetResult:
         elif isinstance(key, str):
             self._data_dict[key][:] = value
         elif isinstance(key, DSColumn):
-            self._data_dict[key.name][:] = value
+            self._data_c.is_seqdict[key.name][:] = value
         else:
             raise NotImplementedError
 
@@ -731,7 +735,6 @@ class DataSetSmartGenerator:
 
             # Compute next sample
             r = self.next_core(self._generator, self._context)
-            self._context._copy = None
 
             if affiliated_result:
                 affiliated_result.trace.affiliate_parent_trace(r.trace)
