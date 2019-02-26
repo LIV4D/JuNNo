@@ -19,7 +19,7 @@ class DataSetResult:
     Store the result of an iteration of a generator from DataSet
     """
 
-    def __init__(self, data_dict, columns, start_id, size, dataset=None):
+    def __init__(self, data_dict, columns, start_id, size, dataset=None, undef_dims=None):
         """
         :type data_dict: dict
         :type dataset: AbstractDataSet
@@ -29,8 +29,8 @@ class DataSetResult:
         self._start_id = start_id
         self._size = size
         self._dataset = None
-
         self.affiliate_dataset(dataset)
+        self._undef_dims = undef_dims
         self._trace = DataSetResult.Trace(self)
 
         self._ipywidget = None
@@ -96,7 +96,11 @@ class DataSetResult:
                                      % (c.name, repr(a.shape), repr((n,)+c.shape)))
                 data_dict[c.name] = a
             else:
-                data_dict[c.name] = np.zeros(tuple([n]+list(c.shape)), dtype=c.dtype)
+                if c.is_seq:
+                    new_dimensions = c.undef_dims*[1]
+                    data_dict[c.name] = np.empty(tuple([n]+new_dimensions+list(c.shape)), dtype=c.dtype)
+                else:
+                    data_dict[c.name] = np.empty(tuple([n]+list(c.shape)), dtype=c.dtype)
 
         return DataSetResult(data_dict=data_dict, columns=columns, start_id=start_id, size=n, dataset=dataset)
 
@@ -159,6 +163,7 @@ class DataSetResult:
 
         self._ipywidget = w
         return w
+
 
     @property
     def dataset(self):
@@ -304,6 +309,15 @@ class DataSetResult:
                 raise NotImplementedError
             if columns in self:
                 if isinstance(value, np.ndarray):
+                    col = self.columns[columns]
+
+                    if col.is_seq:
+                        undef_dims = value.shape[:col.undef_dims]
+                        previous_size = self._data_dict[columns].shape
+                        shape = list(previous_size)
+                        for i, dim in enumerate(undef_dims):
+                            shape[i+1] = dim
+                        self._data_dict[columns] = np.resize(self._data_dict[columns], shape)
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
                     self._data_dict[columns][indexes] = value

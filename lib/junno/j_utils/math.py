@@ -333,13 +333,13 @@ class ConfMatrix(np.ndarray):
     def metric(cls, f):
         return f
 
-    @metric
-    def accuracy(self, m):
-        return _true_positive(m) / _total(m)
-
-    @metric
-    def TP(self, m):
-        return _true_positive(m)
+    # @metric
+    # def accuracy(self, m):
+    #     return _true_positive(m) / _total(m)
+    #
+    # @metric
+    # def TP(self, m):
+    #     return _true_positive(m)
 
 
 def _true_positive(m):

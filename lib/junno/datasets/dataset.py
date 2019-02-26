@@ -342,8 +342,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             dataset = self
         return [DSColumn(_.name, _.shape, _.dtype, dataset, _.format) for _ in self._columns]
 
-    def add_column(self, name, shape, dtype, format=None):
-        self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format))
+    def add_column(self, name, shape, dtype, format=None, nb_var_dims=0):
+        self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format,
+                                      undef_dims=nb_var_dims))
 
     #   ---   Dataset Hierarchy   ---
     @property
@@ -402,6 +403,10 @@ class AbstractDataSet(metaclass=ABCMeta):
                 c_name = c.name + ';' + c.format.dtype_name
                 if len(c.shape) > 0:
                     c_name += ' [' + ('x'.join([str(_) for _ in c.shape])) + ']'
+
+                if c.is_seq:
+                    c_name += ' SEQUENCE'
+
                 columns_description.append(c_name)
 
             def retreive_data(row, col, fullscreen_id=None):
@@ -1601,7 +1606,21 @@ class DSColumn:
     """
     Store information of a column of a DataSet
     """
-    def __init__(self, name, shape, dtype, dataset=None, format=None):
+    def __init__(self, name, shape, dtype, dataset=None, format=None, undef_dims=0):
+        """
+
+        :param name:
+        :param shape:
+        :param dtype:
+        :param dataset:
+        :param format:
+        :param undef_dims: Number of dimensions with variables size.
+        Those dimensions are always the first ones in the list
+        """
+        self._undef_dims = undef_dims
+
+        self.is_seq = self._undef_dims != 0
+
         self._name = name
         self._shape = shape
         self._is_text = False
@@ -1624,12 +1643,19 @@ class DSColumn:
         self._format = None
 
     @property
+    def undef_dims(self):
+        return self._undef_dims
+
+    @property
     def shape(self):
         """
-        Shape of the column
+        Shape of the column, not including the varying dimensions size
         :rtype: tuple 
         """
-        return self._shape
+        if not self._undef_dims:
+            return self._shape
+        else:
+            return self._shape[self._undef_dims - 1:] # Index starts at 0
 
     @property
     def ndim(self):
@@ -1943,7 +1969,7 @@ class DSColumnFormat:
 
         def _preformat(self, data):
             if data.ndim > 3:
-                return data.reshape((self.channels_count,)+data.shape[-2:])
+                return data.reshape((np.prod(data.shape[:-2]),)+data.shape[-2:])
             if data.ndim == 2:
                 return data.reshape((1,)+data.shape)
             return data
