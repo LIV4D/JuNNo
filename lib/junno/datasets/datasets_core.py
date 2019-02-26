@@ -361,19 +361,17 @@ class DataSetMap(AbstractDataSet):
 
 ########################################################################################################################
 class DataSetShuffle(AbstractDataSet):
-    def __init__(self, dataset, indices=None, subgen=1, name='shuffle', rnd=None):
+    def __init__(self, dataset, indices=None, subgen=1, name='shuffle', rng=None):
         """
         :type dataset: AbstractDataSets        if args
         """
-        super(DataSetShuffle, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
+        super(DataSetShuffle, self).__init__(name=name, parent_datasets=dataset, pk_type=dataset.pk.dtype, rng=rng)
         self._columns = dataset.copy_columns(self)
-
-        self.rnd = rnd
 
         self.indices = None if indices is None else np.asarray(indices, dtype=np.uint32)
         self.random_indices = indices is None
 
-        self.subgen = max(subgen,0) if isinstance(subgen, int) else 0
+        self.subgen = max(subgen, 0) if isinstance(subgen, int) else 0
         self.subgen_range = None
         self.subgen_index = None
 
@@ -398,7 +396,7 @@ class DataSetShuffle(AbstractDataSet):
                 n = stop-start
                 rand_seq[start:start + n, :] = [1 if i == _ else 0 for _ in range(self.subgen)]
             # Shuffle one-hot
-            self.rnd.shuffle(rand_seq)
+            self.rng.shuffle(rand_seq)
 
             # Compute the table of subgenerator own indexes by cumsum one-hot
             rand_seq_id = rand_seq*rand_seq.cumsum(axis=0)
@@ -416,16 +414,17 @@ class DataSetShuffle(AbstractDataSet):
             return indices, subgen_range, rand_seq
         else:
             rand_seq = np.arange(self.parent_dataset.size, dtype=int)
-            self.rnd.shuffle(rand_seq)
+            self.rng.shuffle(rand_seq)
             return rand_seq
 
     def _setup_determinist(self):
         if self.random_indices:
-            seq = self._generate_random_sequence()
-            if isinstance(seq, tuple):
-                self.indices, self.subgen_range, self.subgen_index = seq
-            else:
-                self.indices = seq
+            if self.indices is None:
+                seq = self._generate_random_sequence()
+                if isinstance(seq, tuple):
+                    self.indices, self.subgen_range, self.subgen_index = seq
+                else:
+                    self.indices = seq
         else:
             if self.subgen > 1:
                 if self.subgen_index is None:
@@ -448,7 +447,7 @@ class DataSetShuffle(AbstractDataSet):
                 indices = self._generate_random_sequence()
                 subgen_range = None
 
-        #indices = indices[gen_context.start_id:gen_context.stop_id]
+        # indices = indices[gen_context.start_id:gen_context.stop_id]
 
         # Setup subgenerators
         subgen = []

@@ -680,7 +680,7 @@ class DataSetSmartGenerator:
 
         self._generator_conn = None
         self._generator_process = None
-        self.__warn_limit_copy = False
+        # self.__warn_limit_copy = False
 
     def __del__(self):
         self.clean()
@@ -692,22 +692,22 @@ class DataSetSmartGenerator:
         affiliated_result = r
         r = None
 
-        if self.ended():
-            raise StopIteration
-
         if not self._generator_setup or (seek is not None and seek!=self.current_id):
             self.reset(start=seek)
             self.setup()
+
+        if self.ended():
+            raise StopIteration
 
         if limit is None:
             limit = self._context.start_n
         self._context.n = min(self.stop_id - self.current_id, limit)
 
         if self._asynchronous_exec:
-            if (limit is not None) and not self.__warn_limit_copy:
-                log.warn("%s's generator is executed asynchronously, data sharing and size limit will be ignored."
-                         % self.dataset.dataset_name)
-                self.__warn_limit_copy = True
+            # if (limit is not None) and not self.__warn_limit_copy:
+            #     log.warn("%s's generator is executed asynchronously, data sharing and size limit will be ignored."
+            #              % self.dataset.dataset_name)
+            #     self.__warn_limit_copy = True
 
             return self.poll(timeout=None, copy=copy, r=affiliated_result)
 
@@ -854,8 +854,7 @@ class DataSetSmartGenerator:
                 log.warn("WARNING: %s generator's pipe was closed unexpectedly.")
 
     def __iter__(self):
-        while True:
-            yield self.next()
+        return self
 
     def setup(self):
         if self._generator_setup:
@@ -867,6 +866,9 @@ class DataSetSmartGenerator:
         if self.intime:
             pipe = mp.Pipe()
             self._generator_conn = pipe[0]
+
+            # Step random
+            self.dataset.step_rng()
 
             mpArg = dict(target=parallel_generator_exec,
                          args=(self.context, pipe[1]),

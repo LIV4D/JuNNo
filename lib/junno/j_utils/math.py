@@ -249,23 +249,30 @@ def apply_scale(a, range=None, domain=None, clip=None):
 
 
 ########################################################################################################################
+def metric(f):
+    return f
+
+
 class ConfMatrix(np.ndarray):
     """
-    [..., true, pred]
+    [..., pred, true]
     """
     def __new__(cls, input_array, labels=None):
         a = np.asarray(input_array).astype(np.uint).view(cls)
         a.labels = labels
+        a.total = None
+        a.total_dim = None
         return a
 
     def __array_finalize__(self, obj):
         if obj is None: return
-        print(obj)
         if obj.ndim < 2:
             raise ValueError('ConfMatrix must have at least 2 axis!')
         if obj.shape[-2] != obj.shape[-1]:
             raise ValueError('ConfMatrix must be a square matrix. (shape=%s)' % obj.shape)
         self.labels = getattr(obj, 'labels', None)
+        self.labels = getattr(obj, 'total', None)
+        self.labels = getattr(obj, 'total_dim', None)
 
     def __getitem__(self, item):
         from .collections import istypeof_or_collectionof
@@ -324,34 +331,177 @@ class ConfMatrix(np.ndarray):
         return self.view(np.ndarray)[item]
 
     def sum_true(self):
-        return np.sum(self, axis=-1)
-
-    def sum_pred(self):
         return np.sum(self, axis=-2)
 
-    @classmethod
-    def metric(cls, f):
-        return f
+    def sum_pred(self):
+        return np.sum(self, axis=-1)
+
+    def normed_true(self):
+        dim = (slice(None),)*(self.ndim-2) + (np.newaxis, slice(None))
+        a = self.no_normed()
+        t = a.sum_true()
+        a = a / t[dim]
+        a.total = t
+        a.total_dim = 'true'
+        return a
+
+    def normed_pred(self):
+        dim = (slice(None),)*(self.ndim-2) + (slice(None), np.newaxis)
+        a = self.no_normed()
+        t = a.sum_pred()
+        a = a / t[dim]
+        a.total = t
+        a.total_dim = 'pred'
+        return a
+
+    def no_normed(self):
+        if self.total_dim == "true":
+            dim = (slice(None),) * (self.ndim - 2) + (np.newaxis, slice(None))
+            a = self * self.total[dim]
+            a.total = None
+            a.total_dim = None
+            return a
+        elif self.total_dim == "pred":
+            dim = (slice(None),) * (self.ndim - 2) + (slice(None), np.newaxis)
+            a = self * self.total[dim]
+            a.total = None
+            a.total_dim = None
+            return a
+        return self
+
+    def _metric_flatten(self):
+        return self.view(np.ndarray)
 
     @metric
-    def accuracy(self, m):
-        return _true_positive(m) / _total(m)
+    def accuracy(self):
+        m = self._metric_flatten()
+        return _true(m) / _total(m)
 
     @metric
-    def TP(self, m):
-        return _true_positive(m)
+    def true_positive_rate(self, negative_axis=0):
+        m = self._metric_flatten()
+        tp = _true_positive(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return tp / (tp+fn)
+
+    sensitivity = true_positive_rate
+    recall = sensitivity
+
+    @metric
+    def false_negative_rate(self, negative_axis=0):
+        m = self._metric_flatten()
+        tp = _true_positive(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return fn / (tp + fn)
+
+    @metric
+    def true_negative_rate(self, negative_axis=0):
+        m = self
+        tn = _true_negative(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return tn / (tn+fp)
+
+    specificity = true_negative_rate
+
+    @metric
+    def false_positive_rate(self, negative_axis=0):
+        m = self
+        tn = _true_negative(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return fp / (tn + fp)
+
+    @metric
+    def positive_predictive_value(self, negative_axis=0):
+        m = self
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return tp / (tp+fp)
+
+    precision = positive_predictive_value
+
+    @metric
+    def false_discovery_rate(self, negative_axis=0):
+        m = self
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return fp / (tp + fp)
+
+    @metric
+    def negative_predictive_value(self, negative_axis=0):
+        m = self
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return tn /(tn+fn)
+
+    @metric
+    def false_omission_rate(self, negative_axis=0):
+        m = self
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return fn /(tn+fn)
+
+    @metric
+    def diagnostic_odd_ratio(self, negative_axis=0):
+        m = self
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return (tp*tn) / (fp*fn)
+
+    @metric
+    def TP(self, negative_axis=0):
+        m = self
+        return _true_positive(m, negative_axis)
+
+    @metric
+    def FP(self, negative_axis=0):
+        m = self
+        return _false_positive(m, negative_axis)
+
+    @metric
+    def TN(self, negative_axis=0):
+        m = self
+        return _true_negative(m, negative_axis)
+
+    @metric
+    def FN(self, negative_axis=0):
+        m = self
+        return _false_negative(m, negative_axis)
 
 
-def _true_positive(m):
+def _true(m):
     return np.trace(m, axis1=-2, axis2=-1)
 
 
-def _false_positive(m, false_axis=0):
-    if not isinstance(false_axis, tuple):
-        false_axis = (false_axis,)
-    x_axis, y_axis = np.meshgrid(false_axis, false_axis)
+def _true_positive(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    return m[..., axis, axis].sum(axis=-1)
+
+
+def _true_negative(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    return m[..., negative_axis, negative_axis].sum(axis=-1)
+
+
+def _false_positive(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    x_axis, y_axis = np.meshgrid(positive_axis, negative_axis)
     return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
-    
+
+
+def _false_negative(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    x_axis, y_axis = np.meshgrid(negative_axis, positive_axis)
+    return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
+
 
 def _total(m):
     return np.sum(m, axis=(-2, -1))
