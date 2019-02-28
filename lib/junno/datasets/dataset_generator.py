@@ -330,7 +330,7 @@ class DataSetResult:
         elif isinstance(key, str):
             self._data_dict[key][:] = value
         elif isinstance(key, DSColumn):
-            self._data_c.is_seqdict[key.name][:] = value
+            self._data_dict[key.name][:] = value
         else:
             raise NotImplementedError
 
