@@ -1951,7 +1951,7 @@ class DSColumnFormat:
             else:
                 self.domain = None, None
 
-            self.html_height = lambda h: int(np.round(256*(1-np.exp(-h/128))))
+            self.html_height = lambda h: int(np.round(256*(1-np.exp(-h/128)))) # ???
             self.html_columns = lambda n: dimensional_split(n)[1]
 
         def check_type(self, dtype, shape):
@@ -1965,10 +1965,15 @@ class DSColumnFormat:
             return int(np.prod(self.shape[:-2]))
 
         def _preformat(self, data):
-            if data.ndim > 3:
-                return data.reshape((np.prod(data.shape[:-2]),)+data.shape[-2:])
-            if data.ndim == 2:
-                return data.reshape((1,)+data.shape)
+            if self.undef_dims is None:
+                if data.ndim > 3:
+                    return data.reshape((np.prod(data.shape[:-2]),)+data.shape[-2:])
+                if data.ndim == 2:
+                    return data.reshape((1,)+data.shape)
+            else:
+                if data.ndim == 3:
+                    return data.reshape((data.shape[0],1)+data.shape[-2:])
+
             return data
 
         def format_html(self, data, raw_data, fullscreen=None):
@@ -1976,22 +1981,26 @@ class DSColumnFormat:
             MAX_FULL_SIZE = (1024, 1024)
 
             import cv2
-            c, h, w = data.shape
+            if self.undef_dims is None:
+                c, h, w = data.shape
+            else:
+                s, c, h, w = data.shape
             ratio = h / w
 
             if fullscreen is None:
-                if c % 3 == 0:
-                    gen_channels = tuple(data[_:_+3].transpose((1, 2, 0)) for _ in range(0, c, 3))
-                else:
-                    gen_channels = tuple(data[_] for _ in range(0, c))
-
-                n = len(gen_channels)
-                nw = self.html_columns(n) if callable(self.html_columns) else self.html_columns
-                nh = int(np.ceil(n/nw))
-
-                d = []
 
                 if self.undef_dims is None:
+
+                    if c % 3 == 0:
+                        gen_channels = tuple(data[_:_ + 3].transpose((1, 2, 0)) for _ in range(0, c, 3))
+                    else:
+                        gen_channels = tuple(data[_] for _ in range(0, c))
+
+                    n = len(gen_channels)
+                    nw = self.html_columns(n) if callable(self.html_columns) else self.html_columns
+                    nh = int(np.ceil(n / nw))
+
+                    d = []
 
                     for channel_data in gen_channels:
                         html_height = self.html_height(h) if callable(self.html_height) else self.html_height
@@ -2007,27 +2016,25 @@ class DSColumnFormat:
                     fig = plt.figure()
                     DPI = fig.get_dpi()
                     fig.set_size_inches((THUMBNAIL_SIZE[0]/float(DPI),THUMBNAIL_SIZE[1]/float(DPI)))
-                    ax = fig.add_axes([0, 0, 1, 1], frameon=False, aspect=1)
+                    ax = fig.add_axes([0, 0, 1, 1], frameon=True, aspect=1)
                     ax.set_xticks([])
                     ax.set_yticks([])
                     images = []
-
-                    for channel_data in gen_channels:
-
+                    # data = data.reshape((self.undef_dims, c//self.undef_dims, h, w))
+                    for channel_data in data:
+                        channel_data = np.squeeze(channel_data)
                         html_height = self.html_height(h) if callable(self.html_height) else self.html_height
-                        th = html_height // nh
+                        th = html_height
                         tw = int(np.round(th / ratio))
-                        thumbnail = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA)
-                        if thumbnail.ndim==2:
-                            plt_im = plt.imshow(thumbnail, animated=True, cmap='gray')
+                        channel_data = cv2.resize(channel_data, (th, tw), interpolation=cv2.INTER_AREA) #
+
+                        if channel_data.ndim==2:
+                            plt_im = plt.imshow(channel_data, animated=True, cmap='gray')
                         else:
-                            plt_im = plt.imshow(thumbnail, animated=True)
+                            plt_im = plt.imshow(channel_data.transpose((1,2,0)), animated=True)
                         images.append([plt_im])
-
-
                     ani = anim.ArtistAnimation(fig, images, interval=150, blit=True)
-                    from IPython.display import HTML
-                    return HTML(ani.to_html5_video()).data
+                    return ani.to_html5_video(embed_limit=5) # TODO It would be better to remove the controls tag and implements let the fullscreen version acts as it should.
 
                 return '#%i,%i|' % (nh, nw) + ' '.join(d)
             else:
