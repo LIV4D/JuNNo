@@ -880,7 +880,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
             def __getitem__(self, item):
                 if self._gen is None:
-                    self._gen = self._dataset.generator(ncore=ncore, mp=mp)
+                    self._gen = self._dataset.generator(ncore=ncore, intime=intime)
                 try:
                     return self._gen.next()
                 except StopIteration:

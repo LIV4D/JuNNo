@@ -1,7 +1,7 @@
 import os
 from os.path import dirname, join, abspath
 import tempfile
-import fcntl
+# import fcntl # TODO check if it can be removed definitively safely
 import shutil
 from zipfile import ZipFile, ZIP_DEFLATED
 
