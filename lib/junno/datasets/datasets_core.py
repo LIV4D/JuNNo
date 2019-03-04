@@ -1109,10 +1109,7 @@ class DataSetApply(AbstractDataSet):
                 c = dataset.column_by_name(c)
             self._sequence_p_columns[c.name] = (c.get_undefined_dimensions(), c.is_seq)
 
-        sequences_parent = [_ for _ in self._sequence_p_columns if _[1]]
-        if len(sequences_parent)>1 and self._item_wise:
-            raise ValueError("Too many sequences (%i) provided with the argument item_wise. Expected only one sequence "
-                             "argument" %len(sequences_parent))
+
 
         self._columns = own_columns + parent_copied_columns
 
@@ -1121,6 +1118,11 @@ class DataSetApply(AbstractDataSet):
         self._batchwise = batchwise
         self._n_factor = n_factor
         self._item_wise = item_wise
+
+        sequences_parent = [_ for _ in self._sequence_p_columns if _[1]]
+        if len(sequences_parent) > 1 and self._item_wise:
+            raise ValueError("Too many sequences (%i) provided with the argument item_wise. Expected only one sequence "
+                             "argument" % len(sequences_parent))
 
         if self._batchwise and self._item_wise:
             raise ValueError("Cannot apply function simultaneously batch-wise and item-wise")
