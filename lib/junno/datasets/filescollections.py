@@ -86,7 +86,7 @@ class FilesCollection(AbstractDataSet):
                 shape = sample.shape[1:]
             else:
                 shape = sample.shape
-            self.add_column('data', shape, sample.dtype, nb_var_dims=1)
+            self.add_column('data', shape, sample.dtype, undef_dims=int(self.is_seq))
         else:
             self.add_column('data', (), type(sample))
 
@@ -423,7 +423,7 @@ def from_pandas(df, mapping=None, **kwargs):
 def images(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
-                            imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
+                            imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize, is_seq=False,
                             keep_proportion=keep_proportion)
 
 def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
