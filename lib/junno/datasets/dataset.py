@@ -1971,7 +1971,7 @@ class DSColumnFormat:
             return int(np.prod(self.shape[:-2]))
 
         def _preformat(self, data):
-            if self.undef_dims is None:
+            if not self.undef_dims:
                 if data.ndim > 3:
                     return data.reshape((np.prod(data.shape[:-2]),)+data.shape[-2:])
                 if data.ndim == 2:
@@ -1987,7 +1987,7 @@ class DSColumnFormat:
             MAX_FULL_SIZE = (1024, 1024)
 
             import cv2
-            if self.undef_dims is None:
+            if not self.undef_dims:
                 c, h, w = data.shape
             else:
                 s, c, h, w = data.shape
@@ -1995,7 +1995,7 @@ class DSColumnFormat:
 
             if fullscreen is None:
 
-                if self.undef_dims is None:
+                if not self.undef_dims:
 
                     if c % 3 == 0:
                         gen_channels = tuple(data[_:_ + 3].transpose((1, 2, 0)) for _ in range(0, c, 3))
