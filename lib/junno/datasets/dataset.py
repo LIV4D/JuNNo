@@ -1,3 +1,5 @@
+MAX_CHAR_DISPLAYED = 20
+
 """This module is used to build **Dataset**
 which are a convenient way to deal with database. Each dataset contains a primary key identifying a row,
 and one or many columns. A column is an instance of :class:`DataSetColumn`.
@@ -1782,7 +1784,9 @@ class DSColumnFormat:
             return data
 
         def format_html(self, data, raw_data, fullscreen=None):
-            return "<p> %s </p>" % str(data)
+            disp = str(data)
+            disp = disp[:MAX_CHAR_DISPLAYED]+'<br /> ... <br />'+disp[-MAX_CHAR_DISPLAYED:]
+            return "<p> %s </p>" % disp
 
         def format_data(self, data):
             return data
