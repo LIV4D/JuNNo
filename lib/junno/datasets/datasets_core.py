@@ -1006,9 +1006,9 @@ class DataSetApply(AbstractDataSet):
 
         :param format: the format of columns returned by the function
 
-        :param sequences_output: A dictionnary specifying the output that should be considered as sequences. The key is
-                                    represents the name of the output columns. The value is the number of undefined
-                                    dimensions.
+        :param sequences_output: A dictionnary specifying the output that should be considered as sequences. The key
+                                maps the name of the output columns. The value is the number of undefined
+                                dimensions.
 
         :param item_wise: A boolean determining is the function should be applied along all the item of a sequences
                         or individually
@@ -1072,7 +1072,6 @@ class DataSetApply(AbstractDataSet):
                 elif c not in parent_columns_name:
                     raise ValueError('%s is not a columns of %s!' % (c, dataset.dataset_name))
 
-
             # Solving implicit parent columns
             for p in self.f_params[len(parent_c):]:
                 if p not in parent_columns_name:
@@ -1092,6 +1091,12 @@ class DataSetApply(AbstractDataSet):
                 own_columns.append(DSColumn(c, None, None, self, None))
                 self._single_col_mapping[c] = parent_c
             self._columns_mapping[own_c] = parent_c
+
+        if sequences_output is not None:
+            for c in sequences_output.keys():
+                if c not in self._columns_mapping.keys():
+                    raise ValueError('Could not find the correspondence between the key %s (sequence_output)'
+                                     ' and the output of the function' %c)
 
         # --- HANDLE SEQUENCE ---
         """
@@ -1181,12 +1186,12 @@ class DataSetApply(AbstractDataSet):
                         if self._n_factor == 1:
                             self.pk._dtype = dataset.pk.dtype
                     elif self._n_factor != c_sample.shape[0]:
-                        raise ValueError('The function returned %i rows for columns %s, but %i was expected.'
+                        raise ValueError('The function returned %i row(s) for column %s, but %i was expected.'
                                          % (c_sample.shape[0], c_name, self._n_factor))
 
                     c_sample = c_sample[0]
                     if isinstance(c_sample, np.ndarray):
-                        cols_format[c_name] = (c_sample.dtype, c_sample.shape) # Yet, we don't know if the output if a sequence
+                        cols_format[c_name] = (c_sample.dtype, c_sample.shape) # We don't know yet if the output if a sequence
                     else:
                         cols_format[c_name] = (np.dtype(type(c_sample)),)
                     if c_name in unknown_columns_format:
@@ -1196,12 +1201,19 @@ class DataSetApply(AbstractDataSet):
         for c_name, c_format in cols_format.items():
             col = self.column_by_name(c_name)
             shape = c_format[1] if len(c_format) > 1 else ()
-            for seq_sizes in self._sequence_p_columns.values():
-                if not seq_sizes[1]:
-                    continue
-                if len(shape) == len(seq_sizes[0]):
-                    col.undef_dims = sum(seq_sizes[0])
-                    break
+            if sequences_output: # Provided by the user
+                if len(shape) < sequences_output[c_name]:
+                    raise ValueError('The function returned an array with %i dimension(s), '
+                                     'but it was expected to have at least %i sequential dimension(s).'
+                                     %(len(shape), sequences_output[c]))
+                col.undef_dims = sequences_output[c_name]
+            else: # Automatically check is the output is a sequence
+                for seq_sizes in self._sequence_p_columns.values():
+                    if not seq_sizes[1]:
+                        continue
+                    if len(shape) == len(seq_sizes[0]):
+                        col.undef_dims = sum(seq_sizes[0])
+                        break
             col._dtype = c_format[0]
             col._shape = shape[col.undef_dims:]
             col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)
@@ -1296,7 +1308,8 @@ class DataSetApply(AbstractDataSet):
                     f_result = self._f(**kwargs)
                     del kwargs
                 else:
-                    pass
+                    raise NotImplemented('Not implemented yet, because of undefined behaviour '
+                                         'when returning both sequential and non sequential output')
 
                 if not isinstance(f_result, list):
                     if self._n_factor == 1 or self._n_factor is None:
