@@ -312,7 +312,7 @@ class DataSetMap(AbstractDataSet):
                 assert s[1:] == shape[1:]
                 shape = tuple([shape[0]+s[0]] + list(s[1:]))
 
-            self.add_column(name=column, shape=shape, dtype=c.dtype, format=c.format, nb_var_dims=c.undef_dims)
+            self.add_column(name=column, shape=shape, dtype=c.dtype, format=c.format, undef_dims=c.undef_dims)
 
     def _generator(self, gen_context):
         columns = gen_context.columns
@@ -661,7 +661,7 @@ class DataSetJoin(AbstractDataSet):
                 if not isinstance(column, tuple) or len(column) != 2:
                     continue
                 remote_c = datasets[dataset_id].column_by_name(foreign_name)
-                self.add_column(column_name, remote_c.shape, remote_c.dtype, remote_c.format, nb_var_dims=remote_c.undef_dims)
+                self.add_column(column_name, remote_c.shape, remote_c.dtype, remote_c.format, undef_dims=remote_c.undef_dims)
                 self._columns_map[column_name] = (dataset_id, foreign_name)
         else:               # All columns of joined datasets will be used
             for dataset_id, (dataset, dataset_name) in enumerate(zip(datasets, datasets_name)):
@@ -970,7 +970,7 @@ class DataSetApply(AbstractDataSet):
     Apply a function to some columns of a dataset, all other columns are copied
     """
     def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, format=None,
-                 n_factor=None, batchwise=False, name='apply'):
+                 sequences_output=None, item_wise=False, n_factor=None, batchwise=False, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
         :param function: the function to apply to the dataset. The function can be apply element-wise or batch-wise.
@@ -1006,6 +1006,13 @@ class DataSetApply(AbstractDataSet):
 
         :param format: the format of columns returned by the function
 
+        :param sequences_output: A dictionnary specifying the output that should be considered as sequences. The key is
+                                    represents the name of the output columns. The value is the number of undefined
+                                    dimensions.
+
+        :param item_wise: A boolean determining is the function should be applied along all the item of a sequences
+                        or individually
+
         :param n_factor: The number of rows generated for each row given to the function. If not specified,
                             the value will be read by passing the **dataset** first row to the function.
 
@@ -1021,6 +1028,7 @@ class DataSetApply(AbstractDataSet):
         own_columns = []
         self._single_col_mapping = {}
         self._columns_mapping = {}
+        self._sequence_p_columns = {}
 
         if columns is None:
             columns = self.columns_name()
@@ -1063,15 +1071,17 @@ class DataSetApply(AbstractDataSet):
                     parent_c[i] = c.name
                 elif c not in parent_columns_name:
                     raise ValueError('%s is not a columns of %s!' % (c, dataset.dataset_name))
-            # Removing explicit parent columns from
-            if remove_parent_columns:
-                parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in parent_c]
+
 
             # Solving implicit parent columns
             for p in self.f_params[len(parent_c):]:
                 if p not in parent_columns_name:
                     raise ValueError('Could not find any correspondence to the not optional parameter: %s.' % (p,))
                 parent_c.append(p)
+
+            # Removing explicit parent columns from
+            if remove_parent_columns:
+                parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in parent_c]
 
             # Check own columns
             for c_id, c in enumerate(own_c):
@@ -1083,12 +1093,32 @@ class DataSetApply(AbstractDataSet):
                 self._single_col_mapping[c] = parent_c
             self._columns_mapping[own_c] = parent_c
 
+        # --- HANDLE SEQUENCE ---
+        """
+        If there is one sequence among the parent columns, we check its number of dimensions. If one output of the _func
+        has the same nb of dim, we assume it is also a sequence.
+        If it doesn't have the same number of dimension, user has to specify by himself that it is a sequence
+        """
+        for c in parent_c:
+            if not isinstance(c, DSColumn):
+                c = dataset.column_by_name(c)
+            self._sequence_p_columns[c.name] = (c.get_undefined_dimensions(), c.is_seq)
+
+        sequences_parent = [_ for _ in self._sequence_p_columns if _[1]]
+        if len(sequences_parent)>1 and self._item_wise:
+            raise ValueError("Too many sequences (%i) provided with the argument item_wise. Expected only one sequence "
+                             "argument" %len(sequences_parent))
+
         self._columns = own_columns + parent_copied_columns
 
         # ---  HANDLE FUNCTION  ---
         self._f = function
         self._batchwise = batchwise
         self._n_factor = n_factor
+        self._item_wise = item_wise
+
+        if self._batchwise and self._item_wise:
+            raise ValueError("Cannot apply function simultaneously batch-wise and item-wise")
 
         # ---  INFER COLUMN SHAPE, TYPE and FORMAT ---
         if cols_format == 'same':
@@ -1156,7 +1186,7 @@ class DataSetApply(AbstractDataSet):
 
                     c_sample = c_sample[0]
                     if isinstance(c_sample, np.ndarray):
-                        cols_format[c_name] = (c_sample.dtype, c_sample.shape)
+                        cols_format[c_name] = (c_sample.dtype, c_sample.shape) # Yet, we don't know if the output if a sequence
                     else:
                         cols_format[c_name] = (np.dtype(type(c_sample)),)
                     if c_name in unknown_columns_format:
@@ -1165,8 +1195,15 @@ class DataSetApply(AbstractDataSet):
         # Apply the format
         for c_name, c_format in cols_format.items():
             col = self.column_by_name(c_name)
+            shape = c_format[1] if len(c_format) > 1 else ()
+            for seq_sizes in self._sequence_p_columns.values():
+                if not seq_sizes[1]:
+                    continue
+                if len(shape) == len(seq_sizes[0]):
+                    col.undef_dims = sum(seq_sizes[0])
+                    break
             col._dtype = c_format[0]
-            col._shape = c_format[1] if len(c_format) > 1 else ()
+            col._shape = shape[col.undef_dims:]
             col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)
 
     def _generator(self, gen_context):
@@ -1185,7 +1222,6 @@ class DataSetApply(AbstractDataSet):
         parent_n = int(np.ceil(n / self._n_factor))
         parent_gen = gen_context.generator(self._parent, columns=self.col_parents(columns), n=parent_n,
                                            start=gen_context.start_id//self._n_factor, stop=gen_context.stop_id // self._n_factor)
-
 
         result = None
         f_results = {}
@@ -1255,9 +1291,12 @@ class DataSetApply(AbstractDataSet):
         if not self._batchwise:
             r = {_: [] for _ in rkeys}
             for i in range(args_n):
-                kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
-                f_result = self._f(**kwargs)
-                del kwargs
+                if not self._item_wise:
+                    kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
+                    f_result = self._f(**kwargs)
+                    del kwargs
+                else:
+                    pass
 
                 if not isinstance(f_result, list):
                     if self._n_factor == 1 or self._n_factor is None:

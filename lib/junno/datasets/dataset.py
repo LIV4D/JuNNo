@@ -340,11 +340,11 @@ class AbstractDataSet(metaclass=ABCMeta):
     def copy_columns(self, dataset=None):
         if dataset is None:
             dataset = self
-        return [DSColumn(_.name, _.shape, _.dtype, dataset, _.format) for _ in self._columns]
+        return [DSColumn(_.name, _.shape, _.dtype, dataset, _.format, _.undef_dims) for _ in self._columns]
 
-    def add_column(self, name, shape, dtype, format=None, nb_var_dims=0):
+    def add_column(self, name, shape, dtype, format=None, undef_dims=0):
         self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format,
-                                      undef_dims=nb_var_dims))
+                                      undef_dims=undef_dims))
 
     #   ---   Dataset Hierarchy   ---
     @property
@@ -1618,9 +1618,6 @@ class DSColumn:
         Those dimensions are always the first ones in the list
         """
         self._undef_dims = undef_dims
-
-        self.is_seq = self._undef_dims != 0
-
         self._name = name
         self._shape = shape
         self._is_text = False
@@ -1645,6 +1642,15 @@ class DSColumn:
     @property
     def undef_dims(self):
         return self._undef_dims
+
+    @property
+    def is_seq(self):
+        return self._undef_dims!=0
+
+    @undef_dims.setter
+    def undef_dims(self, undef_dims):
+        self._undef_dims = undef_dims
+
 
     @property
     def shape(self):
