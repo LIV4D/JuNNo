@@ -684,6 +684,15 @@ class Tree:
 ########################################################################################################################
 class AttributeDict(OrderedDict):
 
+    @staticmethod
+    def from_dict(d, recursive=False):
+        r = AttributeDict()
+        for k, v in d.items():
+            if is_dict(v) and recursive:
+                v = AttributeDict.from_dict(v, True)
+            r[k] = v
+        return r
+
     def __setitem__(self, key, value):
         if not isinstance(key, str) or '.' in key:
             raise ValueError('Invalid AttributeDict key: %s.' % repr(key))

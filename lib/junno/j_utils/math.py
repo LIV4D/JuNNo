@@ -1,4 +1,5 @@
-from functools import reduce
+import functools
+from ..j_utils.function import bind_args
 import math
 import numpy as np
 
@@ -8,7 +9,8 @@ def prod(factor):
     Equivalent to sum(list) with multiplication.
     Return the multiplication of all the elements in the list.
     """
-    return reduce(lambda x, y: x*y, factor, 1)
+    return functools.reduce(lambda x, y: x*y, factor, 1)
+
 
 def quadratic_kappa(conf_matrix):
     """
@@ -34,6 +36,7 @@ def quadratic_kappa(conf_matrix):
     denom = np.sum(weights * expected_probs / n)
 
     return 1. - nom / denom
+
 
 def kappa(conf_matrix):
     """
@@ -249,23 +252,49 @@ def apply_scale(a, range=None, domain=None, clip=None):
 
 
 ########################################################################################################################
+def metric(alias=None):
+    def decorator(func):
+        @functools.wraps(func)
+        def compute_metric(self, *params, **kwargs):
+            m = self.no_normed().view(np.ndarray)
+            params = bind_args(func, *params, **kwargs)
+            return func(m=m, **params)
+
+        _metrics[func.__name__] = compute_metric
+        if alias is not None:
+            if isinstance(alias, str):
+                _metrics[alias] = compute_metric
+            else:
+                for a in alias:
+                    _metrics[a] = compute_metric
+        return compute_metric
+    return decorator
+
+
+_metrics = {}
+
+
 class ConfMatrix(np.ndarray):
     """
-    [..., true, pred]
+    [..., pred, true]
     """
+
     def __new__(cls, input_array, labels=None):
         a = np.asarray(input_array).astype(np.uint).view(cls)
         a.labels = labels
+        a.total = None
+        a.total_dim = None
         return a
 
     def __array_finalize__(self, obj):
         if obj is None: return
-        print(obj)
         if obj.ndim < 2:
             raise ValueError('ConfMatrix must have at least 2 axis!')
         if obj.shape[-2] != obj.shape[-1]:
             raise ValueError('ConfMatrix must be a square matrix. (shape=%s)' % obj.shape)
         self.labels = getattr(obj, 'labels', None)
+        self.labels = getattr(obj, 'total', None)
+        self.labels = getattr(obj, 'total_dim', None)
 
     def __getitem__(self, item):
         from .collections import istypeof_or_collectionof
@@ -324,34 +353,212 @@ class ConfMatrix(np.ndarray):
         return self.view(np.ndarray)[item]
 
     def sum_true(self):
-        return np.sum(self, axis=-1)
-
-    def sum_pred(self):
         return np.sum(self, axis=-2)
 
-    @classmethod
-    def metric(cls, f):
-        return f
+    def sum_pred(self):
+        return np.sum(self, axis=-1)
 
-    # @metric
-    # def accuracy(self, m):
-    #     return _true_positive(m) / _total(m)
-    #
-    # @metric
-    # def TP(self, m):
-    #     return _true_positive(m)
+    def normed_true(self):
+        dim = (slice(None),)*(self.ndim-2) + (np.newaxis, slice(None))
+        a = self.no_normed()
+        t = a.sum_true()
+        a = a / t[dim]
+        a.total = t
+        a.total_dim = 'true'
+        return a
+
+    def normed_pred(self):
+        dim = (slice(None),)*(self.ndim-2) + (slice(None), np.newaxis)
+        a = self.no_normed()
+        t = a.sum_pred()
+        a = a / t[dim]
+        a.total = t
+        a.total_dim = 'pred'
+        return a
+
+    def no_normed(self):
+        if self.total_dim == "true":
+            dim = (slice(None),) * (self.ndim - 2) + (np.newaxis, slice(None))
+            a = self * self.total[dim]
+            a.total = None
+            a.total_dim = None
+            return a
+        elif self.total_dim == "pred":
+            dim = (slice(None),) * (self.ndim - 2) + (slice(None), np.newaxis)
+            a = self * self.total[dim]
+            a.total = None
+            a.total_dim = None
+            return a
+        return self
+
+    def _metric_flatten(self):
+        return self.view(np.ndarray)
+
+    @staticmethod
+    def metrics(name):
+        m = _metrics.get(name, None)
+        if m is None:
+            raise ValueError('Unkown metric %s.' % name)
+        return _metrics[name]
+
+    @staticmethod
+    def metrics_name():
+        return list(_metrics.keys())
+
+    def to_metric(self, metric_name, **kwargs):
+        return self.metrics(metric_name)(self, **kwargs)
+
+    @metric()
+    def accuracy(m):
+        return _true(m) / _total(m)
+
+    @metric(alias=('sensitivity', 'recall'))
+    def true_positive_rate(m, negative_axis=0):
+        tp = _true_positive(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return tp / (tp+fn)
+    sensitivity = true_positive_rate
+    recall = true_positive_rate
+
+    @metric()
+    def false_negative_rate(m, negative_axis=0):
+        tp = _true_positive(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return fn / (tp + fn)
+
+    @metric(alias='specificity')
+    def true_negative_rate(m, negative_axis=0):
+        tn = _true_negative(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return tn / (tn+fp)
+    specifity = true_negative_rate
+
+    @metric()
+    def false_positive_rate(m, negative_axis=0):
+        tn = _true_negative(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return fp / (tn + fp)
+
+    @metric(alias='precision')
+    def positive_predictive_value(m, negative_axis=0):
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return tp / (tp+fp)
+    precision = positive_predictive_value
+
+    @metric()
+    def false_discovery_rate(m, negative_axis=0):
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return fp / (tp + fp)
+
+    @metric()
+    def negative_predictive_value(m, negative_axis=0):
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return tn /(tn+fn)
+
+    @metric()
+    def false_omission_rate(m, negative_axis=0):
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        return fn / (tn+fn)
+
+    @metric()
+    def diagnostic_odd_ratio(m, negative_axis=0):
+        tn = _true_negative(m, negative_axis)
+        fn = _false_negative(m, negative_axis)
+        tp = _true_positive(m, negative_axis)
+        fp = _false_positive(m, negative_axis)
+        return (tp*tn) / (fp*fn)
+
+    @metric()
+    def TP(m, negative_axis=0):
+        return _true_positive(m, negative_axis)
+
+    @metric()
+    def FP(m, negative_axis=0):
+        return _false_positive(m, negative_axis)
+
+    @metric()
+    def TN(m, negative_axis=0):
+        return _true_negative(m, negative_axis)
+
+    @metric()
+    def FN(m, negative_axis=0):
+        return _false_negative(m, negative_axis)
+
+    @metric()
+    def kappa(m):
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        total_trues = m.sum(axis=-2)  # True value totals
+        n = total_preds.sum(axis=-1)
+
+        effectiveAgreement = np.trace(m, axis1=-1, axis2=-2) / n
+        theoricAgreement = (total_preds * total_trues).sum(axis=-1) / (n ** 2)
+        return (effectiveAgreement - theoricAgreement) / (1 - theoricAgreement)
+
+    @metric()
+    def kappa_quadratic(m):
+        nb_class = m.shape[-1]
+        ratings_mat = np.tile(np.arange(0, nb_class)[:, None], reps=(1, nb_class))
+        ratings_squared = (ratings_mat - ratings_mat.T) ** 2
+
+        weights = (ratings_squared / (nb_class - 1) ** 2)
+
+        total_trues = m.sum(axis=-2)  # True value totals
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        n = total_preds.sum(axis=-1)
+
+        # The nominator.
+        nom = np.sum(m * weights, axis=(-1, -2))
+        expected_probs = np.einsum('...i,...j->...ij', total_trues, total_preds)
+        # The denominator.
+        denom = np.sum(weights * expected_probs / n, axis=(-1, -2))
+
+        return 1. - nom / denom
+
+    @metric()
+    def dice(m, smooth=0):
+        total_trues = m.sum(axis=-2)  # True value totals
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        intersection = np.trace(m, axis1=-1, axis2=-2)
+        double_union = total_trues + total_preds
+        return (2. * intersection + smooth) / (double_union + smooth)
 
 
-def _true_positive(m):
+def _true(m):
     return np.trace(m, axis1=-2, axis2=-1)
 
 
-def _false_positive(m, false_axis=0):
-    if not isinstance(false_axis, tuple):
-        false_axis = (false_axis,)
-    x_axis, y_axis = np.meshgrid(false_axis, false_axis)
+def _true_positive(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    return m[..., axis, axis].sum(axis=-1)
+
+
+def _true_negative(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    return m[..., negative_axis, negative_axis].sum(axis=-1)
+
+
+def _false_positive(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    x_axis, y_axis = np.meshgrid(positive_axis, negative_axis)
     return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
-    
+
+
+def _false_negative(m, negative_axis=0):
+    if not isinstance(negative_axis, tuple):
+        negative_axis = (negative_axis,)
+    positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    x_axis, y_axis = np.meshgrid(negative_axis, positive_axis)
+    return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
+
 
 def _total(m):
     return np.sum(m, axis=(-2, -1))

@@ -11,12 +11,14 @@ def commonprefix(m):
 
 def str2time(s):
     try:
-        d, time = s.split('d')
-        if d:
-            d = int(d)
+        if 'd' in s:
+            d, time = s.split('d')
         else:
             d = 0
-        h, m, s = (int(_) for _ in time.split(':'))
+            time = s
+        if d:
+            d = int(d)
+        h, m, s = (int(_) for _ in time.strip().split(':'))
         t = d * 86400 + h * 3600 + m * 60 + s
     except ValueError:
         raise ValueError('Invalid time string: %s ' % s)
