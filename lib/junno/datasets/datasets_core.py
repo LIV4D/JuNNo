@@ -889,11 +889,11 @@ class DataSetConcatenate(AbstractDataSet):
 
             if col is None:
                 raise ValueError('Column %s is not included in any concatenated datasets.' % col_name)
-            columns[col_name] = col.shape, col.dtype
+            columns[col_name] = col.shape, col.dtype, col.undef_dims
 
         # -- Setup dataset --
         super(DataSetConcatenate, self).__init__(name=name, parent_datasets=datasets, pk_type=str)
-        self._columns = [DSColumn(name, shape, dtype, self) for name, (shape, dtype) in columns.items()]
+        self._columns = [DSColumn(name, shape, dtype, self, undef_dims) for name, (shape, dtype, undef_dims) in columns.items()]
         self._columns_default = columns_default
 
         self._datasets_start_index = []
@@ -1094,7 +1094,7 @@ class DataSetApply(AbstractDataSet):
         if sequences_output is not None:
             for c in sequences_output.keys():
                 if c not in self._columns_mapping.keys():
-                    raise ValueError('Could not find the correspondence between the key %s (sequence_output)'
+                    raise ValueError('Could not find the correspondence between the key %s in sequence_output parameter'
                                      ' and the output of the function' %c)
 
         # --- HANDLE SEQUENCE ---

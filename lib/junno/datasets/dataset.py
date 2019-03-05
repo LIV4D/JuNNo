@@ -356,7 +356,8 @@ class AbstractDataSet(metaclass=ABCMeta):
     def copy_columns(self, dataset=None):
         if dataset is None:
             dataset = self
-        return [DSColumn(_.name, _.shape, _.dtype, dataset, _.format, _.undef_dims) for _ in self._columns]
+        return [DSColumn(name=_.name, shape=_.shape, dtype=_.dtype, dataset=dataset,
+                         format=_.format, undef_dims=_.undef_dims) for _ in self._columns]
 
     def add_column(self, name, shape, dtype, format=None, undef_dims=0):
         self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format,
@@ -1815,7 +1816,8 @@ class DSColumnFormat:
 
         def format_html(self, data, raw_data, fullscreen=None):
             disp = str(data)
-            disp = disp[:MAX_CHAR_DISPLAYED]+'<br /> ... <br />'+disp[-MAX_CHAR_DISPLAYED:]
+            if len(disp) > MAX_CHAR_DISPLAYED:
+                disp = disp[:MAX_CHAR_DISPLAYED]+'<br /> ... <br />'+disp[-MAX_CHAR_DISPLAYED:]
             return "<p> %s </p>" % disp
 
         def format_data(self, data):
