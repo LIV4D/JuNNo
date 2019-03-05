@@ -1,4 +1,5 @@
-from functools import reduce
+import functools
+from ..j_utils.function import bind_args
 import math
 import numpy as np
 
@@ -8,7 +9,8 @@ def prod(factor):
     Equivalent to sum(list) with multiplication.
     Return the multiplication of all the elements in the list.
     """
-    return reduce(lambda x, y: x*y, factor, 1)
+    return functools.reduce(lambda x, y: x*y, factor, 1)
+
 
 def quadratic_kappa(conf_matrix):
     """
@@ -34,6 +36,7 @@ def quadratic_kappa(conf_matrix):
     denom = np.sum(weights * expected_probs / n)
 
     return 1. - nom / denom
+
 
 def kappa(conf_matrix):
     """
@@ -249,14 +252,33 @@ def apply_scale(a, range=None, domain=None, clip=None):
 
 
 ########################################################################################################################
-def metric(f):
-    return f
+def metric(alias=None):
+    def decorator(func):
+        @functools.wraps(func)
+        def compute_metric(self, *params, **kwargs):
+            m = self.no_normed().view(np.ndarray)
+            params = bind_args(func, *params, **kwargs)
+            return func(m=m, **params)
+
+        _metrics[func.__name__] = compute_metric
+        if alias is not None:
+            if isinstance(alias, str):
+                _metrics[alias] = compute_metric
+            else:
+                for a in alias:
+                    _metrics[a] = compute_metric
+        return compute_metric
+    return decorator
+
+
+_metrics = {}
 
 
 class ConfMatrix(np.ndarray):
     """
     [..., pred, true]
     """
+
     def __new__(cls, input_array, labels=None):
         a = np.asarray(input_array).astype(np.uint).view(cls)
         a.labels = labels
@@ -372,102 +394,137 @@ class ConfMatrix(np.ndarray):
     def _metric_flatten(self):
         return self.view(np.ndarray)
 
-    @metric
-    def accuracy(self):
-        m = self._metric_flatten()
+    @staticmethod
+    def metrics(name):
+        m = _metrics.get(name, None)
+        if m is None:
+            raise ValueError('Unkown metric %s.' % name)
+        return _metrics[name]
+
+    @staticmethod
+    def metrics_name():
+        return list(_metrics.keys())
+
+    def to_metric(self, metric_name, **kwargs):
+        return self.metrics(metric_name)(self, **kwargs)
+
+    @metric()
+    def accuracy(m):
         return _true(m) / _total(m)
 
-    @metric
-    def true_positive_rate(self, negative_axis=0):
-        m = self._metric_flatten()
+    @metric(alias=('sensitivity', 'recall'))
+    def true_positive_rate(m, negative_axis=0):
         tp = _true_positive(m, negative_axis)
         fn = _false_negative(m, negative_axis)
         return tp / (tp+fn)
-
     sensitivity = true_positive_rate
-    recall = sensitivity
+    recall = true_positive_rate
 
-    @metric
-    def false_negative_rate(self, negative_axis=0):
-        m = self._metric_flatten()
+    @metric()
+    def false_negative_rate(m, negative_axis=0):
         tp = _true_positive(m, negative_axis)
         fn = _false_negative(m, negative_axis)
         return fn / (tp + fn)
 
-    @metric
-    def true_negative_rate(self, negative_axis=0):
-        m = self
+    @metric(alias='specificity')
+    def true_negative_rate(m, negative_axis=0):
         tn = _true_negative(m, negative_axis)
         fp = _false_positive(m, negative_axis)
         return tn / (tn+fp)
+    specifity = true_negative_rate
 
-    specificity = true_negative_rate
-
-    @metric
-    def false_positive_rate(self, negative_axis=0):
-        m = self
+    @metric()
+    def false_positive_rate(m, negative_axis=0):
         tn = _true_negative(m, negative_axis)
         fp = _false_positive(m, negative_axis)
         return fp / (tn + fp)
 
-    @metric
-    def positive_predictive_value(self, negative_axis=0):
-        m = self
+    @metric(alias='precision')
+    def positive_predictive_value(m, negative_axis=0):
         tp = _true_positive(m, negative_axis)
         fp = _false_positive(m, negative_axis)
         return tp / (tp+fp)
-
     precision = positive_predictive_value
 
-    @metric
-    def false_discovery_rate(self, negative_axis=0):
-        m = self
+    @metric()
+    def false_discovery_rate(m, negative_axis=0):
         tp = _true_positive(m, negative_axis)
         fp = _false_positive(m, negative_axis)
         return fp / (tp + fp)
 
-    @metric
-    def negative_predictive_value(self, negative_axis=0):
-        m = self
+    @metric()
+    def negative_predictive_value(m, negative_axis=0):
         tn = _true_negative(m, negative_axis)
         fn = _false_negative(m, negative_axis)
         return tn /(tn+fn)
 
-    @metric
-    def false_omission_rate(self, negative_axis=0):
-        m = self
+    @metric()
+    def false_omission_rate(m, negative_axis=0):
         tn = _true_negative(m, negative_axis)
         fn = _false_negative(m, negative_axis)
-        return fn /(tn+fn)
+        return fn / (tn+fn)
 
-    @metric
-    def diagnostic_odd_ratio(self, negative_axis=0):
-        m = self
+    @metric()
+    def diagnostic_odd_ratio(m, negative_axis=0):
         tn = _true_negative(m, negative_axis)
         fn = _false_negative(m, negative_axis)
         tp = _true_positive(m, negative_axis)
         fp = _false_positive(m, negative_axis)
         return (tp*tn) / (fp*fn)
 
-    @metric
-    def TP(self, negative_axis=0):
-        m = self
+    @metric()
+    def TP(m, negative_axis=0):
         return _true_positive(m, negative_axis)
 
-    @metric
-    def FP(self, negative_axis=0):
-        m = self
+    @metric()
+    def FP(m, negative_axis=0):
         return _false_positive(m, negative_axis)
 
-    @metric
-    def TN(self, negative_axis=0):
-        m = self
+    @metric()
+    def TN(m, negative_axis=0):
         return _true_negative(m, negative_axis)
 
-    @metric
-    def FN(self, negative_axis=0):
-        m = self
+    @metric()
+    def FN(m, negative_axis=0):
         return _false_negative(m, negative_axis)
+
+    @metric()
+    def kappa(m):
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        total_trues = m.sum(axis=-2)  # True value totals
+        n = total_preds.sum(axis=-1)
+
+        effectiveAgreement = np.trace(m, axis1=-1, axis2=-2) / n
+        theoricAgreement = (total_preds * total_trues).sum(axis=-1) / (n ** 2)
+        return (effectiveAgreement - theoricAgreement) / (1 - theoricAgreement)
+
+    @metric()
+    def kappa_quadratic(m):
+        nb_class = m.shape[-1]
+        ratings_mat = np.tile(np.arange(0, nb_class)[:, None], reps=(1, nb_class))
+        ratings_squared = (ratings_mat - ratings_mat.T) ** 2
+
+        weights = (ratings_squared / (nb_class - 1) ** 2)
+
+        total_trues = m.sum(axis=-2)  # True value totals
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        n = total_preds.sum(axis=-1)
+
+        # The nominator.
+        nom = np.sum(m * weights, axis=(-1, -2))
+        expected_probs = np.einsum('...i,...j->...ij', total_trues, total_preds)
+        # The denominator.
+        denom = np.sum(weights * expected_probs / n, axis=(-1, -2))
+
+        return 1. - nom / denom
+
+    @metric()
+    def dice(m, smooth=0):
+        total_trues = m.sum(axis=-2)  # True value totals
+        total_preds = m.sum(axis=-1)  # Predicated totals
+        intersection = np.trace(m, axis1=-1, axis2=-2)
+        double_union = total_trues + total_preds
+        return (2. * intersection + smooth) / (double_union + smooth)
 
 
 def _true(m):
