@@ -233,7 +233,7 @@ class DataSetSubset(AbstractDataSet):
         gen = gen_context.generator(self._parent, start=first_id, stop=last_id, columns=gen_context.columns)
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
-            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns}, seek=i)
+            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns}, seek=self.start+i)
 
     @property
     def size(self):
