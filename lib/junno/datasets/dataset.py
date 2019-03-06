@@ -667,6 +667,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         # img_columns = [c.name for c in self.columns if len(c.shape) == 3 and c.shape[0] in (1, 3)] This won't work in case of images of format (h, w) or (h, w, c).
         # It's the default format when reading a SQLDataset with compressed images.
         img_columns = [c for c in columns if len(self.column_by_name(c).shape) > 1]
+        seq_columns = [self.column_by_name(c).undef_dims for c in img_columns]
+
         metadata_columns = [c for c in columns if c not in img_columns]
 
         if start < 0:
@@ -701,6 +703,36 @@ class AbstractDataSet(metaclass=ABCMeta):
                 return d
 
         dataframe = pd.DataFrame(columns=metadata_columns)
+
+        def save_img(array, c_name, filename, is_seq=0):
+            if array.ndim > 2:
+                if array.shape[0] < array.shape[2]:
+                    array = array.transpose((1, 2, 0))
+            else:
+                array = np.expand_dims(array, axis=2)
+            if array.shape[2] == 1:
+                array = array.reshape(array.shape[:-1])
+            if np.max(array) <= 1. and np.min(array) >= 0.:
+                array *= 255
+
+            img_folder_path = join(folder_path, c_name) if not single_column else folder_path
+
+            import cv2
+            if compress_img:
+                if is_seq:
+                    path = join(img_folder_path, filename+'/', str(is_seq)+'.'+compress_format)
+                else:
+                    path = join(img_folder_path, filename + '.' + compress_format)
+
+                cv2.imwrite(path, array)
+            else:
+                if is_seq:
+                    path = join(img_folder_path, filename+'/', str(is_seq)+'.ppm')
+                else:
+                    path = join(img_folder_path, filename + '.ppm')
+                cv2.imwrite(path, array)
+
+
         with Process('Saving %s' % self._name, stop - start) as p:
             for i in range(start, stop):
                 # Read data
@@ -714,27 +746,22 @@ class AbstractDataSet(metaclass=ABCMeta):
                 data = [format_type(r, _) for _ in img_columns]
                 filename = basename(str(r[column_for_filename][0])).replace(".", "_")
 
-                for img_data, column_name in zip(data, img_columns):
+                for undef_dims, img_data, column_name in zip(seq_columns, data, img_columns):
                     array = img_data
-                    if array.ndim > 2:
-                        if array.shape[0] < array.shape[2]:
-                            array = array.transpose((1, 2, 0))
-                    else:
-                        array = np.expand_dims(array, axis=2)
-                    if array.shape[2] == 1:
-                        array = array.reshape(array.shape[:-1])
-                    if np.max(array) <= 1. and np.min(array) >= 0.:
-                        array *= 255
+                    if undef_dims:
+                        seq_path = join(folder_path, column_name, filename+'/') if not single_column else join(folder_path, filename+'/')
+                        if not exists(seq_path):
+                            makedirs(seq_path)
 
-                    img_folder_path = join(folder_path, column_name) if not single_column else folder_path
+                        shape = array.shape
+                        iter_undef_dims = np.prod(shape[:undef_dims])
+                        array = array.reshape( (iter_undef_dims,)+shape[undef_dims:])
+                        for i in range(iter_undef_dims):
+                            save_img(array[i], column_name, filename, i+1)
 
-                    import cv2
-                    if compress_img:
-                        path = join(img_folder_path, filename+'.'+compress_format)
-                        cv2.imwrite(path, array)
                     else:
-                        path = join(img_folder_path, filename + '.ppm')
-                        cv2.imwrite(path, array)
+                        save_img(array, column_name, filename)
+
 
                 metadata = [format_type(r, _) for _ in metadata_columns]
                 if column_for_filename in metadata_columns and len(metadata) == 1:
