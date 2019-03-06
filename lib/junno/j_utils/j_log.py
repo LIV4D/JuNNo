@@ -119,7 +119,7 @@ class LogPrinter(Thread):
     def do_print(self):
         print_stack = self.print_stack[:]
         self.print_stack = []
-        self.anim_step = self.anim_step + 1 if self.anim_step < 60 else 0
+        self.anim_step = (self.anim_step + 1) % 60
 
         if print_stack:  # Print messages
             if self._erase_line:
