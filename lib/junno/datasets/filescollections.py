@@ -344,7 +344,8 @@ class ImagesCollection(FilesCollection):
         """
         sequence = []
         folder = join(self.path, path)
-        for file in listdir(folder):
+        files = sorted(listdir(folder))
+        for file in files:
             sequence.append(self.read_func(join(folder, file)))
         return np.asarray(sequence)
 
