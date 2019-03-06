@@ -9,7 +9,7 @@ from ..j_utils.j_log import log, Process
 
 ########################################################################################################################
 class DataSetReshape(AbstractDataSet):
-    def __init__(self, dataset, columns, shape, label_columns=None, keep_original=False, name='reshape'):
+    def __init__(self, dataset, columns, shape, keep_parent=False, name='reshape'):
         """
         :type dataset: AbstractDataSets
 
@@ -49,7 +49,7 @@ class DataSetReshape(AbstractDataSet):
 
             column_shape = tuple(k if k > 1 and isinstance(k, int) else int(k * s)
                                  for k, s in zip(shape, column.shape[-2:]))
-            if not keep_original:
+            if not keep_parent:
 
                 column._shape = column._shape[:-2] + column_shape
                 self._reshaped_columns[c] = c
@@ -57,22 +57,7 @@ class DataSetReshape(AbstractDataSet):
                 self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
                 self._reshaped_columns[c + '_reshaped'] = c
 
-        if label_columns is None:
-            label_columns = []
-        if not isinstance(label_columns, list):
-            label_columns = [label_columns]
-
-        self._label_columns = []
-        for c in label_columns:
-            if isinstance(c, DSColumn):
-                c = c.name
-            if isinstance(c, str):
-                if c not in columns:
-                    raise ValueError('Unkown label column: %s' % c)
-            else:
-                raise NotImplementedError('label_column should be a column name, a DatasetColumn or a list of those '
-                                          '(type: %s)' % repr(type(c)))
-            self._label_columns.append(c)
+        self._label_columns = filter(lambda c: c.format.is_label, self.columns)
 
     def _generator(self, gen_context):
         from ..j_utils.math import cartesian

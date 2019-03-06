@@ -1345,10 +1345,9 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return dataset
 
-    def reshape(self, columns, shape, label_columns=None, keep_original=False, name='reshape'):
+    def reshape(self, columns, shape, keep_parent=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
-        return DataSetReshape(self, columns=columns, shape=shape, label_columns=label_columns,
-                              keep_original=keep_original, name=name)
+        return DataSetReshape(self, columns=columns, shape=shape, keep_parent=keep_parent, name=name)
 
     def join(self, datasets, verbose=False, parallel=False, **kwargs):
         for c in self._columns:
