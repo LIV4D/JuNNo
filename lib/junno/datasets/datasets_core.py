@@ -880,11 +880,11 @@ class DataSetConcatenate(AbstractDataSet):
 
             if col is None:
                 raise ValueError('Column %s is not included in any concatenated datasets.' % col_name)
-            columns[col_name] = col.shape, col.dtype
+            columns[col_name] = col.shape, col.dtype, col.format
 
         # -- Setup dataset --
         super(DataSetConcatenate, self).__init__(name=name, parent_datasets=datasets, pk_type=str)
-        self._columns = [DSColumn(name, shape, dtype, self) for name, (shape, dtype) in columns.items()]
+        self._columns = [DSColumn(name, shape, dtype, self, format) for name, (shape, dtype, format) in columns.items()]
         self._columns_default = columns_default
 
         self._datasets_start_index = []
@@ -953,6 +953,10 @@ class DataSetConcatenate(AbstractDataSet):
     @property
     def size(self):
         return sum(_.size for _ in self.parent_datasets)
+
+
+def concatenate(*args):
+    return DataSetConcatenate(args)
 
 
 ########################################################################################################################
@@ -1094,7 +1098,7 @@ class DataSetApply(AbstractDataSet):
             format = {_: format for _ in self._single_col_mapping.keys()}
         elif not all(_ in self._single_col_mapping for _ in format.keys()):
             format = {_: format for _ in self._single_col_mapping.keys()}
-
+        format = {c: f if f != 'same' else dataset.column_by_name(c, False).format for c, f in format.items()}
 
         # Try to infer
         unknown_columns_format = []
