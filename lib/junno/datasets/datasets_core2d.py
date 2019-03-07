@@ -57,7 +57,7 @@ class DataSetReshape(AbstractDataSet):
                 self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
                 self._reshaped_columns[c + '_reshaped'] = c
 
-        self._label_columns = filter(lambda c: c.format.is_label, self.columns)
+        self._label_columns = [c.name for c in self.columns if c.format.is_label or 'bool' in str(c.dtype)]
 
     def _generator(self, gen_context):
         from ..j_utils.math import cartesian
@@ -110,6 +110,10 @@ class DataSetReshape(AbstractDataSet):
                     if c_parent in self._label_columns:
                         h, w, _ = tmp.shape
                         h_target, w_target = target_shape
+                        is_bool = tmp.dtype == np.bool
+
+                        if is_bool:
+                            tmp = tmp.astype(np.uint8)
 
                         if h > h_target or w > w_target:    # Downscale
                             h_bin = int(np.ceil(h / h_target))
@@ -130,6 +134,9 @@ class DataSetReshape(AbstractDataSet):
                             tmp = u[np.argmax(count, axis=2)]
                         else:               # Upscale
                             tmp = cv2.resize(tmp, dsize=target_shape[::-1], interpolation=cv2.INTER_NEAREST)
+
+                        if is_bool:
+                            tmp = tmp != 0
 
                     else:
                         interp = cv2.INTER_AREA
