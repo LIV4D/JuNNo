@@ -14,8 +14,8 @@ def abs_path(path, f=None):
         return abspath(path)
     dir = dirname(abspath(f))
     path = join(dir, path)
-    if ':' in path:  # Handling Windows path style
-        path = '///' + path.replace('\\', "/")
+    # if ':' in path:  # Handling Windows path style TODO : Check what is the intended use of that...
+    #     path = '///' + path.replace('\\', "/")
     return path
 
 

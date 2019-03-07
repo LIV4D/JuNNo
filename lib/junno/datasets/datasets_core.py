@@ -790,21 +790,14 @@ class DataSetJoin(AbstractDataSet):
             r = None
             yield weakref
 
-    def subset(self, start=0, stop=None, *args):
+    def subset(self, *args, start=0, stop=None, name=None):
         from copy import deepcopy
-        if len(args) == 1:
-            start = 0
-            stop = args[0]
-        elif len(args) == 2:
-            start = args[0]
-            stop = args[1]
-        if not 0 <= start < self.size:
-            start = 0
-        if not start <= stop < self.size:
-            stop = self.size
-
+        start, stop = interval(self.size, start, stop, args)
         sub = deepcopy(self)
-        sub._name += '_Subset'
+        if name is None:
+            sub._name += '_Subset'
+        else:
+            sub._name = name
         sub._join = self._join[start:stop, :]
         return sub
 
@@ -889,11 +882,13 @@ class DataSetConcatenate(AbstractDataSet):
 
             if col is None:
                 raise ValueError('Column %s is not included in any concatenated datasets.' % col_name)
-            columns[col_name] = col.shape, col.dtype, col.undef_dims
+
+            columns[col_name] = col.shape, col.dtype, col.format, col.undef_dims
 
         # -- Setup dataset --
         super(DataSetConcatenate, self).__init__(name=name, parent_datasets=datasets, pk_type=str)
-        self._columns = [DSColumn(name, shape, dtype, self, undef_dims) for name, (shape, dtype, undef_dims) in columns.items()]
+        self._columns = [DSColumn(name, shape, dtype, dataset=self, format=format, undef_dims=undef_dims)
+                         for name, (shape, dtype, format, undef_dims) in columns.items()]
         self._columns_default = columns_default
 
         self._datasets_start_index = []
@@ -946,13 +941,14 @@ class DataSetConcatenate(AbstractDataSet):
                     parent_gen = None
                     continue
 
-                if parent_gen.ended():
-                    parent_gen = None
-
                 for i_pk in range(n):
                     r[i + i_pk, 'pk'] = parent_gen.dataset.dataset_name + '|' + str(result[i_pk, 'pk'])
                     for c in default_cols:
                         r[i + i_pk, c] = self._columns_default[c]
+
+                if parent_gen.ended():
+                    parent_gen = None
+
                 i += n
 
             r = None
@@ -961,6 +957,10 @@ class DataSetConcatenate(AbstractDataSet):
     @property
     def size(self):
         return sum(_.size for _ in self.parent_datasets)
+
+
+def concatenate(*args):
+    return DataSetConcatenate(args)
 
 
 ########################################################################################################################
@@ -1139,7 +1139,7 @@ class DataSetApply(AbstractDataSet):
             format = {_: format for _ in self._single_col_mapping.keys()}
         elif not all(_ in self._single_col_mapping for _ in format.keys()):
             format = {_: format for _ in self._single_col_mapping.keys()}
-
+        format = {c: f if f != 'same' else dataset.column_by_name(c, False).format for c, f in format.items()}
 
         # Try to infer
         unknown_columns_format = []
