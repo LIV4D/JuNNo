@@ -91,18 +91,17 @@ class DataSetResult:
                     raise ValueError('No dataset was specified, refering column by their name is disabled.')
             if c.name in assign:
                 a = assign[c.name]
-                if c.is_seq:
-                    a_shape = (a.shape[0],) +tuple(a.shape[c.undef_dims+1:])
+                if isinstance(a, DataSetResultPointer):
+                    data_dict[c.name] = a
                 else:
                     a_shape = a.shape
-                if a_shape != (n,) + tuple(c.shape):
-                    raise ValueError('The shape of the assigned value for column %s is %s but should be %s.'
-                                     % (c.name, repr(a_shape), repr((n,)+c.shape)))
-                data_dict[c.name] = a
+                    if a_shape != (n,) + tuple(c.shape):
+                        raise ValueError('The shape of the assigned value for column %s is %s but should be %s.'
+                                         % (c.name, repr(a_shape), repr((n,)+c.shape)))
+                    data_dict[c.name] = a
             else:
                 if c.is_seq:
-                    new_dimensions = c.undef_dims*[1]
-                    data_dict[c.name] = np.empty(tuple([n]+new_dimensions+list(c.shape)), dtype=c.dtype)
+                    data_dict[c.name] = None
                 else:
                     data_dict[c.name] = np.empty(tuple([n]+list(c.shape)), dtype=c.dtype)
 
@@ -194,7 +193,7 @@ class DataSetResult:
 
     def clean(self):
         for data in self._data_dict.values():
-            if data.flags['OWNDATA']:
+            if isinstance(data, np.ndarray) and data.flags['OWNDATA']:
                 del data
         self._data_dict.clear()
         self._columns.clear()
@@ -235,7 +234,7 @@ class DataSetResult:
         """
         b = 0
         for data in self._data_dict.values():
-            if data.flags['OWNDATA']:
+            if isinstance(data, np.ndarray) and data.flags['OWNDATA']:
                 b += data.nbytes
         return b
 
@@ -247,7 +246,8 @@ class DataSetResult:
         """
         b = 0
         for data in self._data_dict.values():
-            b += data.nbytes
+            if isinstance(data, np.ndarray):
+                b += data.nbytes
         return b
 
     @property
@@ -312,16 +312,9 @@ class DataSetResult:
             else:
                 raise NotImplementedError
             if columns in self:
-                if isinstance(value, np.ndarray):
-                    col = self.columns[columns]
-
-                    if col.is_seq:
-                        undef_dims = value.shape[:col.undef_dims]
-                        previous_size = self._data_dict[columns].shape
-                        shape = list(previous_size)
-                        for i, dim in enumerate(undef_dims):
-                            shape[i+1] = dim
-                        self._data_dict[columns] = np.resize(self._data_dict[columns], shape)
+                if self._data_dict[columns] is None:
+                    DataSetResultPointer(self, columns, indexes).set(value)
+                elif isinstance(value, np.ndarray) and not isinstance(self._data_dict[columns], DataSetResultPointer):
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
                     self._data_dict[columns][indexes] = value
@@ -335,10 +328,19 @@ class DataSetResult:
             raise NotImplementedError
 
     def __getitem__(self, item):
+        def resolve_pointer(column):
+            d = self._data_dict[column]
+            if isinstance(d, DataSetResultPointer):
+                return if_none(d.get(), d)
+            elif d is None:
+                return DataSetResultPointer(self, column=column)
+            else:
+                return d
+
         if isinstance(item, str):
-            return self._data_dict[item]
+            return resolve_pointer(item)
         elif isinstance(item, DSColumn):
-            return self._data_dict[item.name]
+            return resolve_pointer(item.name)
         elif isinstance(item, (int, slice)):
             return self[item, set(self.columns_name() + ['pk'])]
         elif isinstance(item, list):
@@ -353,11 +355,11 @@ class DataSetResult:
                                           '(here provided type is [%s, %s])' % (str(type(item[0])), str(type(item[1]))))
 
             if isinstance(columns, (list, tuple)):
-                return [self._data_dict[_ if isinstance(_, str) else _.name][indexes] for _ in columns]
+                return [resolve_pointer(_ if isinstance(_, str) else _.name)[indexes] for _ in columns]
             elif isinstance(columns, set):
-                return {c: self._data_dict[c if isinstance(c, str) else c.name][indexes] for c in columns}
+                return {c: resolve_pointer(c if isinstance(c, str) else c.name)[indexes] for c in columns}
             else:
-                return self._data_dict[columns if isinstance(columns, str) else columns.name][indexes]
+                return resolve_pointer(columns if isinstance(columns, str) else columns.name)[indexes]
         else:
             raise NotImplementedError
 
@@ -577,6 +579,56 @@ class DataSetResult:
                 return max([_.end_date for _ in traces]) - min([_.start_date for _ in traces])
             else:
                 return sum(_.total_exec_time for _ in traces)
+
+
+class DataSetResultPointer:
+    def __init__(self, result: DataSetResult, column: (str, DSColumn), array_slice=None):
+        self.result = result
+        if isinstance(column, str):
+            column = self.result.col[column]
+        self.column = column
+        self.array_slice = array_slice
+        if self.array_slice is not None and self.array_slice != slice(0,1) and self.array_slice!=0:
+            raise NotImplementedError('slice=%s' % self.array_slice) # Todo: implement slice
+
+    def set(self, array):
+        col = self.column
+        # --- Check array compatibilities ---
+        null_dim= 0 if isinstance(self.array_slice, int) else 1
+        if array.ndim != len(col.shape)+col.undef_dims+null_dim or array.shape[-len(col.shape):] != col.shape:
+            raise ValueError("Can't set column %s with an array of shape %s (expected: %s)"
+                             % (col.name, array.shape, col.shape))
+
+        array = array.astype(dtype=col.dtype, copy=False)
+
+        # --- Assign value ---
+        if isinstance(self.array_slice, int):
+            self.result._data_dict[col.name] = array[np.newaxis, ...]
+        else:
+            self.result._data_dict[col.name] = array
+
+    def get(self):
+        d = self.result._data_dict[self.column.name]
+        if isinstance(self.array_slice, int):
+            return None if d is None else d[self.array_slice]
+        else:
+            return d
+
+    def __setitem__(self, key, value):
+        if self.get() is None:
+            if not ((isinstance(key, slice) and key in (slice(None), slice(0, 1))) or
+                    (isinstance(key, int) and key == 0)):
+                raise ValueError('Invalid key: %s for assigning data on the undefined column %s.' %
+                                 (key, self.column))
+            if key == 0:
+                value = value[np.newaxis,...]
+            self.set(value)
+        else:
+            self.get()[key] = value
+
+    def __getitem__(self, item):
+        d = self.get()
+        return DataSetResultPointer(result=self.result, column=self.column, array_slice=item) if d is None else d[item]
 
 
 ########################################################################################################################

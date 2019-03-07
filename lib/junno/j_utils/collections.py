@@ -718,6 +718,12 @@ class AttributeDict(OrderedDict):
         for v in self.values():
             yield v
 
+    def __contains__(self, item):
+        if isinstance(item, str):
+            if item in self.keys():
+                return True
+        return item in self.values()
+
     def __len__(self):
         return len(self.keys())
 

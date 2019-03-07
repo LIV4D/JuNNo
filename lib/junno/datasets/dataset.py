@@ -1688,10 +1688,10 @@ class DSColumn:
         self.format = format
 
     def __getstate__(self):
-        return self._name, self._shape, self._dtype, self._is_text
+        return self._name, self._shape, self._dtype, self._is_text, self.undef_dims
 
     def __setstate__(self, state):
-        self._name, self._shape, self._dtype, self._is_text = state
+        self._name, self._shape, self._dtype, self._is_text, self.undef_dims= state
         self._dataset = None
         self._format = None
 
@@ -1705,8 +1705,8 @@ class DSColumn:
 
     @undef_dims.setter
     def undef_dims(self, undef_dims):
+        # TODO: This property should be read-only?
         self._undef_dims = undef_dims
-
 
     @property
     def shape(self):
@@ -1714,10 +1714,6 @@ class DSColumn:
 
     def get_undefined_dimensions(self):
         return [True]*self.undef_dims+[False]*len(self._shape)
-
-    @property
-    def ndim(self):
-        return len(self._shape)
 
     @property
     def ndim(self):
