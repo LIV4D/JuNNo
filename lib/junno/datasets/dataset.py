@@ -1201,7 +1201,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             raise AttributeError('%s method name already exist in AbstractDataset.' % func.__name__)
         setattr(cls, func.__name__, func)
 
-    def subset(self, start=0, stop=None, name='subset', *args):
+    def subset(self, *args, start=0, stop=None, name='subset'):
         from .datasets_core import DataSetSubset
         start, stop = interval(self.size, start, stop, args)
         return DataSetSubset(self, start, stop, name=name)
@@ -1619,6 +1619,28 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core2d import DataSetUnPatch
         return DataSetUnPatch(self, patch_mix=patch_mix, columns=columns, n_patches=n_patches,
                               restore_columns=restore_columns, columns_shape=columns_shape)
+
+    def repeat(self, n=None, rows=None, name="repeat"):
+        if rows is not None:
+            if rows == self.size:
+                return self
+            elif rows < self.size:
+                return self.subset(stop=rows, name=name)
+            elif rows > self.size:
+                l = [self] * (rows//self.size)
+                l.append(self.subset(rows % self.size))
+                from .datasets_core import DataSetConcatenate
+                return DataSetConcatenate(l, name=name)
+        elif n is not None:
+            if n == 1:
+                return self
+            elif n < 1:
+                return self.subset(stop=int(self.size*n), name=name)
+            elif n > 1:
+                l = [self] * int(np.floor(n))
+                l.append(self.subset(n % 1))
+                from .datasets_core import DataSetConcatenate
+                return DataSetConcatenate(l, name=name)
 
 
 ########################################################################################################################
