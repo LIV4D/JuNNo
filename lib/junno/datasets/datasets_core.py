@@ -788,21 +788,14 @@ class DataSetJoin(AbstractDataSet):
             r = None
             yield weakref
 
-    def subset(self, start=0, stop=None, *args):
+    def subset(self, *args, start=0, stop=None, name=None):
         from copy import deepcopy
-        if len(args) == 1:
-            start = 0
-            stop = args[0]
-        elif len(args) == 2:
-            start = args[0]
-            stop = args[1]
-        if not 0 <= start < self.size:
-            start = 0
-        if not start <= stop < self.size:
-            stop = self.size
-
+        start, stop = interval(self.size, start, stop, args)
         sub = deepcopy(self)
-        sub._name += '_Subset'
+        if name is None:
+            sub._name += '_Subset'
+        else:
+            sub._name = name
         sub._join = self._join[start:stop, :]
         return sub
 
@@ -944,13 +937,14 @@ class DataSetConcatenate(AbstractDataSet):
                     parent_gen = None
                     continue
 
-                if parent_gen.ended():
-                    parent_gen = None
-
                 for i_pk in range(n):
                     r[i + i_pk, 'pk'] = parent_gen.dataset.dataset_name + '|' + str(result[i_pk, 'pk'])
                     for c in default_cols:
                         r[i + i_pk, c] = self._columns_default[c]
+
+                if parent_gen.ended():
+                    parent_gen = None
+
                 i += n
 
             r = None
