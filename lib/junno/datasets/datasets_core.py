@@ -345,7 +345,7 @@ class DataSetMap(AbstractDataSet):
         while not gen_context.ended():
             global_i, N, weakref = gen_context.create_result()
             r = weakref()
-            result = gen.next(copy={c_parent: r[c_name][:, i:i+N] if N > 0 else r[:, c_name]
+            result = gen.next(copy={c_parent: r[c_name][:, i:i+n] if n > 0 else r[:, c_name]
                               for c_parent, (c_name, i, n) in copy_columns.items()}, limit=N, r=r, seek=global_i)
             for c_parent, duplicates in duplicate_columns.items():
                 for c_name, i, n in duplicates:
