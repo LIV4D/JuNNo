@@ -408,12 +408,15 @@ class DataSetResult:
         for c in args:
             if c not in self:
                 raise ValueError("Unknown column %s" % str(c))
-            t = torch.from_numpy(self[c])
+            d = self[c]
+            if d.dtype not in (np.double, np.float, np.float32, np.float16, np.int64, np.int32, np.uint8):
+                d = d.astype(np.float32)
+            t = torch.from_numpy(d)
             if device:
                 t = t.to(device)
             r.append(t)
 
-        return tuple(r)
+        return tuple(r) if len(args) > 1 else r[0]
 
     class Trace:
         def __init__(self, r):
