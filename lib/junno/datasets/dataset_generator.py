@@ -9,8 +9,9 @@ import weakref
 from ..j_utils.parallelism import N_CORE
 from ..j_utils.collections import istypeof_or_listof, istypeof_or_collectionof, if_none, AttributeDict
 from ..j_utils.j_log import log, float_to_str
+from ..j_utils.math import apply_scale
 
-from .dataset import AbstractDataSet, DSColumn
+from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 
 
 ########################################################################################################################
@@ -395,7 +396,18 @@ class DataSetResult:
 
         return np.core.records.fromarrays(array_list)
     
-    def to_torch(self, *args, device=None):
+    def to_torch(self, *columns, range=None, dtype=None, device=None):
+        """
+        Convert columns into torch tensor.
+        :param columns: Name(s) for the column(s) for which you want to retreive a tensor.
+                (If several names are given, return a tuple of torch.Tensor).
+        :type columns: str, DSColumn
+        :param range: If provided, values of matrix columns will be scaled to this range.
+        :type range: tuple
+        :param dtype: If provided, convert the numpy arrays to dtype before calling torch.from_numpy().
+        :param device: If provided, transfer the tensors to this device.
+        :return:
+        """
         import torch
         r = []
 
@@ -405,18 +417,25 @@ class DataSetResult:
             else:
                 device = "cpu"
 
-        for c in args:
+        for c in columns:
             if c not in self:
                 raise ValueError("Unknown column %s" % str(c))
             d = self[c]
-            if d.dtype not in (np.double, np.float, np.float32, np.float16, np.int64, np.int32, np.uint8):
+
+            if range is not None and isinstance(self.col[c].format, DSColumnFormat.Matrix):
+                d = apply_scale(d, range=range, domain=self.col[c].format.domain, clip=range)
+
+            if dtype is not None:
+                d = d.astype(dtype, copy=False)
+            elif d.dtype not in (np.double, np.float, np.float32, np.float16, np.int64, np.int32, np.uint8):
                 d = d.astype(np.float32)
+
             t = torch.from_numpy(d)
             if device:
                 t = t.to(device)
             r.append(t)
 
-        return tuple(r) if len(args) > 1 else r[0]
+        return tuple(r) if len(columns) > 1 else r[0]
 
     class Trace:
         def __init__(self, r):

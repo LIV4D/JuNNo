@@ -96,7 +96,7 @@ class DataSetReshape(AbstractDataSet):
                 while i < len(indexes_list):
                     if len(indexes_list)-i >= 3:
                         list_id = [list(indexes_list[_]) for _ in (i, i+1, i+2)]
-                        indexes = list(zip(*list_id))
+                        indexes = tuple(zip(*list_id))
                         i += 3
                     else:
                         indexes = tuple(indexes_list[i])
