@@ -476,7 +476,7 @@ class DataSetAugment(AbstractDataSet):
                     result = gen.next(r=r, copy=copy, seek=(i_global+i)//self.n_factor)
                 # Compute augmented data
                 seed = i+i_global if gen_context.determinist else self.rng.randint(0, 100000)
-                for c in self.augmented_columns:
+                for c in columns:
                     if c in self.augmented_columns and ((i + i_global) % self.n_factor != 0 or not self.original):
                         r[i, c] = self.get_augmented(result[c][0], label=r.col[c].format.is_label, rng=seed)
                     else:
