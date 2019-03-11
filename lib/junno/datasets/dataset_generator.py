@@ -914,6 +914,8 @@ class DataSetSmartGenerator:
             while self._generator_process.is_alive():
                 self._send_to_subprocess(False, log_broken_pipe=False)
                 time.sleep(1e-3)
+                if hasattr(self._generator_process, 'terminate'):
+                    self._generator_process.terminate()
             del self._generator_process
             self._generator_process = None
         if self._generator_conn:
