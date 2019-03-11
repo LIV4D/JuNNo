@@ -745,7 +745,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         elif metadata_format is 'json':
             dataframe.to_json(folder_path+'meta.json')
 
-    def export_files(self, path, start=0, stop=None, columns=None, filename_column=None, metadata_file='.xlsx',
+    def export_files(self, path, columns=None, stop=None,  start=0, filename_column=None, metadata_file='.xlsx',
                       determinist=True, ncore=1, overwrite=True):
         import pandas
         #   ---  HANDLE PARAMETERS ---

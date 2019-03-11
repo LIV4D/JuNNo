@@ -203,11 +203,11 @@ class DataAugment:
         :return: Transformed image
         :rtype: numpy.ndarray
         """
-        rotate = _RD.constant(0) if rotate is None else _RD.auto(rotate)
-        scale = _RD.constant(1) if scale is None else _RD.auto(scale)
-        translate = _RD.constant(0) if translate is None else _RD.auto(translate)
+        rotate = _RD.constant(0) if rotate is None else _RD.auto(rotate, symetric=True)
+        scale = _RD.constant(1) if scale is None else _RD.auto(scale, symetric=True)
+        translate = _RD.constant(0) if translate is None else _RD.auto(translate, symetric=True)
         translate_direction = _RD.uniform(360) if translate_direction is None else _RD.auto(translate_direction)
-        shear = _RD.constant(0) if shear is None else _RD.auto(shear)
+        shear = _RD.constant(0) if shear is None else _RD.auto(shear, symetric=True)
 
         deg2rad = np.pi/180
 
@@ -360,28 +360,28 @@ class DataAugment:
         return augment
 
     def brightness(self, brightness=(-0.1, 0.1)):
-        return self.color(brightness=brightness)
+        return self.color(brightness=brightness, symetric=True)
 
     def contrast(self, contrast=(-0.1, 0.1)):
-        return self.color(contrast=contrast)
+        return self.color(contrast=contrast, symetric=True)
 
     def gamma(self, gamma=(-0.1, 0.1)):
-        return self.color(gamma=gamma)
+        return self.color(gamma=gamma, symetric=True)
 
     @augment_method('color', cv=True)
     def hsv(self, hue=None, saturation=None, value=None):
         if hue is None:
             hue = _RD.constant(0)
         else:
-            hue = _RD.auto(hue)
+            hue = _RD.auto(hue, symetric=True)
         if saturation is None:
             saturation = _RD.constant(0)
         else:
-            saturation = _RD.auto(saturation)
+            saturation = _RD.auto(saturation, symetric=True)
         if value is None:
             value = _RD.constant(0)
         else:
-            value = _RD.auto(value)
+            value = _RD.auto(value, symetric=True)
 
         a_min = np.array([0, 0, 0], np.uint8)
         a_max = np.array([179, 255, 255], np.uint8)
@@ -528,7 +528,7 @@ class RandomDistribution:
             super(RandomDistribution, self).__setattr__(key, value)
 
     @staticmethod
-    def auto(info):
+    def auto(info, symetric=False):
         """
         Generate a RandomDistribution according to the value of an argument
         :rtype: RandomDistribution
@@ -539,7 +539,10 @@ class RandomDistribution:
             elif len(info) == 1:
                 return RandomDistribution.uniform(low=-info[0], high=+info[0])
         elif isinstance(info, (float, int)):
-            return RandomDistribution.uniform(high=info)
+            if symetric:
+                return RandomDistribution.uniform(low=-info, high=info)
+            else:
+                return RandomDistribution.uniform(high=info)
         elif isinstance(info, RandomDistribution):
             return info
         raise ValueError('Not interpretable random distribution: %s.' % repr(info))
