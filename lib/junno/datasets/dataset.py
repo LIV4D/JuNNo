@@ -1319,7 +1319,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetShuffle(dataset=self, subgen=subgen, indices=indices, rng=rng, name=name)
 
     def apply(self, columns, function, cols_format=None, format=None, n_factor=None, batchwise=False, keep_parent=False,
-              name=None):
+              name=None, item_wise=False):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
@@ -1328,7 +1328,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             n_factor = 1
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
-                            remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise)
+                            remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise,
+                            item_wise=item_wise)
 
     def cv_apply(self, columns, function, cols_format=None, n_factor=1, keep_parent=False, name=None):
         if name is None:
