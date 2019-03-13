@@ -1270,13 +1270,22 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetMap
         return DataSetMap(self, kwargs, keep_all_columns=True)
 
-    def map(self, **kwargs):
+    def map(self, *args, **kwargs):
         """"Map columns name or concatenate two columns according to kwargs (keys are created columns,
         and values are either names of column to map or lists of column names to concatenate).
 
         If a column is not mentioned kwargs values, it is discarded (unlike ```concat()```).
+        To keep a column, give its name as a positional argument.
         """
         from .datasets_core import DataSetMap
+        for a in args:
+            if isinstance(a, DSColumn):
+                if a.dataset is not self:
+                    raise ValueError('%s is not a column of %s.' % (a.name, self.dataset_name))
+                a = a.name
+            if not isinstance(a, str):
+                raise ValueError('Arguments of .map() should be column names, not %s.' % type(a))
+            kwargs[a] = a
         return DataSetMap(self, kwargs, keep_all_columns=False)
 
     def shuffle(self, indices=None, subgen=0, rng=None, name='shuffle'):
@@ -1295,7 +1304,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
                             remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise)
 
-    def cv_apply(self, columns, function, cols_format=None, n_factor=1, keep_parent=False, name=None):
+    def apply_cv(self, columns, function, cols_format=None, n_factor=1, keep_parent=False, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
@@ -2159,6 +2168,11 @@ class DSColumnFormat:
                 f = DSColumnFormat.Image(dtype, shape)
                 f.domain = info
                 return f
+            elif dtype == 'bool':
+                if is_img:
+                    return DSColumnFormat.LabelImage(dtype, shape)
+                else:
+                    return DSColumnFormat.LabelMatrix(dtype, shape)
             else:
                 if is_img:
                     return DSColumnFormat.Image(dtype, shape)

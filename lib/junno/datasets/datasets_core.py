@@ -1137,6 +1137,7 @@ class DataSetApply(AbstractDataSet):
                 # Find arguments and return definition
                 c_parent = self._single_col_mapping[unkown_col]
                 c_own = self.col_sibling(unkown_col)
+                parent_col = dataset.col[c_parent]
 
                 # Call the function
                 c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own)
@@ -1154,8 +1155,13 @@ class DataSetApply(AbstractDataSet):
                     c_sample = c_sample[0]
                     if isinstance(c_sample, np.ndarray):
                         cols_format[c_name] = (c_sample.dtype, c_sample.shape)
+
+                        if c_sample.dtype == parent_col.dtype and c_sample.shape == parent_col.shape:
+                            cols_format[c_name] = cols_format[c_name] + (parent_col.format,)
                     else:
                         cols_format[c_name] = (np.dtype(type(c_sample)),)
+                        if c_sample.dtype == parent_col.dtype and parent_col.shape == ():
+                            cols_format[c_name] = cols_format[c_name] + ((), parent_col.format,)
                     if c_name in unknown_columns_format:
                         unknown_columns_format.remove(c_name)
 
