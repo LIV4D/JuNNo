@@ -320,6 +320,27 @@ class ConfMatrix(np.ndarray):
         from .ipython.confmatrix import ConfMatrixView
         import_display(ConfMatrixView(self, labels=self.labels, normed=self.norm))
 
+    def __call__(self, *labels, **labels_map):
+        from collections import OrderedDict
+        labels_dict = OrderedDict()
+        for l in labels:
+            labels_dict[l] = l
+        for k, v in labels_map.items():
+            if isinstance(v, str):
+                labels_dict[k] = [self.labels.index(v)]
+            elif isinstance(v, tuple):
+                labels_dict[k] = tuple(self.labels.index(_) if isinstance(_, str) else _ for _ in v)
+            else:
+                labels_dict[k] = [v]
+
+        d = self.no_normed()
+        r = ConfMatrix.zeros([str(_) for _ in labels_dict.keys()])
+        for i, y in enumerate(labels_dict.values()):
+            for j, x in enumerate(labels_dict.values()):
+                ids = cartesian((y, x))
+                r[i, j] = np.sum(d[ids[:, 0], ids[:, 1]])
+        return r
+
     def __getitem__(self, item):
         from .collections import istypeof_or_collectionof
         if self.labels is not None:
@@ -382,32 +403,32 @@ class ConfMatrix(np.ndarray):
     def sum_pred(self):
         return np.sum(self, axis=-1)
 
-    def normed_true(self):
+    def normed_pred(self):
         dim = (slice(None),)*(self.ndim-2) + (np.newaxis, slice(None))
         a = self.no_normed()
         t = a.sum_true()
         a = a / t[dim]
         a.total = t
-        a.total_dim = 'true'
+        a.total_dim = 'pred'
         return a
 
-    def normed_pred(self):
+    def normed_true(self):
         dim = (slice(None),)*(self.ndim-2) + (slice(None), np.newaxis)
         a = self.no_normed()
         t = a.sum_pred()
         a = a / t[dim]
         a.total = t
-        a.total_dim = 'pred'
+        a.total_dim = 'true'
         return a
 
     def no_normed(self):
-        if self.total_dim == "true":
+        if self.total_dim == "pred":
             dim = (slice(None),) * (self.ndim - 2) + (np.newaxis, slice(None))
             a = self * self.total[dim]
             a.total = None
             a.total_dim = None
             return a
-        elif self.total_dim == "pred":
+        elif self.total_dim == "true":
             dim = (slice(None),) * (self.ndim - 2) + (slice(None), np.newaxis)
             a = self * self.total[dim]
             a.total = None

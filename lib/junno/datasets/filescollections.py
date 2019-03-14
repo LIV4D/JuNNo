@@ -9,6 +9,7 @@ from re import search
 from .dataset import AbstractDataSet
 from ..j_utils import log
 from ..j_utils.function import match_params
+from ..j_utils.collections import if_none
 
 
 ########################################################################################################################
@@ -25,7 +26,7 @@ class FilesCollection(AbstractDataSet):
     """
 
     def __init__(self, path, read_function, regexp='', remove_extension=True, filename_regexp=False, recursive=True,
-                 name='FileCollection'):
+                 data_col_name='data', name='FileCollection'):
         """
         :param path: Path of the folder to explore
         :param read_function: The function called to read data from a files.
@@ -76,9 +77,14 @@ class FilesCollection(AbstractDataSet):
         self.add_column('name', (), np.dtype(('U', 100)))
         sample = self._read_files(self._files[0])
         if type(sample) == np.ndarray:
-            self.add_column('data', sample.shape, sample.dtype)
+            self.add_column(data_col_name, sample.shape, sample.dtype)
         else:
-            self.add_column('data', (), type(sample))
+            self.add_column(data_col_name, (), type(sample))
+        self._data_col_name = data_col_name
+
+    @property
+    def data_col(self):
+        return self.column_by_name(self._data_col_name)
 
     def update_files(self):
         """
@@ -112,6 +118,8 @@ class FilesCollection(AbstractDataSet):
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
 
+            data_name = self._data_col_name
+
             for i in range(n):
                 path = self._files[i+i_global]
                 pk = path[self.len_path:]
@@ -123,14 +131,14 @@ class FilesCollection(AbstractDataSet):
                 r[i, 'pk'] = pk
                 if 'name' in r:
                     r[i, 'name'] = name
-                if 'data' in r:
+                if data_name in r:
                     sample = self._read_files(path)
                     if sample is not None:
-                        if len(self.columns.data.shape):
-                            shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
-                            r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
+                        if len(self.data_col.shape):
+                            shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.data_col.shape)]
+                            r[i, data_name][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
-                            r[i, 'data'] = sample
+                            r[i, data_name] = sample
                         del sample
             r = None
 
@@ -164,7 +172,8 @@ class FilesCollection(AbstractDataSet):
 
 ########################################################################################################################
 class ImagesCollection(FilesCollection):
-    def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
+    def __init__(self, path, name='ImagesCollection', data_col_name='data',
+                 regexp=image_extensions(), filename_regexp=False, recursive=True,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
         """
 
@@ -232,7 +241,8 @@ class ImagesCollection(FilesCollection):
         self.normalize = normalize
 
         super(ImagesCollection, self).__init__(path=path, read_function=self.read_func, recursive=recursive,
-                                               regexp=regexp, filename_regexp=filename_regexp, name=name)
+                                               regexp=regexp, filename_regexp=filename_regexp, name=name,
+                                               data_col_name=data_col_name)
 
     def __str__(self):
         return self.dataset_name + ' ' + self.path
@@ -342,20 +352,33 @@ class DataSetPandaDF(AbstractDataSet):
 
 
 ########################################################################################################################
-def load_excel(path, mapping=None, **kwargs):
+def load_excel(*same_column, **column_mapping):
+    """ First positional argument should be the path to the excel file.
+        Every other arguments describe the column mapping.
+    """
+    path = same_column[0]
     df = pandas.read_excel(path)
-    if mapping is not None:
-        kwargs.update(mapping)
-    return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+
+    same_column = same_column[1:]
+    for c in same_column:
+        column_mapping[c] = c
+
+    return DataSetPandaDF(df, mapping=column_mapping, name=basename(path))
 
 
 ########################################################################################################################
-def load_csv(path, mapping=None, **kwargs):
+def load_csv(*same_column, **column_mapping):
+    """ First positional argument should be the path to the csv file.
+        Every other arguments describe the column mapping.
+    """
+    path = same_column[0]
     df = pandas.read_csv(path)
-    if mapping is not None:
-        kwargs.update(mapping)
 
-    return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+    same_column = same_column[1:]
+    for c in same_column:
+        column_mapping[c] = c
+
+    return DataSetPandaDF(df, mapping=column_mapping, name=basename(path))
 
 
 ########################################################################################################################
@@ -367,8 +390,12 @@ def from_pandas(df, mapping=None, **kwargs):
 
 
 ########################################################################################################################
-def images(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+def images(path, data_col_name=None, name=None, regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+    if name is None:
+        name = data_col_name
+    name = if_none(name, basename(path))
+    data_col_name = if_none(data_col_name, 'data')
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
-                            keep_proportion=keep_proportion)
+                            keep_proportion=keep_proportion, data_col_name=data_col_name)

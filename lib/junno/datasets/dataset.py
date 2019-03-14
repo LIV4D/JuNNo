@@ -982,7 +982,14 @@ class AbstractDataSet(metaclass=ABCMeta):
             except tables.NoSuchNodeError:
                 pass
         else:
-            hdf_f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
+            hdf_f = None
+            hdf_i = 0
+            while hdf_f is None:
+                try:
+                    hdf_f = tables.open_file("/tmp/tmpEmptyHDF_%i.h5" % hdf_i, "a", driver="H5FD_CORE", driver_core_backing_store=0)
+                except tables.HDF5ExtError:
+                    hdf_i += 1
+
             table_path = '/'
             table_name = 'dataset'
 

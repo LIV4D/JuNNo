@@ -5,7 +5,7 @@ from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
 from ..j_utils.math import interval
-from ..j_utils.collections import if_else, if_none
+from ..j_utils.collections import if_else, if_none, OrderedDict
 
 
 ########################################################################################################################
@@ -103,8 +103,8 @@ class PyTableDataSet(AbstractDataSet):
                 # Create a full index
                 getattr(self.pytable.cols, sortby).create_csindex()
 
-            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False)
-            if reversed_sort is not None:
+            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False).read_indices()
+            if reversed_sort:
                 self._sorted_rows = self._sorted_rows[::-1]
             if self._filtered_rows is not None:
                 rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
@@ -212,7 +212,7 @@ class PyTableDataSet(AbstractDataSet):
                 return self
             return self.sort(sortby)
         if sortby is None:
-            return self.where(sortby)
+            return self.select(where)
         d = PyTableDataSet(self.pytable, where=where, sortby=sortby, name=self.dataset_name)
         return d
 
@@ -800,18 +800,64 @@ class DataSetJoin(AbstractDataSet):
         return sub
 
 
-def join(datasets, **kwargs):
-    if isinstance(datasets, str):
-        dataset_set = set()
-        for c in kwargs.values():
-            if isinstance(c, DSColumn):
-                if c.dataset is None:
-                    raise ValueError('Error %s has no parent dataset. (c._dataset=%s)' % (c, c._dataset))
-                dataset_set.add(c.dataset)
-            else:
-                raise ValueError('Error when joining on %s. %s is not a DSColumn.' % (datasets, repr(c)))
-        datasets = [_.column_by_name(datasets) for _ in dataset_set]
-    return DataSetJoin(datasets, **kwargs)
+def join(*join_columns, **map_columns):
+    if not join_columns:
+        if not map_columns:
+            raise ValueError("You seriously didn't provide any argument to join()? You know it's not gone work, right?")
+        join_columns = set()
+        for v in map_columns.values():
+            if not isinstance(v, DSColumn):
+                raise ValueError('Invalid column value: %s.' % repr(v))
+            join_columns.add(v.dataset)
+    if len(join_columns) == 1:
+        if isinstance(join_columns[0], str):
+            dataset_set = set()
+            for c in map_columns.values():
+                if isinstance(c, DSColumn):
+                    if c.dataset is None:
+                        raise ValueError('Error %s has no parent dataset. (c._dataset=%s)' % (c, c._dataset))
+                    dataset_set.add(c.dataset)
+                else:
+                    raise ValueError('Error when joining on %s. %s is not a DSColumn.' % (join_columns, repr(c)))
+            join_columns = [_.column_by_name(join_columns) for _ in dataset_set]
+        elif isinstance(join_columns[0], (list, tuple, set)) and join_columns[0]:
+            join_columns = join_columns[0]
+        else:
+            raise ValueError('Invalid datasets: %s.' % repr(join_columns[0]))
+
+    infer_join = isinstance(next(iter(join_columns)), AbstractDataSet)
+    if infer_join:
+        if len(join_columns) == 1:
+            raise ValueError('You definitely want to provide more than one dataset to perform a join...')
+        common_col = set(join_columns[0].columns_name())
+
+        for dataset in join_columns[1:]:
+            if not isinstance(dataset, AbstractDataSet):
+                raise ValueError('If the first positional argument of join() is a dataset, all of them should be, but'
+                                 '%s is not.' % repr(dataset))
+            common_col.intersection_update(dataset.columns_name())
+            if not common_col:
+                break
+
+        if len(common_col) > 1:
+            raise ValueError('Provided datasets have more than one columns in common, '
+                             'please specify which one should be used to join of: %s' % common_col)
+        if common_col:
+            col = next(iter(common_col))
+            join_columns = [d.column_by_name(col) for d in join_columns]
+        else:
+            join_columns = [d.column_by_name('pk') for d in join_columns]
+
+    if not map_columns:
+        map_columns = OrderedDict()
+        for join_col in join_columns:
+            dataset = join_col.dataset
+            for c in dataset.col:
+                if c.name in map_columns and c is not join_col:
+                    raise ValueError('Column named %s appears in at least to datasets, you must specify a mapping.' % c)
+                map_columns[c.name] = c
+
+    return DataSetJoin(join_columns, **map_columns)
 
 
 ########################################################################################################################
@@ -1362,12 +1408,12 @@ class DataSetApplyCV(DataSetApply):
                 else:
                     r[rkeys[0]] += f_result  # return [row1, row2, row3, ...]
             else:
-                f_result = list(zip(f_result))
+                f_result = list(zip(*f_result))
                 if len(f_result) != len(rkeys):
                     raise ValueError('The function returned %i columns but %i was expected.'
                                      % (len(f_result), len(rkeys)))
                 for c_name, c_data in zip(rkeys, f_result):
-                    r[c_name].append(np.stack(c_data))  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+                    r[c_name] += c_data  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
 
         f_result = {n: np.stack(d) for n, d in r.items()}
         r = {}
