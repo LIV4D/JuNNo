@@ -1137,13 +1137,14 @@ class DataSetApply(AbstractDataSet):
                 # Find arguments and return definition
                 c_parent = self._single_col_mapping[unkown_col]
                 c_own = self.col_sibling(unkown_col)
-                parent_col = dataset.col[c_parent]
 
                 # Call the function
                 c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own)
 
                 # Read format
-                for c_name, c_sample in c_samples.items():
+                for c_id, (c_name, c_sample) in enumerate(c_samples.items()):
+                    parent_col = dataset.col[c_parent[c_id]] if len(c_parent) == len(c_samples) \
+                                                             else dataset.col[c_parent[0]]
                     if self._n_factor is None:
                         self._n_factor = c_sample.shape[0]
                         if self._n_factor == 1:
@@ -1159,7 +1160,10 @@ class DataSetApply(AbstractDataSet):
                         if c_sample.dtype == parent_col.dtype and c_sample.shape == parent_col.shape:
                             cols_format[c_name] = cols_format[c_name] + (parent_col.format,)
                     else:
-                        cols_format[c_name] = (np.dtype(type(c_sample)),)
+                        if c_sample == str:
+                            cols_format[c_name] = 'str'
+                        else:
+                            cols_format[c_name] = (np.dtype(type(c_sample)),)
                         if c_sample.dtype == parent_col.dtype and parent_col.shape == ():
                             cols_format[c_name] = cols_format[c_name] + ((), parent_col.format,)
                     if c_name in unknown_columns_format:
@@ -1171,6 +1175,10 @@ class DataSetApply(AbstractDataSet):
             col._dtype = c_format[0]
             col._shape = c_format[1] if len(c_format) > 1 else ()
             col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)
+
+            if col._dtype == 'str':
+                col._dtype = np.dtype('O')
+                col._is_text = True
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id

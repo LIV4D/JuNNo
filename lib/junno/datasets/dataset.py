@@ -359,6 +359,13 @@ class AbstractDataSet(metaclass=ABCMeta):
     def add_column(self, name, shape, dtype, format=None):
         self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format))
 
+    def format(self, columns, col_format):
+        if not isinstance(columns, (list, tuple, set)):
+            columns = [columns]
+        columns = self.interpret_columns(columns, to_column_name=False)
+        for c in columns:
+            c.format = col_format
+
     #   ---   Dataset Hierarchy   ---
     @property
     def parent_datasets(self):
@@ -1078,7 +1085,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return result[1, columns[0]] if single_column else result.truncate(start=1)
 
     def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False, start=0, stop=None, ncore=1, n=1, determinist=True):
-        from sklearn.metrics import confusion_matrix
+        from ..j_utils.math import ConfMatrix
 
         # Handle pred, true and weight
         if isinstance(pred, DSColumn):
@@ -1131,6 +1138,12 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         start, stop = interval(self.size, start, stop)
 
+        if label is None:
+            if not self.col[pred].format.is_label or self.col[pred].format.mapping is None:
+                raise ValueError('%s is not a label columns. confusion_matrix(label=...) should be specified.')
+            label = self.col[pred].format.mapping
+        elif isinstance(label, int):
+            label = list(range(label))
         conf_labels = label
         n_class = len(conf_labels)
 
@@ -1143,8 +1156,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             def conf_mat(pred, true, weight):
                 if one_hot:
                     pred = np.argmax(pred, axis=0)
-                return confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
-                                        labels=conf_labels)
+                return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
+                                                   labels=conf_labels)
             if isinstance(true, DSColumn):
                 if isinstance(weight, DSColumn):
                     return self.apply({confmat_name, (pred, true, weight)}, conf_mat, **kwargs)
@@ -1159,7 +1172,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     return self.apply({confmat_name, (pred)}, **kwargs,
                                       function=lambda pred: conf_mat(pred, true, weight))
         else:
-            confmat = np.zeros((n_class, n_class), dtype=np.uint)
+            confmat = ConfMatrix.zeros(labels=label)
 
             with Process('Confustion Matrix: %s' % label, stop - start, verbose=False) as p:
                 def write_cb(r):
@@ -1173,13 +1186,15 @@ class AbstractDataSet(metaclass=ABCMeta):
                     else:
                         y_true = true.flatten()
 
-                    if isinstance(weight, DSColumn):
+                    if weight is None:
+                        sample_weight = None
+                    elif isinstance(weight, DSColumn):
                         sample_weight = r[weight.name].flatten()
                     else:
                         sample_weight = weight.flatten()
 
-                    confmat[:] += confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=sample_weight,
-                                                   labels=conf_labels)
+                    confmat[:] += ConfMatrix.confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=sample_weight,
+                                                              labels=conf_labels)
 
                     p.update(r.size)
 
