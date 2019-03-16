@@ -1158,7 +1158,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             confmat_name = pred.name+'_confmat'
             kwargs = dict(name=confmat_name,
                           cols_format=(np.uint32, (n_class, n_class),
-                                       DSColumnFormat.ConfMatrix(n_class)) )
+                                       DSColumnFormat.ConfMatrix(n_class)))
 
             def conf_mat(pred, true, weight):
                 if one_hot:
@@ -1630,7 +1630,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             if proba_map.shape != img_shape:
                 raise ValueError('Wrong shape for probability map (map shape is %s but should be %s)'
                                  % (proba_map.shape, img_shape))
-            proba_map = proba_map / proba_map.sum()
+            proba_map = (proba_map*1.0) / proba_map.sum()
             proba_map = to_callable(proba_map)
         elif isinstance(proba_map, (str, DSColumn)):
             if isinstance(proba_map, DSColumn):
@@ -1769,6 +1769,9 @@ class DSColumn:
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
+
+    def __str__(self):
+        return self.name
 
 
 class DSColumnFormat:

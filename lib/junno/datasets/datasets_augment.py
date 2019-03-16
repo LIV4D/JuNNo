@@ -120,7 +120,7 @@ class DataAugment:
                     raise ValueError('Invalid cv image format, shape is: %s' % repr(x.shape))
             else:
                 if x.ndim == 2:
-                    x = x[np.newaxis, np.newaxis, :, :]
+                    x = x[np.newaxis, :, :]
                 elif x.ndim > 3:
                     x = x.reshape(-1, *x.shape[-2:])
                 elif x.ndim != 3:
@@ -143,16 +143,15 @@ class DataAugment:
     def split_cv(x, dtype=None):
         x = np.concatenate(x)
         c = x.shape[0]
-
         x_cv = []
         for i in range(c//3):
             x_i = x[i*3:(i+1)*3].transpose((1, 2, 0))
-            if 'float' in str(dtype):
+            if 'float' in str(dtype) or 'bool' in str(dtype):
                 x_i = x_i * 255
             x_cv.append(x_i.astype(np.uint8))
         for i in range(c-(c % 3), c):
             x_i = x[i:i+1].transpose((1, 2, 0))
-            if 'float' in str(dtype):
+            if 'float' in str(dtype) or 'bool' in str(dtype):
                 x_i = x_i * 255
             x_cv.append(x_i.astype(np.uint8))
         return x_cv
@@ -162,6 +161,8 @@ class DataAugment:
         x = np.concatenate([_.transpose((2, 0, 1)) for _ in x])
         if 'float' in str(dtype):
             x = x.astype(np.float32) / 255
+        if 'bool' in str(dtype):
+            x = x > 125
         return [x]
 
     @augment_method('geometric')

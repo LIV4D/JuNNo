@@ -93,6 +93,7 @@ class FilesCollection(AbstractDataSet):
         files_list = []
         for root, dirs, files in walk(self.path, topdown=True):
             abs_root = abspath(root)
+            root = root[len(self.path):]
             for file in files:
                 filename = file if self.filename_regexp else normpath(join(root, file))
                 if isinstance(self.regexp, str):
@@ -100,7 +101,7 @@ class FilesCollection(AbstractDataSet):
                         continue
                 elif callable(self.regexp):
                     if not match_params(self.regexp, args=[filename], filename=file, path=root,
-                                        filepath=normpath(join(abs_root, file)),  file=normpath(join(root, file))):
+                                        filepath=normpath(join(abs_root, file)),  file=join(root, file)):
                         continue
                 files_list.append(normpath(join(abs_root, file)))
             if not self.recursive:
