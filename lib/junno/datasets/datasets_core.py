@@ -176,7 +176,7 @@ class PyTableDataSet(AbstractDataSet):
             for j in range(n):
                 row = next(hd5_gen)
                 for c in columns:
-                    r[c] = row[c]
+                    r[j, c] = row[c]
 
             r = None
             yield weakref
@@ -1065,20 +1065,31 @@ class DataSetApply(AbstractDataSet):
         self._single_col_mapping = {}
         self._columns_mapping = {}
 
+        def str_tuple(c):
+            if isinstance(c, str):
+                if c in parent_columns_name:
+                    return {c: c}
+                else:
+                    return {c: ()}
+            elif isinstance(c, tuple):
+                if all(_ in dataset.col for _ in c):
+                    return {c:c[:len(self.f_params)]}
+                else:
+                    return {c: ()}
+            return None
+
         if columns is None:
             columns = self.columns_name()
-        elif isinstance(columns, str):
-            if columns in parent_columns_name:
-                columns = {columns: columns}
-            else:
-                columns = (columns,)
-        if isinstance(columns, list):
-            columns = {_: _ if _ in parent_columns_name else None for _ in columns}
-        elif isinstance(columns, tuple):
-            if all(_ in dataset.col for _ in columns):
-                columns = {columns: columns[:len(self.f_params)]}
-            else:
-                columns = {columns: ()}
+        elif isinstance(columns, (str, tuple)):
+            columns = str_tuple(columns)
+        elif isinstance(columns, list):
+            col_dict = {}
+            for c in columns:
+                c = str_tuple(c)
+                if c is None:
+                    raise ValueError('Invalid column: %s' % c)
+                col_dict.update(c)
+            columns = col_dict
         if not isinstance(columns, dict):
             raise ValueError('Columns should be of the following type str, tuple, list, dict.'
                              '(type provided: %s)' % type(columns).__name__)
@@ -1134,11 +1145,11 @@ class DataSetApply(AbstractDataSet):
         self._n_factor = n_factor
 
         # ---  INFER COLUMN SHAPE, TYPE and FORMAT ---
-        if cols_format == 'same':
-            cols_format = {c_own: None for c_own in self._single_col_mapping}
-        elif cols_format is None:
+        if cols_format is None:
             cols_format = {}
-        if not isinstance(cols_format, dict):
+        elif isinstance(cols_format, (tuple, str)):
+            cols_format = {c_own: cols_format for c_own in self._single_col_mapping}
+        elif not isinstance(cols_format, dict):
             raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
                              % type(cols_format).__name__)
 

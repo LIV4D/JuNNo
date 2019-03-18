@@ -630,128 +630,6 @@ class AbstractDataSet(metaclass=ABCMeta):
                 i_global += n
         access.write_db('PRAGMA journal_mode=DELETE')
 
-    def folder_write(self, folder_path, start=0, stop=0, columns=None, determinist=True,
-                     compress_format='png', metadata_format='csv', compress_img=True,
-                     column_for_filename=None):
-
-        import pandas as pd
-
-        if column_for_filename is None:
-            if 'name' in self.columns_name():
-                column_for_filename = 'name'
-            else:
-                column_for_filename = 'pk'
-
-        single_column = False
-        if columns is None:
-            columns = self.columns_name()
-            if column_for_filename in columns:
-                columns.remove(column_for_filename)
-        elif isinstance(columns, str) or isinstance(columns, DSColumn):
-            columns = [columns]
-            single_column = True
-        if isinstance(columns, list):
-            for c_id, c in enumerate(columns):
-                if isinstance(columns, str):
-                    if columns not in self.columns_name():
-                        raise ValueError('Unknown column %s.' % columns)
-                elif isinstance(columns, DSColumn):
-                    if columns.dataset is not self:
-                        raise ValueError('%s is not a column of this dataset.' % columns.name)
-                    columns[c_id] = c.name
-            columns = list(set(columns))
-        else:
-            raise NotImplementedError
-
-        # img_columns = [c.name for c in self.columns if len(c.shape) == 3 and c.shape[0] in (1, 3)] This won't work in case of images of format (h, w) or (h, w, c).
-        # It's the default format when reading a SQLDataset with compressed images.
-        img_columns = [c for c in columns if len(self.column_by_name(c).shape) > 1]
-        metadata_columns = [c for c in columns if c not in img_columns]
-
-        if start < 0:
-            start += self.size
-        if stop <= 0:
-            stop += self.size
-        gen_columns = columns.copy()
-        if column_for_filename is not 'pk' and column_for_filename not in gen_columns:
-            gen_columns.append(column_for_filename)
-        data_gen = self.generator(start=start, columns=gen_columns)
-
-        if folder_path[-1] != '/':
-            folder_path += '/'
-        database_path_dir = dirname(folder_path)
-        if database_path_dir and not exists(database_path_dir):
-            makedirs(database_path_dir)
-
-        if not single_column:
-            for _ in img_columns:
-                path = join(folder_path, _)
-                if not exists(path):
-                    makedirs(path)
-
-        def format_type(r, c):
-            column = self.column_by_name(c)
-            d = r[c][0]
-            if column.sql_type == 'INTEGER':
-                return int(d)
-            elif column.sql_type == 'TEXT':
-                return str(d)
-            else:
-                return d
-
-        dataframe = pd.DataFrame(columns=metadata_columns)
-        with Process('Saving %s' % self._name, stop - start) as p:
-            for i in range(start, stop):
-                # Read data
-                try:
-                    r = next(data_gen)
-                except StopIteration:
-                    break
-                p.update(0.5)
-
-                # Format and store data
-                data = [format_type(r, _) for _ in img_columns]
-                filename = basename(str(r[column_for_filename][0])).replace(".", "_")
-
-                for img_data, column_name in zip(data, img_columns):
-                    array = img_data
-                    if array.ndim > 2:
-                        if array.shape[0] < array.shape[2]:
-                            array = array.transpose((1, 2, 0))
-                    else:
-                        array = np.expand_dims(array, axis=2)
-                    if array.shape[2] == 1:
-                        array = array.reshape(array.shape[:-1])
-                    if np.max(array) <= 1. and np.min(array) >= 0.:
-                        array *= 255
-
-                    img_folder_path = join(folder_path, column_name) if not single_column else folder_path
-
-                    import cv2
-                    if compress_img:
-                        path = join(img_folder_path, filename+'.'+compress_format)
-                        cv2.imwrite(path, array)
-                    else:
-                        path = join(img_folder_path, filename + '.ppm')
-                        cv2.imwrite(path, array)
-
-                metadata = [format_type(r, _) for _ in metadata_columns]
-                if column_for_filename in metadata_columns and len(metadata) == 1:
-                    dataframe = None
-                else:
-                    serie = pd.Series(metadata, metadata_columns)
-                    dataframe = dataframe.append(serie, ignore_index=True)
-                p.update(0.5)
-        if dataframe is None or not metadata_columns:
-            return
-
-        if metadata_format is 'csv':
-            dataframe.to_csv(folder_path+'meta.csv')
-        elif metadata_format is 'excel' or metadata_format is 'xlsx':
-            dataframe.to_csv(folder_path+'meta.xlsx')
-        elif metadata_format is 'json':
-            dataframe.to_json(folder_path+'meta.json')
-
     def export_files(self, path, columns=None, stop=None,  start=0, filename_column=None, metadata_file='.xlsx',
                       determinist=True, ncore=1, overwrite=True):
         import pandas
@@ -895,31 +773,6 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return CustomDataLoader(self)
 
-    def as_cache(self, n=1, start=0, stop=None, columns=None, ncore=1, name=None):
-        start, stop = interval(self.size, start, stop)
-        if columns is None:
-            columns = self.columns_name()
-
-        from .dataset_generator import DataSetResult
-        data = DataSetResult.create_empty(dataset=self, n=stop - start, start_id=start, columns=columns)
-
-        if name is None:
-            label = self._name
-            name = 'cache'
-        else:
-            label = name
-
-        with Process('Caching %s' % label, stop - start, verbose=False) as p:
-            def write_back(r):
-                data[r.start_id-start:r.stop_id-start] = r
-                p.update(r.size)
-            self.export(write_back, n=n, start=start, stop=stop, columns=columns, ncore=ncore)
-
-        from .datasets_core import NumPyDataSet
-        dataset = NumPyDataSet(data, name=name)
-        dataset._parents = [self]
-        return dataset
-
     def cache(self, start=0, stop=None, columns=None, ncore=1, ondisk=None, name=None,
               overwrite='auto'):
         import tables
@@ -1050,6 +903,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         def write_cb(r):
             for c in r.keys():
                 result[0, 0, c] += r[:, c].sum(axis=0)
+            result.trace.affiliate_parent_trace(r.trace)
 
         self.export(write_cb, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
         return result[columns[0]] if single_column else result
@@ -1065,23 +919,26 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         start, stop = interval(self.size, start, stop)
         from .dataset_generator import DataSetResult
-        result = DataSetResult.create_empty(n=2 if std else 1, dataset=self, columns=columns)
+        result = DataSetResult.create_from_data({c: np.zeros((2,)+self.col[c].shape, np.float)
+                                                 for c in columns})
 
         if std:
             def write_cb(r):
                 for c in columns:
                     result[0, c] += r[:, c].sum(axis=0) / (stop - start)
                     result[1, c] += np.square(r[:, c]).sum(axis=0) / (stop - start)
+                result.trace.affiliate_parent_trace(r.trace)
         else:
             def write_cb(r):
                 for c in columns:
                     result[0, c] += r[:, c].sum(axis=0)/(stop-start)
+                result.trace.affiliate_parent_trace(r.trace)
 
         self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
 
         if std:
             for c in result.keys():
-                result[1, c] = np.sqrt(result[1, c]-np.square(result[1, c]))
+                result[1, c] = np.sqrt(result[1, c]-np.square(result[0, c]))
             return result[:, columns[0]] if single_column else result
         return result[0, columns[0]] if single_column else result
 
@@ -1091,7 +948,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         result = self.mean(columns=columns, start=start, stop=stop, ncore=ncore, n=n, determinist=determinist, std=True)
         return result[1, columns[0]] if single_column else result.truncate(start=1)
 
-    def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False, start=0, stop=None, ncore=1, n=1, determinist=True):
+    def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False,
+                         start=0, stop=None, ncore=1, n=1, determinist=True):
         from ..j_utils.math import ConfMatrix
 
         # Handle pred, true and weight
@@ -1154,65 +1012,42 @@ class AbstractDataSet(metaclass=ABCMeta):
         conf_labels = label
         n_class = len(conf_labels)
 
-        if rowwise:
-            confmat_name = pred.name+'_confmat'
-            kwargs = dict(name=confmat_name,
-                          cols_format=(np.uint32, (n_class, n_class),
-                                       DSColumnFormat.ConfMatrix(n_class)))
 
-            def conf_mat(pred, true, weight):
-                if one_hot:
-                    pred = np.argmax(pred, axis=0)
-                return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
-                                                   labels=conf_labels)
-            if isinstance(true, DSColumn):
-                if isinstance(weight, DSColumn):
-                    return self.apply({confmat_name, (pred, true, weight)}, conf_mat, **kwargs)
-                else:
-                    return self.apply({confmat_name, (pred, true)}, **kwargs,
-                                      function=lambda pred, true: conf_mat(pred, true, weight))
+        confmat_name = pred.name+'_confmat' if not isinstance(rowwise, str) else rowwise
+        kwargs = dict(name=confmat_name, keep_parent=True,
+                      cols_format=(np.uint32, (n_class, n_class),
+                                   DSColumnFormat.ConfMatrix(n_class)))
+
+        def conf_mat(pred, true, weight):
+            if one_hot:
+                pred = np.argmax(pred, axis=0)
+            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
+                                               labels=conf_labels)
+        if isinstance(true, DSColumn):
+            if isinstance(weight, DSColumn):
+                conf_D = self.apply({confmat_name: (pred, true, weight)}, conf_mat, **kwargs)
             else:
-                if isinstance(weight, DSColumn):
-                    return self.apply({confmat_name, (pred, weight)}, **kwargs,
-                                      function=lambda pred, weight: conf_mat(pred, true, weight))
-                else:
-                    return self.apply({confmat_name, (pred)}, **kwargs,
-                                      function=lambda pred: conf_mat(pred, true, weight))
+                conf_D = self.apply({confmat_name: (pred, true)}, **kwargs,
+                                    function=lambda pred, true: conf_mat(pred, true, weight))
+        else:
+            if isinstance(weight, DSColumn):
+                conf_D = self.apply({confmat_name: (pred, weight)}, **kwargs,
+                                    function=lambda pred, weight: conf_mat(pred, true, weight))
+            else:
+                conf_D = self.apply({confmat_name: pred}, **kwargs,
+                                    function=lambda pred: conf_mat(pred, true, weight))
+        if rowwise:
+            return conf_D
         else:
             confmat = ConfMatrix.zeros(labels=label)
 
             with Process('Confustion Matrix: %s' % label, stop - start, verbose=False) as p:
                 def write_cb(r):
-                    if one_hot:
-                        y_pred = np.argmax(r[pred.name], axis=1).flatten()
-                    else:
-                        y_pred = r[pred.name].flatten()
-
-                    if isinstance(true, DSColumn):
-                        y_true = r[true.name].flatten()
-                    else:
-                        y_true = true.flatten()
-
-                    if weight is None:
-                        sample_weight = None
-                    elif isinstance(weight, DSColumn):
-                        sample_weight = r[weight.name].flatten()
-                    else:
-                        sample_weight = weight.flatten()
-
-                    confmat[:] += ConfMatrix.confusion_matrix(y_true=y_true, y_pred=y_pred, sample_weight=sample_weight,
-                                                              labels=conf_labels)
-
+                    confmat[:] += r[confmat_name].sum(axis=0)
                     p.update(r.size)
 
-                columns = [pred.name]
-                if isinstance(true, DSColumn):
-                    columns.append(true.name)
-                if isinstance(weight, DSColumn):
-                    columns.append(weight.name)
-
-                self.export(write_cb, n=n, start=start, stop=stop, columns=columns, determinist=determinist,
-                            ncore=ncore)
+                conf_D.export(write_cb, n=n, start=start, stop=stop, columns=confmat_name, determinist=determinist,
+                              ncore=ncore)
 
             return confmat
 
@@ -1682,7 +1517,7 @@ class DSColumn:
     def __init__(self, name, shape, dtype, dataset=None, format=None):
         self._name = name
         self._shape = shape
-        self._is_text = False
+        self._is_text = 'U' in str(dtype)
         if dtype == str or (isinstance(dtype, str) and dtype in ('str', 'string')):
             self._dtype = np.dtype('O')
             self._is_text = True
@@ -1765,13 +1600,34 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self._dtype if not self._is_text else 'str', self._shape, f)
+            self._format = DSColumnFormat.auto_format(self, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
 
     def __str__(self):
         return self.name
+
+    def prepare_hdf5_col(self, table):
+        f = repr(self.format)
+        if self.is_text:
+            f += ' TEXT'
+        setattr(table.attrs, 'COLFORMAT_'+self.name, f)
+
+    @staticmethod
+    def from_hdf5_col(table, name, dataset=None):
+        col = table.description._v_colobjects[name]
+        column = DSColumn(name=name, dtype=col.dtype.base, shape=col.dtype.shape, dataset=dataset)
+
+        f = getattr(table.attrs, 'COLFORMAT_'+name, None)
+        if f is not None:
+            f = f.split(' ')
+            args = f[1:]
+            f = f[0]
+            if 'TEXT' in args:
+                column._is_text = True
+            column.format = f
+        return column
 
 
 class DSColumnFormat:
@@ -1782,6 +1638,9 @@ class DSColumnFormat:
             self._is_label = is_label
             self.check_type(dtype, shape)
             self.html_fullscreen = False
+
+        def __repr__(self):
+            return "Base()"
 
         def check_type(self, dtype, shape):
             return True
@@ -1856,6 +1715,9 @@ class DSColumnFormat:
         def __init__(self, dtype, shape):
             super(DSColumnFormat.Number, self).__init__(dtype, shape)
 
+        def __repr__(self):
+            return "Number()"
+
         def check_type(self, dtype, shape):
             if not np.issubdtype(dtype, np.number):
                 raise ValueError('Number format must be applied to number columns.')
@@ -1870,6 +1732,15 @@ class DSColumnFormat:
         def __init__(self, dtype, shape):
             super(DSColumnFormat.Text, self).__init__(dtype, shape)
 
+        def __repr__(self):
+            if 'U' in str(self.dtype):
+                return "Text(%i)" % np.dtype(self.dtype).itemsize
+            return "Text()"
+
+        @property
+        def dtype_name(self):
+            return "TEXT"
+
         def check_type(self, dtype, shape):
             if len(shape):
                 raise ValueError('String format can only be applied to columns with an empty shape.')
@@ -1881,15 +1752,20 @@ class DSColumnFormat:
             self.mapping = if_none(mapping, dict())
             self.default = if_none(default, mapping['default'] if 'default' in mapping else None)
 
+        def __repr__(self):
+            from json import dumps
+            from copy import copy
+            m = copy(self.mapping)
+            m['default'] = self.default
+            json_mapping = dumps(m, indent=0).replace('\n', '')
+            return 'Label(%s)' % json_mapping
+
         def format_html(self, data, raw_data, fullscreen=None):
             try:
                 d = self.mapping[data]
             except KeyError:
                 d = self.default
             return "<p> <i> %s </i> </p>" % str(d)
-
-        def __repr__(self):
-            return 'DSColumnFormat.Label(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
     class Matrix(Base):
         def __init__(self, dtype, shape, is_label=False):
@@ -1898,6 +1774,9 @@ class DSColumnFormat:
             self._range = Interval()
             self._clip = Interval()
             self.no_scaling = False
+
+        def __repr__(self):
+            return 'Matrix(%s,%s,%s)' % (self.domain, self.range, self.clip)
 
         def check_type(self, dtype, shape):
             if not np.issubdtype(dtype, np.number):
@@ -1960,7 +1839,12 @@ class DSColumnFormat:
             return data
 
         def __repr__(self):
-            return 'DSColumnFormat.LabelMatrix(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
+            from json import dumps
+            from copy import copy
+            m = copy(self.mapping)
+            m['default'] = self.default
+            json_mapping = dumps(m, indent=0).replace('\n', '')
+            return 'LabelMatrix(%s,%s,%s,%s)' % (json_mapping, self.domain, self.range, self.clip)
 
         @property
         def mapping(self):
@@ -1991,9 +1875,12 @@ class DSColumnFormat:
             self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
             self.no_scaling = True
 
-    class ConfMatrix(Matrix):
+    class ConfMatrix(Base):
         def __init__(self, n_class):
             super(DSColumnFormat.ConfMatrix, self).__init__(np.uint32, (n_class, n_class))
+
+        def __repr__(self):
+            return 'ConfMatrix()'
 
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False):
@@ -2011,6 +1898,9 @@ class DSColumnFormat:
 
             self.html_height = lambda h: int(np.round(256*(1-np.exp(-h/128))))
             self.html_columns = lambda n: dimensional_split(n)[1]
+
+        def __repr__(self):
+            return 'Image()'
 
         def check_type(self, dtype, shape):
             if not (np.issubdtype(dtype, np.number) or str(dtype) == 'bool'):
@@ -2119,6 +2009,14 @@ class DSColumnFormat:
             self._lut = None
             self.mapping = if_none(mapping, dict())
 
+        def __repr__(self):
+            from json import dumps
+            from copy import copy
+            m = copy(self.mapping)
+            m['default'] = self.default
+            json_mapping = dumps(m, indent=0).replace('\n', '')
+            return 'LabelImage(%s)' % json_mapping
+
         def _preformat(self, data):
             if len(self.shape) == 2:
                 data = data[0]
@@ -2127,9 +2025,6 @@ class DSColumnFormat:
             if data.ndim == 2:
                 return data.reshape((1,)+data.shape)
             return data
-
-        def __repr__(self):
-            return 'DSColumnFormat.LabelImage(%s, %s):\n %s' % (str(self.dtype), str(self.shape), repr(self.mapping))
 
         @property
         def mapping(self):
@@ -2161,9 +2056,56 @@ class DSColumnFormat:
             self.no_scaling = True
 
     @staticmethod
-    def auto_format(dtype, shape, info=None):
+    def auto_format(col, info=None):
+        dtype = col.dtype
+        shape = col.shape
+
         if isinstance(info, DSColumnFormat.Base):
             return info.copy(dtype, shape)
+        elif isinstance(info, str):
+            # Parse
+            info_split = info.split('(', 1)
+
+            if len(info_split) == 2:
+                format_name = info_split[0].strip()
+                t = info_split[1].rsplit(')', 1)[0]
+                args = [_.strip() for _ in t.split(',')]
+            else:
+                format_name = info.strip()
+                args = []
+
+            # Return format
+            if format_name == 'Number':
+                return DSColumnFormat.Number(dtype, shape)
+            elif format_name == 'Text':
+                return DSColumnFormat.Text(dtype, shape)
+            elif format_name == 'Label':
+                return DSColumnFormat.Label(dtype, shape, mapping=args[0] if args else None)
+            elif format_name == 'Matrix':
+                f = DSColumnFormat.Matrix(dtype, shape)
+                if len(args) > 0:
+                    f.domain = args[0]
+                if len(args) > 1:
+                    f.range = args[1]
+                if len(args) > 2:
+                    f.clip = args[2]
+                return f
+            elif format_name == 'Matrix':
+                f = DSColumnFormat.LabelMatrix(dtype, shape, mapping=args[0] if args else None)
+                if len(args) > 1:
+                    f.domain = args[1]
+                if len(args) > 2:
+                    f.range = args[2]
+                if len(args) > 3:
+                    f.clip = args[3]
+                return f
+            elif format_name == 'ConfMatrix':
+                return DSColumnFormat.ConfMatrix(shape[0])
+            elif format_name == 'Image':
+                return DSColumnFormat.Image(dtype, shape)
+            elif format_name == 'ImageLabel':
+                return DSColumnFormat.LabelImage(dtype, shape, mapping=args[0] if args else None)
+
         if shape == ():
             if 'int' in repr(dtype):
                 if isinstance(info, dict):
@@ -2172,9 +2114,7 @@ class DSColumnFormat:
                     return DSColumnFormat.Number(dtype, shape)
             elif 'float' in repr(dtype):
                 return DSColumnFormat.Number(dtype, shape)
-            elif dtype == 'str':
-                return DSColumnFormat.Text(dtype, shape)
-            elif dtype == 'O':
+            elif col.is_text:
                 return DSColumnFormat.Text(dtype, shape)
         elif 'int' in repr(dtype) or 'float' in repr(dtype) or dtype in ('bool',):
             if isinstance(info, str) and info.lower() == 'image':

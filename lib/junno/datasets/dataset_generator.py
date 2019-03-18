@@ -31,7 +31,8 @@ class DataSetResult:
         self._size = size
         self._dataset = None
 
-        self.affiliate_dataset(dataset)
+        if dataset:
+            self.affiliate_dataset(dataset)
         self._trace = DataSetResult.Trace(self)
 
         self._ipywidget = None
