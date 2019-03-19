@@ -1165,7 +1165,7 @@ class DataSetApply(AbstractDataSet):
             if c in cols_format:
                 # Check if format was given explicitly
                 col_format = cols_format[c]
-                if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name):
+                if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name()):
                     # Try to infer format from homonym
                     parent_column = dataset.column_by_name(c, False)
                     if parent_column is not None:
