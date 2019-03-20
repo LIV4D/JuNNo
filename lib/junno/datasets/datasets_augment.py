@@ -89,6 +89,7 @@ class DataAugment:
 
         augment_stack = []
         cv = cv_kwargs
+
         for f_name, f_params in self._augment_stack:
             f, f_cv, a_type = _augment_methods[f_name][:3]
 
@@ -128,10 +129,19 @@ class DataAugment:
             x = [x]
 
             for f_augment in augment_stack:
+
                 if f_augment is DataAugment.split_cv or f_augment is DataAugment.merge_cv:
                     x = f_augment(x, dtype=x_dtype)
                 else:
-                    x = [f_augment(_, rng) for _ in x]
+                    y = []
+                    for _ in x:
+                        if len(x) > 0:
+                            tmp_rng = copy(rng)
+                        else:
+                            tmp_rng = rng
+                        y.append(f_augment(_, tmp_rng))
+                    rng = tmp_rng
+                    x = y
 
             if cv_kwargs:
                 return x[0]
@@ -228,27 +238,19 @@ class DataAugment:
             return dst.reshape(x.shape)
         return augment
 
-    def rotate(self, angle=(-25, 25),
-               interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(rotate=angle,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def rotate(self, angle=(-25, 25), **kwargs):
+        return self.warp_affine(rotate=angle, **kwargs)
 
-    def scale(self, scale=(0.9, 1.1),
-              interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(scale=scale,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def scale(self, scale=(0.9, 1.1), **kwargs):
+        return self.warp_affine(scale=scale, **kwargs)
 
-    def translate(self, distance=15, direction=None,
-                  interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
+    def translate(self, distance=15, direction=None, **kwargs):
         if isinstance(direction, (int, float)):
             direction = _RD.constant(direction)
-        return self.warp_affine(translate=distance, translate_direction=direction,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+        return self.warp_affine(translate=distance, translate_direction=direction, **kwargs)
 
-    def shear(self, shear=(0.9, 1.1),
-              interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(shear=shear,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def shear(self, shear=(0.9, 1.1), **kwargs):
+        return self.warp_affine(shear=shear, **kwargs)
 
     @augment_method('geometric', cv=True)
     def elastic_distortion(self, dist=10, sigma=2, scale=1, mask=None,
