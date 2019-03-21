@@ -1921,7 +1921,8 @@ class DSColumnFormat:
                 mindim = min(THUMBNAIL_SIZE[0] * ratio, THUMBNAIL_SIZE[1])
                 thumbnail_size = (round(mindim / ratio), round(mindim))
 
-                thumbnail = cv2.resize(d, thumbnail_size, interpolation=cv2.INTER_AREA)
+                interp = cv2.INTER_AREA if not self.is_label else cv2.INTER_NEAREST
+                thumbnail = cv2.resize(d, thumbnail_size, interpolation=interp)
                 t_png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
 
                 legend = '<p> min: %f<br/> max: %f<br /> mean: %f <br /> std: %f</p>' \
