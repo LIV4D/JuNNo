@@ -1012,7 +1012,7 @@ class DataSetApply(AbstractDataSet):
     """
     Apply a function to some columns of a dataset, all other columns are copied
     """
-    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, format=None,
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, format=None,
                  n_factor=None, batchwise=False, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
@@ -1039,15 +1039,13 @@ class DataSetApply(AbstractDataSet):
                                     of not-optional arguments of the function, the left-over arguments must be named as
                                     **dataset** columns.
 
-        :param cols_format: A dictionary mapping columns names to a tuple specifying (dtype, shape [, format]). For
+        :param format: A dictionary mapping columns names to a tuple specifying (dtype, shape [, format]). For
                                 every column not described here, its type and shape will be read after applying the
                                 function to the first row of the dataset. If a column name is given instead of a tuple,
                                 the type, shape and format will be copied from the **dataset** column. If None is given,
                                 a similar behaviour will be attempted based on the column name.
                             Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
                             format will be copied from **dataset**.
-
-        :param format: the format of columns returned by the function
 
         :param n_factor: The number of rows generated for each row given to the function. If not specified,
                             the value will be read by passing the **dataset** first row to the function.
@@ -1145,38 +1143,42 @@ class DataSetApply(AbstractDataSet):
         self._n_factor = n_factor
 
         # ---  INFER COLUMN SHAPE, TYPE and FORMAT ---
-        if cols_format is None:
-            cols_format = {}
-        elif isinstance(cols_format, (tuple, str)):
-            cols_format = {c_own: cols_format for c_own in self._single_col_mapping}
-        elif not isinstance(cols_format, dict):
+        if format is None:
+            format = {}
+        elif isinstance(format, list):
+            own_c_sample = next(iter(self._columns_mapping.keys()))
+            if len(own_c_sample) != len(format):
+                raise ValueError('%i format was expected but only %i was provided.' % (len(own_c_sample), len(format)))
+            dict_format = {}
+            for own_c in self._columns_mapping.keys():
+                for f, c in zip(format, own_c):
+                    dict_format[c] = f
+            format = dict_format
+        elif isinstance(format, (tuple, str, DSColumnFormat.Base, DSColumn)):
+            format = {c_own: format for c_own in self._single_col_mapping}
+        elif not isinstance(format, (dict, OrderedDict)):
             raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
-                             % type(cols_format).__name__)
+                             % type(format).__name__)
 
-        if not isinstance(format, dict):
-            format = {_: format for _ in self._single_col_mapping.keys()}
-        elif not all(_ in self._single_col_mapping for _ in format.keys()):
-            format = {_: format for _ in self._single_col_mapping.keys()}
         format = {c: f if f != 'same' else dataset.column_by_name(c, False).format for c, f in format.items()}
 
         # Try to infer
         unknown_columns_format = []
         for c in self._single_col_mapping:
-            if c in cols_format:
+            if c in format:
                 # Check if format was given explicitly
-                col_format = cols_format[c]
+                col_format = format[c]
                 if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name()):
-                    # Try to infer format from homonym
-                    parent_column = dataset.column_by_name(c, False)
-                    if parent_column is not None:
-                        cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
                     # Infer format from first parent
                     parent_column = dataset.column_by_name(self._single_col_mapping[c][0])
-                    col_format = format.get(c, parent_column.format)
-                    cols_format[c] = (parent_column.dtype, parent_column.shape, col_format)
-                elif isinstance(col_format, str) and col_format in dataset.columns_name:
+                    format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif isinstance(col_format, str) and col_format in dataset.columns_name():
                     parent_column = dataset.column_by_name(col_format)
-                    cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                    format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif isinstance(col_format, DSColumn):
+                    format[c] = (col_format.dtype, col_format.shape, col_format.format)
+                elif isinstance(col_format, DSColumnFormat.Base):
+                    format[c] = (col_format.dtype, col_format.shape, col_format)
                 elif not isinstance(col_format, tuple) or len(col_format) not in (1, 2, 3):
                     unknown_columns_format.append(c)
             else:
@@ -1184,7 +1186,11 @@ class DataSetApply(AbstractDataSet):
 
         # Read format from function
         if self._n_factor is None and len(unknown_columns_format) == 0:
-            unknown_columns_format.append(list(self._single_col_mapping.keys())[0])
+            force_c = list(self._single_col_mapping.keys())[0]
+            unknown_columns_format.append(force_c)
+            f = format.pop(force_c)
+            if len(f) == 3:
+                format[force_c] = f[2]     # Set the format to DSColumnFormat to be consistent with real unknown columns.
 
         if unknown_columns_format:
             sample = dataset.read_one(0, columns=self.col_parents(unknown_columns_format), extract=False)
@@ -1211,31 +1217,41 @@ class DataSetApply(AbstractDataSet):
                                          % (c_sample.shape[0], c_name, self._n_factor))
 
                     c_sample = c_sample[0]
+                    format_info = format.get(c_name, None)
                     if isinstance(c_sample, np.ndarray):
-                        cols_format[c_name] = (c_sample.dtype, c_sample.shape)
-
-                        if c_sample.dtype == parent_col.dtype and c_sample.shape == parent_col.shape:
-                            cols_format[c_name] = cols_format[c_name] + (parent_col.format,)
-                    else:
-                        if c_sample == str:
-                            cols_format[c_name] = 'str'
+                        col_format = (c_sample.dtype, c_sample.shape)
+                        if format_info:
+                            format[c_name] = col_format + (format_info,)
+                        elif c_sample.dtype == parent_col.dtype and c_sample.shape == parent_col.shape:
+                            format[c_name] = col_format + (parent_col.format,)
                         else:
-                            cols_format[c_name] = (np.dtype(type(c_sample)),)
-                        if c_sample.dtype == parent_col.dtype and parent_col.shape == ():
-                            cols_format[c_name] = cols_format[c_name] + ((), parent_col.format,)
+                            format[c_name] = col_format
+                    else:
+                        if type(c_sample) == str:
+                            format[c_name] = 'str'
+                        else:
+                            dtype = np.dtype(type(c_sample))
+                            if format_info:
+                                format[c_name] = (dtype, (), format_info)
+                            elif c_sample.dtype == parent_col.dtype and parent_col.shape == ():
+                                format[c_name] = (dtype, (), parent_col.format,)
+                            else:
+                                format[c_name] = (dtype,)
                     if c_name in unknown_columns_format:
                         unknown_columns_format.remove(c_name)
 
         # Apply the format
-        for c_name, c_format in cols_format.items():
+        for c_name, c_format in format.items():
             col = self.column_by_name(c_name)
-            col._dtype = c_format[0]
-            col._shape = c_format[1] if len(c_format) > 1 else ()
-            col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)
-
-            if col._dtype == 'str':
+            if c_format == "str":
                 col._dtype = np.dtype('O')
                 col._is_text = True
+            else:
+                col._dtype = c_format[0]
+                col._shape = c_format[1] if len(c_format) > 1 else ()
+                if len(c_format) > 2:
+                    col.format = c_format[2]
+                    col.format = c_format[2]
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
@@ -1379,10 +1395,10 @@ class DataSetApply(AbstractDataSet):
 
 
 class DataSetApplyCV(DataSetApply):
-    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, format=None, n_factor=None,
                  name='apply'):
         super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns, batchwise=False,
-                                             remove_parent_columns=remove_parent_columns, cols_format=cols_format,
+                                             remove_parent_columns=remove_parent_columns, format=format,
                                              n_factor=n_factor, name=name)
 
     def compute_f(self, args, rkeys):

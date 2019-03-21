@@ -359,12 +359,20 @@ class AbstractDataSet(metaclass=ABCMeta):
     def add_column(self, name, shape, dtype, format=None):
         self._columns.append(DSColumn(name=name, shape=shape, dtype=dtype, dataset=self, format=format))
 
-    def format(self, columns, col_format):
+    def format(self, columns, format):
         if not isinstance(columns, (list, tuple, set)):
             columns = [columns]
         columns = self.interpret_columns(columns, to_column_name=False)
+
+        if isinstance(format, list):
+            if len(format) != len(columns):
+                raise ValueError('%i format were expected, %i received...' % (len(columns), len(format)))
+            format = {c: f for c, f in zip(columns, format)}
+        elif not is_dict(format):
+            format = {c: format for c in columns}
+
         for c in columns:
-            c.format = col_format
+            c.format = format[c]
 
     #   ---   Dataset Hierarchy   ---
     @property
@@ -902,10 +910,10 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         def write_cb(r):
             for c in r.keys():
-                result[0, 0, c] += r[:, c].sum(axis=0)
+                result[0, c] += r[:, c].sum(axis=0)
             result.trace.affiliate_parent_trace(r.trace)
 
-        self.export(write_cb, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
+        self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
         return result[columns[0]] if single_column else result
 
     def mean(self, columns=None, start=0, stop=None, std=False, ncore=1, n=1, determinist=True):
@@ -1013,9 +1021,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         n_class = len(conf_labels)
 
         confmat_name = pred.name+'_confmat' if not isinstance(rowwise, str) else rowwise
-        kwargs = dict(name=confmat_name, keep_parent=True,
-                      cols_format=(np.uint32, (n_class, n_class),
-                                   DSColumnFormat.ConfMatrix(n_class)))
+        kwargs = dict(name=confmat_name, keep_parent=True, format=DSColumnFormat.ConfMatrix(n_class), n_factor=1)
 
         def conf_mat(pred, true, weight):
             if one_hot:
@@ -1170,26 +1176,27 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(dataset=self, subgen=subgen, indices=indices, rng=rng, name=name)
 
-    def apply(self, columns, function, cols_format=None, format=None, n_factor=None, batchwise=False, keep_parent=False,
+    def apply(self, columns, function, format=None, n_factor='auto', batchwise=False, keep_parent=False,
               name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
-        if n_factor is None and cols_format == 'auto':
-            n_factor = 1
+        if n_factor == 'auto':
+            n_factor = 1 if format is not None else None
+
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
-                            remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise)
+                            remove_parent_columns=not keep_parent, batchwise=batchwise)
 
-    def apply_cv(self, columns, function, cols_format=None, n_factor=1, keep_parent=False, name=None):
+    def apply_cv(self, columns, function, format=None, n_factor=1, keep_parent=False, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
         from .datasets_core import DataSetApplyCV
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
-                              cols_format=cols_format, remove_parent_columns=not keep_parent)
+                              format=format, remove_parent_columns=not keep_parent)
 
     def apply_map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
         from .datasets_core import DataSetApply
@@ -1198,7 +1205,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             default = mapping.pop('default', None)
         f_lut = prepare_lut(mapping, default=default, sampling=sampling)
         return DataSetApply(self, function=f_lut, columns=columns, name=name,
-                            cols_format=None, batchwise=True, n_factor=1)
+                            format=None, batchwise=True, n_factor=1)
 
     def as_label(self, columns, mapping, format=None, sampling=None, name="label"):
         f_mapping = None
@@ -1616,7 +1623,8 @@ class DSColumnFormat:
             return self.format_data(data)
 
         def export_html(self, data, fullscreen=None):
-            return self.format_html(self.preformat(data), data, fullscreen=fullscreen)
+            html = self.format_html(self.preformat(data), data, fullscreen=fullscreen)
+            return html
 
         def export_data(self, data):
             return self.format_data(self.preformat(data))
@@ -1625,7 +1633,7 @@ class DSColumnFormat:
             return self.write_file(self.preformat(data), path, filename, overwrite)
 
     class Number(Base):
-        def __init__(self, dtype, shape):
+        def __init__(self, dtype=np.float, shape=()):
             super(DSColumnFormat.Number, self).__init__(dtype, shape)
 
         def __repr__(self):
@@ -1642,7 +1650,7 @@ class DSColumnFormat:
             return ("<p>%i</p>" if 'int' in str(self.dtype) else "<p>%f.3</p>") % data
 
     class Text(Base):
-        def __init__(self, dtype, shape):
+        def __init__(self, dtype='O', shape=()):
             super(DSColumnFormat.Text, self).__init__(dtype, shape)
 
         def __repr__(self):
@@ -1789,8 +1797,13 @@ class DSColumnFormat:
             self.no_scaling = True
 
     class ConfMatrix(Base):
-        def __init__(self, n_class):
-            super(DSColumnFormat.ConfMatrix, self).__init__(np.uint32, (n_class, n_class))
+        def __init__(self, shape, dtype='int64'):
+            if isinstance(shape, int):
+                self.n_class = shape
+                shape = (shape, shape)
+            else:
+                self.n_class = shape[-1]
+            super(DSColumnFormat.ConfMatrix, self).__init__(dtype, shape)
 
         def __repr__(self):
             return 'ConfMatrix()'
@@ -1799,6 +1812,7 @@ class DSColumnFormat:
             table_tmp = """
             <table style="font-size: 10px;
                           text-align: center;
+                          margin: auto;
                           border-collapse: separate;
                           border-spacing: 2px 2px;"> 
                 {} 
@@ -1820,10 +1834,10 @@ class DSColumnFormat:
                     r,g,b = color_scale(f, (163,209,76) if i==j else (179,39,39))
                     row_html += """
                     <td style="padding: 5px 10px 1px 10px;
-                               background-color: rgb(%i,%i,%i)"> %i </td>
+                               background-color: rgb(%i,%i,%i)">%i</td>
                     """ % (r, g, b, c)
 
-                table += "<tr>" + row_html + "</tr>"
+                table += '<tr style="border: none;">' + row_html + "</tr>"
 
             return table_tmp.format(table)
 
