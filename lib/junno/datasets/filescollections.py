@@ -227,6 +227,8 @@ class ImagesCollection(FilesCollection):
         self.r_interp = cv2.INTER_AREA
         if isinstance(reshape, float):
             self.r_f = (reshape, reshape)
+        elif isinstance(reshape, int):
+            self.r_shape = (reshape, reshape)
         elif isinstance(reshape, tuple):
             h, w = reshape
             if w <= 1. and h <= 1. and (w != 1 or h != 1):
@@ -273,7 +275,11 @@ class ImagesCollection(FilesCollection):
 
         # --- RESHAPE ---
         if self.file_reshape is not None:
-            h, w, c = img.shape
+            if img.ndim==3:
+                h, w, c = img.shape
+            else:
+                h, w = img.shape
+                c = 1
             if self.r_shape is None:
                 self.r_shape = (int(h * self.r_f[1]), int(w * self.r_f[0]))
             original_ratio = h / w
