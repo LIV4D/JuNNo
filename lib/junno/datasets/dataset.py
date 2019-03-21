@@ -1012,7 +1012,6 @@ class AbstractDataSet(metaclass=ABCMeta):
         conf_labels = label
         n_class = len(conf_labels)
 
-
         confmat_name = pred.name+'_confmat' if not isinstance(rowwise, str) else rowwise
         kwargs = dict(name=confmat_name, keep_parent=True,
                       cols_format=(np.uint32, (n_class, n_class),
@@ -1118,6 +1117,28 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return d
 
+    def repeat(self, n=None, rows=None, name="repeat"):
+        if rows is not None:
+            if rows == self.size:
+                return self
+            elif rows < self.size:
+                return self.subset(stop=rows, name=name)
+            elif rows > self.size:
+                l = [self] * (rows//self.size)
+                l.append(self.subset(rows % self.size))
+                from .datasets_core import DataSetConcatenate
+                return DataSetConcatenate(l, name=name)
+        elif n is not None:
+            if n == 1:
+                return self
+            elif n < 1:
+                return self.subset(stop=int(self.size*n), name=name)
+            elif n > 1:
+                l = [self] * int(np.floor(n))
+                l.append(self.subset(n % 1))
+                from .datasets_core import DataSetConcatenate
+                return DataSetConcatenate(l, name=name)
+
     def concat(self, **kwargs):
         """"Map columns name or concatenate two columns according to kwargs (keys are created columns,
         and values are either names of column to map or lists of column names to concatenate).
@@ -1214,92 +1235,6 @@ class AbstractDataSet(metaclass=ABCMeta):
     def reshape(self, columns, shape, keep_parent=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
         return DataSetReshape(self, columns=columns, shape=shape, keep_parent=keep_parent, name=name)
-
-    def join(self, datasets, verbose=False, parallel=False, **kwargs):
-        for c in self._columns:
-            if c.name in kwargs:
-                kwargs[c.name+'1'] = kwargs[c.name]
-            kwargs[c.name] = c
-
-        if not isinstance(datasets, list):
-            datasets = [datasets]
-        found_self = False
-        for id, _ in enumerate(datasets):
-            if isinstance(_, tuple):
-                if _[0] is self:
-                    found_self = True
-                    break
-            elif isinstance(_, DSColumn):
-                if _.dataset is self:
-                    found_self = True
-                    break
-            elif isinstance(_, str):
-                if _ != 'pk' and _ not in self.columns_name():
-                    raise ValueError('%s is not a column of dataset %s' % (_, self.dataset_name))
-                datasets[id] = self.column_by_name(_)
-                found_self = True,
-                break
-        if not found_self:
-            datasets.insert(0, self.pk)
-
-        from .datasets_core import DataSetJoin
-        return DataSetJoin(datasets=datasets, verbose=verbose, parallel=parallel, **kwargs)
-
-    def augment_data(self, columns,
-                     N_augmented,
-                     geom_trans=False,
-                     color_trans=False,
-                     function2avoid=None,
-                     keep_original=True,
-                     custom_function=None,
-                     column_transform = False,
-                     **kwargs):
-        """Proceeds with data augmentation
-
-        This method returns a :class:`DataSetAugmentedData` object that will generate new transformed instances.
-
-        :param columns: columns in the dataset that will be affected by the data augmentation engine.
-        :param N_augmented: number of new instances generated from one single instance
-        :param custom_function: A reference to a method that will be applied on a instance. The method definition must as least have \
-        an ``input`` parameter, that will be automatically filled. Others parameters can be passed as a pair of key-value within this function.
-        :param geom_trans: determines whether standard geometric transformation should be randomly proceeded. Others parameters \
-        can be passed as a pair of key-value within this function.
-        :param color_trans: determines whether standard color transformation should be randomly proceeded. Others parameters \
-        can be passed as a pair of key-value within this function.
-        :param function2avoid:
-        :param keep_original:
-        :param kwargs:
-        :return:
-        """
-        from .data_augmentation import DataAugmentation
-
-        dict_params = kwargs
-        dict_params['use_geom_func'] = geom_trans
-        dict_params['use_color_func'] = color_trans
-        dict_params['custom_function'] = custom_function
-        dict_params['function2avoid'] = function2avoid
-
-        # Initialize columns
-        c_tmp = []
-        if isinstance(columns, str):
-            columns = [columns]
-        for c_id, c in enumerate(columns):
-            if isinstance(c, str):
-                if c not in self.columns_name():
-                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                c_tmp.append(self.column_by_name(c))
-        columns = c_tmp
-
-        img_shape = columns[0].shape[-2:]
-        for c in columns[1:]:
-            if c.shape[-2:] != img_shape:
-                raise ValueError('All data-augmented columns should have the same shape!')
-
-        da_engine = DataAugmentation(**dict_params)
-
-        from .data_augmentation import DataSetAugmentedData
-        return DataSetAugmentedData(self, columns=columns, n=N_augmented,
-                                    da_engine=da_engine, keep_original=keep_original, column_transform=column_transform)
 
     def augment(self, data_augment, columns=None, N=1, original=False, name='augment'):
         from .datasets_augment import DataSetAugment
@@ -1485,28 +1420,6 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core2d import DataSetUnPatch
         return DataSetUnPatch(self, patch_mix=patch_mix, columns=columns, n_patches=n_patches,
                               restore_columns=restore_columns, columns_shape=columns_shape)
-
-    def repeat(self, n=None, rows=None, name="repeat"):
-        if rows is not None:
-            if rows == self.size:
-                return self
-            elif rows < self.size:
-                return self.subset(stop=rows, name=name)
-            elif rows > self.size:
-                l = [self] * (rows//self.size)
-                l.append(self.subset(rows % self.size))
-                from .datasets_core import DataSetConcatenate
-                return DataSetConcatenate(l, name=name)
-        elif n is not None:
-            if n == 1:
-                return self
-            elif n < 1:
-                return self.subset(stop=int(self.size*n), name=name)
-            elif n > 1:
-                l = [self] * int(np.floor(n))
-                l.append(self.subset(n % 1))
-                from .datasets_core import DataSetConcatenate
-                return DataSetConcatenate(l, name=name)
 
 
 ########################################################################################################################
@@ -1882,6 +1795,38 @@ class DSColumnFormat:
         def __repr__(self):
             return 'ConfMatrix()'
 
+        def format_html(self, data, raw_data, fullscreen=None):
+            table_tmp = """
+            <table style="font-size: 10px;
+                          text-align: center;
+                          border-collapse: separate;
+                          border-spacing: 2px 2px;"> 
+                {} 
+            </table>
+            """
+            table = ""
+            s = data.sum()
+
+            def color_scale(f, rgb):
+                r,g,b = rgb
+                return (255 - f * (255 - r),
+                        255 - f * (255 - g),
+                        255 - f * (255 - b))
+
+            for i, row in enumerate(data):
+                row_html = ""
+                for j, c in enumerate(row):
+                    f = c/s
+                    r,g,b = color_scale(f, (163,209,76) if i==j else (179,39,39))
+                    row_html += """
+                    <td style="padding: 5px 10px 1px 10px;
+                               background-color: rgb(%i,%i,%i)"> %i </td>
+                    """ % (r, g, b, c)
+
+                table += "<tr>" + row_html + "</tr>"
+
+            return table_tmp.format(table)
+
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False):
             from ..j_utils.math import dimensional_split
@@ -2062,6 +2007,8 @@ class DSColumnFormat:
 
         if isinstance(info, DSColumnFormat.Base):
             return info.copy(dtype, shape)
+        elif isinstance(info, DSColumn):
+            return info.format.copy(dtype, shape)
         elif isinstance(info, str):
             # Parse
             info_split = info.split('(', 1)
