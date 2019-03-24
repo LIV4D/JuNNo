@@ -261,12 +261,15 @@ class ImagesCollection(FilesCollection):
             self.r_interp = reshape.get('interp', self.r_interp)
 
         self.seq_files_type = seq_files_type
-        if self.seq_files_type=='single' and self.open_func is None:
-            raise ValueError("With option 'single' given to seq_files_type argument, you must provide an option function"
-                             "to open_func argument")
+
         # Finalize
         self.normalize = normalize
         self.open_func = open_func
+
+        if self.seq_files_type=='single' and self.open_func is None:
+            raise ValueError("With option 'single' given to seq_files_type argument, you must provide an option function"
+                             "to open_func argument")
+
         super(ImagesCollection, self).__init__(path=path, read_function=self.read_func if not is_seq else self.read_sequence,
                                                recursive=recursive,
                                                regexp=regexp,
