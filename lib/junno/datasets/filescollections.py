@@ -195,7 +195,7 @@ class FilesCollection(AbstractDataSet):
 class ImagesCollection(FilesCollection):
     def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
-                 is_seq=False, open_func=None):
+                 is_seq=False, open_func=None, seq_files_type="multi"):
         """
 
         :param path: Path of the folder to explore
@@ -225,6 +225,8 @@ class ImagesCollection(FilesCollection):
                         -'crop' Will crop the image to match the required size after resizing operation without stretching
                         -'pad' Will pad the image to match the required size after resizing operation without stretching
                         -None or False: The image will be stretched
+        :param seq_files_type: Either 'single' or 'multi'. In the former case, each sequence is stored in a single file,
+        in the latter case, the sequence as multiples files, individually opened with the open_func.
         """
 
         # --- READ FUNCTION OPTIONS ---
@@ -258,6 +260,10 @@ class ImagesCollection(FilesCollection):
             self.r_f = reshape.get('f', self.r_f)
             self.r_interp = reshape.get('interp', self.r_interp)
 
+        self.seq_files_type = seq_files_type
+        if self.seq_files_type=='single' and self.open_func is None:
+            raise ValueError("With option 'single' given to seq_files_type argument, you must provide an option function"
+                             "to open_func argument")
         # Finalize
         self.normalize = normalize
         self.open_func = open_func
@@ -270,15 +276,7 @@ class ImagesCollection(FilesCollection):
     def __str__(self):
         return self.dataset_name + ' ' + self.path
 
-    def read_func(self, path):
-        # --- READ ---
-        if self.open_func is None:
-            img = cv2.imread(path, flags=self.imread_flags)
-        else:
-            img = self.open_func(path)
-        if img is None:
-            log.error('%s is not an image!' % path)
-            return None
+    def preprocessing(self, img):
         # --- CROP ---
         crop = self.crop
         if crop is not None:
@@ -310,18 +308,18 @@ class ImagesCollection(FilesCollection):
             if self.keep_proportion and new_ratio != original_ratio:
                 if self.keep_proportion == 'pad':
                     if original_ratio < new_ratio:
-                        pad = int((new_ratio*w - h)//2)
-                        pad_width = [(pad, pad), (0,0), (0,0)]
+                        pad = int((new_ratio * w - h) // 2)
+                        pad_width = [(pad, pad), (0, 0), (0, 0)]
                     else:
-                        pad = int((h/new_ratio - w)//2)
-                        pad_width = [(0,0), (pad, pad), (0,0)]
+                        pad = int((h / new_ratio - w) // 2)
+                        pad_width = [(0, 0), (pad, pad), (0, 0)]
                     img = np.pad(img, pad_width, 'constant')
                 elif self.keep_proportion == 'crop':
                     if original_ratio > new_ratio:
-                        crop = int(h-new_ratio*w)//2
-                        img = img[crop:h-crop]
+                        crop = int(h - new_ratio * w) // 2
+                        img = img[crop:h - crop]
                     else:
-                        crop = int((w-h/new_ratio)//2)
+                        crop = int((w - h / new_ratio) // 2)
                         img = img[:, crop:w - crop]
 
             img = cv2.resize(img, dsize=self.r_shape, interpolation=self.r_interp)
@@ -336,6 +334,19 @@ class ImagesCollection(FilesCollection):
         else:
             raise NotImplementedError
 
+
+    def read_func(self, path):
+        # --- READ ---
+        if self.open_func is None:
+            img = cv2.imread(path, flags=self.imread_flags)
+        else:
+            img = self.open_func(path)
+        if img is None:
+            log.error('%s is not an image!' % path)
+            return None
+
+        return self.preprocessing(img)
+
     def read_sequence(self, path):
         """
         Read a list of images in folder
@@ -343,10 +354,23 @@ class ImagesCollection(FilesCollection):
         :return:
         """
         sequence = []
-        folder = join(self.path, path)
-        files = sorted(listdir(folder))
-        for file in files:
-            sequence.append(self.read_func(join(folder, file)))
+        if self.seq_files_type=='multi':
+            folder = join(self.path, path)
+            files = sorted(listdir(folder))
+            for file in files:
+                sequence.append(self.read_func(join(folder, file)))
+        elif self.seq_files_type=='single':
+            folder = join(self.path, path)
+            files = sorted(listdir(folder))
+            if len(files) != 1:
+                raise ValueError("Found more than one sequence in given folder with option 'single'")
+            path = join(folder, files[0])
+            seqs = self.open_func(path)
+            for _ in seqs:
+                sequence.append(self.preprocessing(_))
+        else:
+            raise ValueError('Unknown option for reading sequences files')
+
         return np.asarray(sequence)
 
     def get_seqs_size(self, dir):
@@ -429,8 +453,8 @@ def images(path, name='ImagesCollection', regexp=image_extensions(), filename_re
 
 def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None,
-                     normalize=True, keep_proportion=False, open_func=None):
-
+                     normalize=True, keep_proportion=False, open_func=None, seq_files_type="multi"):
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
-                            keep_proportion=keep_proportion, is_seq=True, open_func=open_func)
+                            keep_proportion=keep_proportion, is_seq=True, open_func=open_func,
+                            seq_files_type=seq_files_type)
