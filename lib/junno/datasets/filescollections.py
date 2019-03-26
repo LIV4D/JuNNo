@@ -94,12 +94,10 @@ class FilesCollection(AbstractDataSet):
         self.len_path += 1 if self.len_path else 0
 
         self.add_column('name', (), np.dtype(('U', 100)))
-
-        if self.trace_frame:
-            self.add_column('frames', (), list)
-
         sample = self._read_files(self._files[0])
+
         if self.trace_frame:
+            self.add_column('frames', (1,), np.dtype(('U', 100)), undef_dims=1)
             sample = sample[0]
 
         if type(sample) == np.ndarray:
@@ -395,7 +393,7 @@ class ImagesCollection(FilesCollection):
             for file in files:
                 sequence.append(self.read_func(join(folder, file)))
             if self.trace_frame:
-                return (np.asarray(sequence), files)
+                return (np.asarray(sequence), np.expand_dims(np.asarray(files),1))
 
         elif self.seq_files_type == 'single':
             seqs = self.open_func(path)
