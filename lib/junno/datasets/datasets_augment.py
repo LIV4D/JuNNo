@@ -89,6 +89,7 @@ class DataAugment:
 
         augment_stack = []
         cv = cv_kwargs
+
         for f_name, f_params in self._augment_stack:
             f, f_cv, a_type = _augment_methods[f_name][:3]
 
@@ -120,7 +121,7 @@ class DataAugment:
                     raise ValueError('Invalid cv image format, shape is: %s' % repr(x.shape))
             else:
                 if x.ndim == 2:
-                    x = x[np.newaxis, np.newaxis, :, :]
+                    x = x[np.newaxis, :, :]
                 elif x.ndim > 3:
                     x = x.reshape(-1, *x.shape[-2:])
                 elif x.ndim != 3:
@@ -128,10 +129,19 @@ class DataAugment:
             x = [x]
 
             for f_augment in augment_stack:
+
                 if f_augment is DataAugment.split_cv or f_augment is DataAugment.merge_cv:
                     x = f_augment(x, dtype=x_dtype)
                 else:
-                    x = [f_augment(_, rng) for _ in x]
+                    y = []
+                    for _ in x:
+                        if len(x) > 0:
+                            tmp_rng = copy(rng)
+                        else:
+                            tmp_rng = rng
+                        y.append(f_augment(_, tmp_rng))
+                    rng = tmp_rng
+                    x = y
 
             if cv_kwargs:
                 return x[0]
@@ -143,16 +153,15 @@ class DataAugment:
     def split_cv(x, dtype=None):
         x = np.concatenate(x)
         c = x.shape[0]
-
         x_cv = []
         for i in range(c//3):
             x_i = x[i*3:(i+1)*3].transpose((1, 2, 0))
-            if 'float' in str(dtype):
+            if 'float' in str(dtype) or 'bool' in str(dtype):
                 x_i = x_i * 255
             x_cv.append(x_i.astype(np.uint8))
         for i in range(c-(c % 3), c):
             x_i = x[i:i+1].transpose((1, 2, 0))
-            if 'float' in str(dtype):
+            if 'float' in str(dtype) or 'bool' in str(dtype):
                 x_i = x_i * 255
             x_cv.append(x_i.astype(np.uint8))
         return x_cv
@@ -162,6 +171,8 @@ class DataAugment:
         x = np.concatenate([_.transpose((2, 0, 1)) for _ in x])
         if 'float' in str(dtype):
             x = x.astype(np.float32) / 255
+        if 'bool' in str(dtype):
+            x = x > 125
         return [x]
 
     @augment_method('geometric')
@@ -203,11 +214,11 @@ class DataAugment:
         :return: Transformed image
         :rtype: numpy.ndarray
         """
-        rotate = _RD.constant(0) if rotate is None else _RD.auto(rotate)
-        scale = _RD.constant(1) if scale is None else _RD.auto(scale)
-        translate = _RD.constant(0) if translate is None else _RD.auto(translate)
+        rotate = _RD.constant(0) if rotate is None else _RD.auto(rotate, symetric=True)
+        scale = _RD.constant(1) if scale is None else _RD.auto(scale, symetric=True)
+        translate = _RD.constant(0) if translate is None else _RD.auto(translate, symetric=True)
         translate_direction = _RD.uniform(360) if translate_direction is None else _RD.auto(translate_direction)
-        shear = _RD.constant(0) if shear is None else _RD.auto(shear)
+        shear = _RD.constant(0) if shear is None else _RD.auto(shear, symetric=True)
 
         deg2rad = np.pi/180
 
@@ -227,27 +238,19 @@ class DataAugment:
             return dst.reshape(x.shape)
         return augment
 
-    def rotate(self, angle=(-25, 25),
-               interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(rotate=angle,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def rotate(self, angle=(-25, 25), **kwargs):
+        return self.warp_affine(rotate=angle, **kwargs)
 
-    def scale(self, scale=(0.9, 1.1),
-              interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(scale=scale,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def scale(self, scale=(0.9, 1.1), **kwargs):
+        return self.warp_affine(scale=scale, **kwargs)
 
-    def translate(self, distance=15, direction=None,
-                  interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
+    def translate(self, distance=15, direction=None, **kwargs):
         if isinstance(direction, (int, float)):
             direction = _RD.constant(direction)
-        return self.warp_affine(translate=distance, translate_direction=direction,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+        return self.warp_affine(translate=distance, translate_direction=direction, **kwargs)
 
-    def shear(self, shear=(0.9, 1.1),
-              interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
-        return self.warp_affine(shear=shear,
-                                interpolation=interpolation, border_mode=border_mode, border_value=border_value)
+    def shear(self, shear=(0.9, 1.1), **kwargs):
+        return self.warp_affine(shear=shear, **kwargs)
 
     @augment_method('geometric', cv=True)
     def elastic_distortion(self, dist=10, sigma=2, scale=1, mask=None,
@@ -360,28 +363,28 @@ class DataAugment:
         return augment
 
     def brightness(self, brightness=(-0.1, 0.1)):
-        return self.color(brightness=brightness)
+        return self.color(brightness=brightness, symetric=True)
 
     def contrast(self, contrast=(-0.1, 0.1)):
-        return self.color(contrast=contrast)
+        return self.color(contrast=contrast, symetric=True)
 
     def gamma(self, gamma=(-0.1, 0.1)):
-        return self.color(gamma=gamma)
+        return self.color(gamma=gamma, symetric=True)
 
     @augment_method('color', cv=True)
     def hsv(self, hue=None, saturation=None, value=None):
         if hue is None:
             hue = _RD.constant(0)
         else:
-            hue = _RD.auto(hue)
+            hue = _RD.auto(hue, symetric=True)
         if saturation is None:
             saturation = _RD.constant(0)
         else:
-            saturation = _RD.auto(saturation)
+            saturation = _RD.auto(saturation, symetric=True)
         if value is None:
             value = _RD.constant(0)
         else:
-            value = _RD.auto(value)
+            value = _RD.auto(value, symetric=True)
 
         a_min = np.array([0, 0, 0], np.uint8)
         a_max = np.array([179, 255, 255], np.uint8)
@@ -528,7 +531,7 @@ class RandomDistribution:
             super(RandomDistribution, self).__setattr__(key, value)
 
     @staticmethod
-    def auto(info):
+    def auto(info, symetric=False):
         """
         Generate a RandomDistribution according to the value of an argument
         :rtype: RandomDistribution
@@ -539,7 +542,10 @@ class RandomDistribution:
             elif len(info) == 1:
                 return RandomDistribution.uniform(low=-info[0], high=+info[0])
         elif isinstance(info, (float, int)):
-            return RandomDistribution.uniform(high=info)
+            if symetric:
+                return RandomDistribution.uniform(low=-info, high=info)
+            else:
+                return RandomDistribution.uniform(high=info)
         elif isinstance(info, RandomDistribution):
             return info
         raise ValueError('Not interpretable random distribution: %s.' % repr(info))

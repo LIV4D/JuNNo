@@ -279,8 +279,27 @@ class ConfMatrix(np.ndarray):
     [..., pred, true]
     """
 
+    @staticmethod
+    def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None):
+        from sklearn.metrics import confusion_matrix
+        conf = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=labels, sample_weight=sample_weight)
+        conf = conf.view(ConfMatrix)
+        conf.labels = labels
+        return conf
+
+    @staticmethod
+    def zeros(labels):
+        if isinstance(labels, int):
+            labels = list(range(labels))
+        elif not isinstance(labels, (list, tuple)):
+            raise ValueError('ConfMatrix.zeros(labels=...) should be a list. (labels=%s)' % repr(labels))
+        conf = np.zeros((len(labels), len(labels)), np.int)
+        conf = conf.view(ConfMatrix)
+        conf.labels = labels
+        return conf
+
     def __new__(cls, input_array, labels=None):
-        a = np.asarray(input_array).astype(np.uint).view(cls)
+        a = np.asarray(input_array).astype(np.int).view(cls)
         a.labels = labels
         a.total = None
         a.total_dim = None
@@ -293,8 +312,34 @@ class ConfMatrix(np.ndarray):
         if obj.shape[-2] != obj.shape[-1]:
             raise ValueError('ConfMatrix must be a square matrix. (shape=%s)' % obj.shape)
         self.labels = getattr(obj, 'labels', None)
-        self.labels = getattr(obj, 'total', None)
-        self.labels = getattr(obj, 'total_dim', None)
+        self.total = getattr(obj, 'total', None)
+        self.total_dim = getattr(obj, 'total_dim', None)
+
+    def _ipython_display_(self):
+        from .ipython import import_display
+        from .ipython.confmatrix import ConfMatrixView
+        import_display(ConfMatrixView(self, labels=self.labels, normed=self.norm))
+
+    def __call__(self, *labels, **labels_map):
+        from collections import OrderedDict
+        labels_dict = OrderedDict()
+        for l in labels:
+            labels_dict[l] = l
+        for k, v in labels_map.items():
+            if isinstance(v, str):
+                labels_dict[k] = [self.labels.index(v)]
+            elif isinstance(v, tuple):
+                labels_dict[k] = tuple(self.labels.index(_) if isinstance(_, str) else _ for _ in v)
+            else:
+                labels_dict[k] = [v]
+
+        d = self.no_normed()
+        r = ConfMatrix.zeros([str(_) for _ in labels_dict.keys()])
+        for i, y in enumerate(labels_dict.values()):
+            for j, x in enumerate(labels_dict.values()):
+                ids = cartesian((y, x))
+                r[i, j] = np.sum(d[ids[:, 0], ids[:, 1]])
+        return r
 
     def __getitem__(self, item):
         from .collections import istypeof_or_collectionof
@@ -358,38 +403,45 @@ class ConfMatrix(np.ndarray):
     def sum_pred(self):
         return np.sum(self, axis=-1)
 
-    def normed_true(self):
+    def normed_pred(self):
         dim = (slice(None),)*(self.ndim-2) + (np.newaxis, slice(None))
         a = self.no_normed()
         t = a.sum_true()
         a = a / t[dim]
         a.total = t
-        a.total_dim = 'true'
+        a.total_dim = 'pred'
         return a
 
-    def normed_pred(self):
+    def normed_true(self):
         dim = (slice(None),)*(self.ndim-2) + (slice(None), np.newaxis)
         a = self.no_normed()
         t = a.sum_pred()
         a = a / t[dim]
         a.total = t
-        a.total_dim = 'pred'
+        a.total_dim = 'true'
         return a
 
     def no_normed(self):
-        if self.total_dim == "true":
+        if self.total_dim == "pred":
             dim = (slice(None),) * (self.ndim - 2) + (np.newaxis, slice(None))
             a = self * self.total[dim]
             a.total = None
             a.total_dim = None
             return a
-        elif self.total_dim == "pred":
+        elif self.total_dim == "true":
             dim = (slice(None),) * (self.ndim - 2) + (slice(None), np.newaxis)
             a = self * self.total[dim]
             a.total = None
             a.total_dim = None
             return a
         return self
+
+    @property
+    def norm(self):
+        if self.total_dim in ("true", "pred"):
+            return self.total_dim
+        else:
+            return "none"
 
     def _metric_flatten(self):
         return self.view(np.ndarray)

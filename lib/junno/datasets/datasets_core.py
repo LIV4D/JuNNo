@@ -5,7 +5,7 @@ from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
 from ..j_utils.math import interval
-from ..j_utils.collections import if_else, if_none
+from ..j_utils.collections import if_else, if_none, OrderedDict
 
 
 ########################################################################################################################
@@ -103,8 +103,8 @@ class PyTableDataSet(AbstractDataSet):
                 # Create a full index
                 getattr(self.pytable.cols, sortby).create_csindex()
 
-            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False)
-            if reversed_sort is not None:
+            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False).read_indices()
+            if reversed_sort:
                 self._sorted_rows = self._sorted_rows[::-1]
             if self._filtered_rows is not None:
                 rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
@@ -176,7 +176,7 @@ class PyTableDataSet(AbstractDataSet):
             for j in range(n):
                 row = next(hd5_gen)
                 for c in columns:
-                    r[c] = row[c]
+                    r[j, c] = row[c]
 
             r = None
             yield weakref
@@ -212,7 +212,7 @@ class PyTableDataSet(AbstractDataSet):
                 return self
             return self.sort(sortby)
         if sortby is None:
-            return self.where(sortby)
+            return self.select(where)
         d = PyTableDataSet(self.pytable, where=where, sortby=sortby, name=self.dataset_name)
         return d
 
@@ -233,7 +233,7 @@ class DataSetSubset(AbstractDataSet):
         gen = gen_context.generator(self._parent, start=first_id, stop=last_id, columns=gen_context.columns)
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
-            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns}, seek=self.start+i)
+            yield gen.next(copy={c: weakref()[c] for c in gen_context.columns}, seek=self.start+i, limit=n)
 
     @property
     def size(self):
@@ -269,7 +269,7 @@ class DataSetSubgen(AbstractDataSet):
 
             for i in range(0, N, max_n):
                 n = min(N-i, max_n)
-                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']}, seek=i_global+i)
+                parent_gen.next(copy={c: r[i:i+n, c] for c in r.columns_name() + ['pk']}, seek=i_global+i, limit=n)
 
             r = None
             yield weakref
@@ -802,16 +802,64 @@ class DataSetJoin(AbstractDataSet):
         return sub
 
 
-def join(datasets, **kwargs):
-    if isinstance(datasets, str):
-        dataset_set = set()
-        for c in kwargs.values():
-            if isinstance(c, DSColumn):
-                dataset_set.add(c.dataset)
-            else:
-                raise ValueError('Error when joining on %s. %s is not a DSColumn.' % (datasets, repr(c)))
-        datasets = [_.column_by_name(datasets) for _ in dataset_set]
-    return DataSetJoin(datasets, **kwargs)
+def join(*join_columns, **map_columns):
+    if not join_columns:
+        if not map_columns:
+            raise ValueError("You seriously didn't provide any argument to join()? You know it's not gone work, right?")
+        join_columns = set()
+        for v in map_columns.values():
+            if not isinstance(v, DSColumn):
+                raise ValueError('Invalid column value: %s.' % repr(v))
+            join_columns.add(v.dataset)
+    if len(join_columns) == 1:
+        if isinstance(join_columns[0], str):
+            dataset_set = set()
+            for c in map_columns.values():
+                if isinstance(c, DSColumn):
+                    if c.dataset is None:
+                        raise ValueError('Error %s has no parent dataset. (c._dataset=%s)' % (c, c._dataset))
+                    dataset_set.add(c.dataset)
+                else:
+                    raise ValueError('Error when joining on %s. %s is not a DSColumn.' % (join_columns, repr(c)))
+            join_columns = [_.column_by_name(join_columns) for _ in dataset_set]
+        elif isinstance(join_columns[0], (list, tuple, set)) and join_columns[0]:
+            join_columns = join_columns[0]
+        else:
+            raise ValueError('Invalid datasets: %s.' % repr(join_columns[0]))
+
+    infer_join = isinstance(next(iter(join_columns)), AbstractDataSet)
+    if infer_join:
+        if len(join_columns) == 1:
+            raise ValueError('You definitely want to provide more than one dataset to perform a join...')
+        common_col = set(join_columns[0].columns_name())
+
+        for dataset in join_columns[1:]:
+            if not isinstance(dataset, AbstractDataSet):
+                raise ValueError('If the first positional argument of join() is a dataset, all of them should be, but'
+                                 '%s is not.' % repr(dataset))
+            common_col.intersection_update(dataset.columns_name())
+            if not common_col:
+                break
+
+        if len(common_col) > 1:
+            raise ValueError('Provided datasets have more than one columns in common, '
+                             'please specify which one should be used to join of: %s' % common_col)
+        if common_col:
+            col = next(iter(common_col))
+            join_columns = [d.column_by_name(col) for d in join_columns]
+        else:
+            join_columns = [d.column_by_name('pk') for d in join_columns]
+
+    if not map_columns:
+        map_columns = OrderedDict()
+        for join_col in join_columns:
+            dataset = join_col.dataset
+            for c in dataset.col:
+                if c.name in map_columns and c is not join_col:
+                    raise ValueError('Column named %s appears in at least to datasets, you must specify a mapping.' % c)
+                map_columns[c.name] = c
+
+    return DataSetJoin(join_columns, **map_columns)
 
 
 ########################################################################################################################
@@ -995,15 +1043,13 @@ class DataSetApply(AbstractDataSet):
                                     of not-optional arguments of the function, the left-over arguments must be named as
                                     **dataset** columns.
 
-        :param cols_format: A dictionary mapping columns names to a tuple specifying (dtype, shape [, format]). For
+        :param format: A dictionary mapping columns names to a tuple specifying (dtype, shape [, format]). For
                                 every column not described here, its type and shape will be read after applying the
                                 function to the first row of the dataset. If a column name is given instead of a tuple,
                                 the type, shape and format will be copied from the **dataset** column. If None is given,
                                 a similar behaviour will be attempted based on the column name.
                             Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
                             format will be copied from **dataset**.
-
-        :param format: the format of columns returned by the function
 
         :param sequences_output: A dictionnary specifying the output that should be considered as sequences. The key
                                 maps the name of the output columns. The value is the number of undefined
@@ -1029,20 +1075,31 @@ class DataSetApply(AbstractDataSet):
         self._columns_mapping = {}
         self._sequence_p_columns = {}
 
+        def str_tuple(c):
+            if isinstance(c, str):
+                if c in parent_columns_name:
+                    return {c: c}
+                else:
+                    return {c: ()}
+            elif isinstance(c, tuple):
+                if all(_ in dataset.col for _ in c):
+                    return {c:c[:len(self.f_params)]}
+                else:
+                    return {c: ()}
+            return None
+
         if columns is None:
             columns = self.columns_name()
-        elif isinstance(columns, str):
-            if columns in parent_columns_name:
-                columns = {columns: columns}
-            else:
-                columns = (columns,)
-        if isinstance(columns, list):
-            columns = {_: _ if _ in parent_columns_name else None for _ in columns}
-        elif isinstance(columns, tuple):
-            if all(_ in dataset.col for _ in columns):
-                columns = {columns: columns[:len(self.f_params)]}
-            else:
-                columns = {columns: ()}
+        elif isinstance(columns, (str, tuple)):
+            columns = str_tuple(columns)
+        elif isinstance(columns, list):
+            col_dict = {}
+            for c in columns:
+                c = str_tuple(c)
+                if c is None:
+                    raise ValueError('Invalid column: %s' % c)
+                col_dict.update(c)
+            columns = col_dict
         if not isinstance(columns, dict):
             raise ValueError('Columns should be of the following type str, tuple, list, dict.'
                              '(type provided: %s)' % type(columns).__name__)
@@ -1127,38 +1184,42 @@ class DataSetApply(AbstractDataSet):
             raise ValueError("Cannot apply function simultaneously batch-wise and item-wise")
 
         # ---  INFER COLUMN SHAPE, TYPE and FORMAT ---
-        if cols_format == 'same':
-            cols_format = {c_own: None for c_own in self._single_col_mapping}
-        elif cols_format is None:
-            cols_format = {}
-        if not isinstance(cols_format, dict):
+        if format is None:
+            format = {}
+        elif isinstance(format, list):
+            own_c_sample = next(iter(self._columns_mapping.keys()))
+            if len(own_c_sample) != len(format):
+                raise ValueError('%i format was expected but only %i was provided.' % (len(own_c_sample), len(format)))
+            dict_format = {}
+            for own_c in self._columns_mapping.keys():
+                for f, c in zip(format, own_c):
+                    dict_format[c] = f
+            format = dict_format
+        elif isinstance(format, (tuple, str, DSColumnFormat.Base, DSColumn)):
+            format = {c_own: format for c_own in self._single_col_mapping}
+        elif not isinstance(format, (dict, OrderedDict)):
             raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
-                             % type(cols_format).__name__)
+                             % type(format).__name__)
 
-        if not isinstance(format, dict):
-            format = {_: format for _ in self._single_col_mapping.keys()}
-        elif not all(_ in self._single_col_mapping for _ in format.keys()):
-            format = {_: format for _ in self._single_col_mapping.keys()}
         format = {c: f if f != 'same' else dataset.column_by_name(c, False).format for c, f in format.items()}
 
         # Try to infer
         unknown_columns_format = []
         for c in self._single_col_mapping:
-            if c in cols_format:
+            if c in format:
                 # Check if format was given explicitly
-                col_format = cols_format[c]
-                if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name):
-                    # Try to infer format from homonym
-                    parent_column = dataset.column_by_name(c, False)
-                    if parent_column is not None:
-                        cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                col_format = format[c]
+                if col_format is None or (col_format == 'same' and 'same' not in dataset.columns_name()):
                     # Infer format from first parent
                     parent_column = dataset.column_by_name(self._single_col_mapping[c][0])
-                    col_format = format.get(c, parent_column.format)
-                    cols_format[c] = (parent_column.dtype, parent_column.shape, col_format)
-                elif isinstance(col_format, str) and col_format in dataset.columns_name:
+                    format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif isinstance(col_format, str) and col_format in dataset.columns_name():
                     parent_column = dataset.column_by_name(col_format)
-                    cols_format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                    format[c] = (parent_column.dtype, parent_column.shape, parent_column.format)
+                elif isinstance(col_format, DSColumn):
+                    format[c] = (col_format.dtype, col_format.shape, col_format.format)
+                elif isinstance(col_format, DSColumnFormat.Base):
+                    format[c] = (col_format.dtype, col_format.shape, col_format)
                 elif not isinstance(col_format, tuple) or len(col_format) not in (1, 2, 3):
                     unknown_columns_format.append(c)
             else:
@@ -1166,7 +1227,11 @@ class DataSetApply(AbstractDataSet):
 
         # Read format from function
         if self._n_factor is None and len(unknown_columns_format) == 0:
-            unknown_columns_format.append(list(self._single_col_mapping.keys())[0])
+            force_c = list(self._single_col_mapping.keys())[0]
+            unknown_columns_format.append(force_c)
+            f = format.pop(force_c)
+            if len(f) == 3:
+                format[force_c] = f[2]     # Set the format to DSColumnFormat to be consistent with real unknown columns.
 
         if unknown_columns_format:
             sample = dataset.read_one(0, columns=self.col_parents(unknown_columns_format), extract=False)
@@ -1181,7 +1246,9 @@ class DataSetApply(AbstractDataSet):
                 c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own)
 
                 # Read format
-                for c_name, c_sample in c_samples.items():
+                for c_id, (c_name, c_sample) in enumerate(c_samples.items()):
+                    parent_col = dataset.col[c_parent[c_id]] if len(c_parent) == len(c_samples) \
+                                                             else dataset.col[c_parent[0]]
                     if self._n_factor is None:
                         self._n_factor = c_sample.shape[0]
                         if self._n_factor == 1:
@@ -1191,15 +1258,31 @@ class DataSetApply(AbstractDataSet):
                                          % (c_sample.shape[0], c_name, self._n_factor))
 
                     c_sample = c_sample[0]
+                    format_info = format.get(c_name, None)
                     if isinstance(c_sample, np.ndarray):
-                        cols_format[c_name] = (c_sample.dtype, c_sample.shape) # We don't know yet if the output if a sequence
+                        col_format = (c_sample.dtype, c_sample.shape)
+                        if format_info:
+                            format[c_name] = col_format + (format_info,)
+                        elif c_sample.dtype == parent_col.dtype and c_sample.shape == parent_col.shape:
+                            format[c_name] = col_format + (parent_col.format,)
+                        else:
+                            format[c_name] = col_format
                     else:
-                        cols_format[c_name] = (np.dtype(type(c_sample)),)
+                        if type(c_sample) == str:
+                            format[c_name] = 'str'
+                        else:
+                            dtype = np.dtype(type(c_sample))
+                            if format_info:
+                                format[c_name] = (dtype, (), format_info)
+                            elif c_sample.dtype == parent_col.dtype and parent_col.shape == ():
+                                format[c_name] = (dtype, (), parent_col.format,)
+                            else:
+                                format[c_name] = (dtype,)
                     if c_name in unknown_columns_format:
                         unknown_columns_format.remove(c_name)
 
         # Apply the format
-        for c_name, c_format in cols_format.items():
+        for c_name, c_format in format.items():
             col = self.column_by_name(c_name)
             shape = c_format[1] if len(c_format) > 1 else ()
             if sequences_output: # Provided by the user
@@ -1364,10 +1447,10 @@ class DataSetApply(AbstractDataSet):
 
 
 class DataSetApplyCV(DataSetApply):
-    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, cols_format=None, n_factor=None,
+    def __init__(self, dataset, function, columns=None, remove_parent_columns=True, format=None, n_factor=None,
                  name='apply'):
         super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns, batchwise=False,
-                                             remove_parent_columns=remove_parent_columns, cols_format=cols_format,
+                                             remove_parent_columns=remove_parent_columns, format=format,
                                              n_factor=n_factor, name=name)
 
     def compute_f(self, args, rkeys):
@@ -1404,12 +1487,12 @@ class DataSetApplyCV(DataSetApply):
                 else:
                     r[rkeys[0]] += f_result  # return [row1, row2, row3, ...]
             else:
-                f_result = list(zip(f_result))
+                f_result = list(zip(*f_result))
                 if len(f_result) != len(rkeys):
                     raise ValueError('The function returned %i columns but %i was expected.'
                                      % (len(f_result), len(rkeys)))
                 for c_name, c_data in zip(rkeys, f_result):
-                    r[c_name].append(np.stack(c_data))  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+                    r[c_name] += c_data  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
 
         f_result = {n: np.stack(d) for n, d in r.items()}
         r = {}

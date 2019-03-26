@@ -9,6 +9,7 @@ from re import search
 from .dataset import AbstractDataSet
 from ..j_utils import log
 from ..j_utils.function import match_params
+from ..j_utils.collections import if_none
 
 
 ########################################################################################################################
@@ -26,6 +27,7 @@ class FilesCollection(AbstractDataSet):
 
     def __init__(self, path, read_function, regexp='',
                  remove_extension=True, filename_regexp=False, recursive=True,
+                 data_col_name='data',
                  name='FileCollection',
                  is_seq=False,
                  seq_files_type='multi',
@@ -105,9 +107,14 @@ class FilesCollection(AbstractDataSet):
                 shape = sample.shape[1:]
             else:
                 shape = sample.shape
-            self.add_column('data', shape, sample.dtype, undef_dims=int(self.is_seq))
+            self.add_column(data_col_name, shape, sample.dtype, undef_dims=int(self.is_seq))
         else:
-            self.add_column('data', (), type(sample))
+            self.add_column(data_col_name, (), type(sample))
+        self._data_col_name = data_col_name
+
+    @property
+    def data_col(self):
+        return self.column_by_name(self._data_col_name)
 
     def update_files(self):
         """
@@ -133,6 +140,7 @@ class FilesCollection(AbstractDataSet):
         else:
             for root, dirs, files in walk(self.path, topdown=True):
                 abs_root = abspath(root)
+                root = root[len(self.path):]
                 for file in files:
                     filename = file if self.filename_regexp else normpath(join(root, file))
                     if isinstance(self.regexp, str):
@@ -140,7 +148,7 @@ class FilesCollection(AbstractDataSet):
                             continue
                     elif callable(self.regexp):
                         if not match_params(self.regexp, args=[filename], filename=file, path=root,
-                                            filepath=normpath(join(abs_root, file)),  file=normpath(join(root, file))):
+                                            filepath=normpath(join(abs_root, file)),  file=join(root, file)):
                             continue
                     files_list.append(normpath(join(abs_root, file)))
                 if not self.recursive:
@@ -161,6 +169,8 @@ class FilesCollection(AbstractDataSet):
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
 
+            data_name = self._data_col_name
+
             for i in range(n):
                 path = self._files[i+i_global]
                 pk = path[self.len_path:]
@@ -173,25 +183,25 @@ class FilesCollection(AbstractDataSet):
                 if 'name' in r:
                     r[i, 'name'] = name
 
-                if 'data' in r:
+                if data_name in r:
                     sample = self._read_files(path)
                     if sample is not None:
-                        if len(self.columns.data.shape):
+                        if len(self.data_col.shape):
                             if self.is_seq:
                                 if self.trace_frame:
-                                    r[i, 'data'] = sample[0]
+                                    r[i, data_name] = sample[0]
                                     r[i, 'frames'] = sample[1]
                                 else:
-                                    r[i, 'data'] = sample
+                                    r[i, data_name] = sample
                             else:
                                 shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
-                                r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
+                                r[i, data_name][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
                             if self.trace_frame:
-                                r[i, 'data'] = sample[0]
+                                r[i, data_name] = sample[0]
                                 r[i, 'frames'] = sample[1]
                             else:
-                                r[i, 'data'] = sample
+                                r[i, data_name] = sample
 
                         del sample
             r = None
@@ -226,7 +236,7 @@ class FilesCollection(AbstractDataSet):
 
 ########################################################################################################################
 class ImagesCollection(FilesCollection):
-    def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
+    def __init__(self, path, name='ImagesCollection', data_col_name='data', regexp=image_extensions(), filename_regexp=False, recursive=True,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
                  is_seq=False, open_func=None,
                  seq_files_type="multi",
@@ -284,6 +294,8 @@ class ImagesCollection(FilesCollection):
         self.r_interp = cv2.INTER_AREA
         if isinstance(reshape, float):
             self.r_f = (reshape, reshape)
+        elif isinstance(reshape, int):
+            self.r_shape = (reshape, reshape)
         elif isinstance(reshape, tuple):
             h, w = reshape
             if w <= 1. and h <= 1. and (w != 1 or h != 1):
@@ -303,6 +315,7 @@ class ImagesCollection(FilesCollection):
                                                recursive=recursive,
                                                regexp=regexp,
                                                filename_regexp=filename_regexp,
+                                               data_col_name=data_col_name,
                                                name=name, is_seq=is_seq,
                                                seq_files_type=seq_files_type,
                                                trace_frame=trace_frame)
@@ -330,10 +343,11 @@ class ImagesCollection(FilesCollection):
 
         # --- RESHAPE ---
         if self.file_reshape is not None:
-            if img.ndim == 3:
+            if img.ndim==3:
                 h, w, c = img.shape
             else:
                 h, w = img.shape
+                c = 1
             if self.r_shape is None:
                 self.r_shape = (int(h * self.r_f[1]), int(w * self.r_f[0]))
             original_ratio = h / w
@@ -452,20 +466,33 @@ class DataSetPandaDF(AbstractDataSet):
 
 
 ########################################################################################################################
-def load_excel(path, mapping=None, **kwargs):
+def load_excel(*same_column, **column_mapping):
+    """ First positional argument should be the path to the excel file.
+        Every other arguments describe the column mapping.
+    """
+    path = same_column[0]
     df = pandas.read_excel(path)
-    if mapping is not None:
-        kwargs.update(mapping)
-    return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+
+    same_column = same_column[1:]
+    for c in same_column:
+        column_mapping[c] = c
+
+    return DataSetPandaDF(df, mapping=column_mapping, name=basename(path))
 
 
 ########################################################################################################################
-def load_csv(path, mapping=None, **kwargs):
+def load_csv(*same_column, **column_mapping):
+    """ First positional argument should be the path to the csv file.
+        Every other arguments describe the column mapping.
+    """
+    path = same_column[0]
     df = pandas.read_csv(path)
-    if mapping is not None:
-        kwargs.update(mapping)
 
-    return DataSetPandaDF(df, mapping=kwargs, name=basename(path))
+    same_column = same_column[1:]
+    for c in same_column:
+        column_mapping[c] = c
+
+    return DataSetPandaDF(df, mapping=column_mapping, name=basename(path))
 
 
 ########################################################################################################################
@@ -477,24 +504,29 @@ def from_pandas(df, mapping=None, **kwargs):
 
 
 ########################################################################################################################
-def images(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+def images(path, data_col_name=None, name=None, regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+    if name is None:
+        name = data_col_name
+    name = if_none(name, basename(path))
+    data_col_name = if_none(data_col_name, 'data')
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize, is_seq=False,
-                            keep_proportion=keep_proportion)
+                            keep_proportion=keep_proportion, data_col_name=data_col_name)
 
 ########################################################################################################################
-def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
+def images_sequences(path, data_col_name=None, name=None, regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None,
                      normalize=True,
                      keep_proportion=False,
                      open_func=None,
                      seq_files_type="multi",
                      trace_frame=False):
+    name = if_none(name, basename(path))
+    data_col_name = if_none(data_col_name, 'data')
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
-                            keep_proportion=keep_proportion,
+                            keep_proportion=keep_proportion, data_col_name=data_col_name,
                             is_seq=True,
                             open_func=open_func,
                             seq_files_type=seq_files_type,
-                            trace_frame=trace_frame)
