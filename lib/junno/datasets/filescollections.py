@@ -190,7 +190,8 @@ class FilesCollection(AbstractDataSet):
                             if self.is_seq:
                                 if self.trace_frame:
                                     r[i, data_name] = sample[0]
-                                    r[i, 'frames'] = sample[1]
+                                    if 'frames' in r:
+                                        r[i, 'frames'] = sample[1]
                                 else:
                                     r[i, data_name] = sample
                             else:
@@ -199,7 +200,8 @@ class FilesCollection(AbstractDataSet):
                         else:
                             if self.trace_frame:
                                 r[i, data_name] = sample[0]
-                                r[i, 'frames'] = sample[1]
+                                if 'frames' in r:
+                                    r[i, 'frames'] = sample[1]
                             else:
                                 r[i, data_name] = sample
 
@@ -529,4 +531,4 @@ def images_sequences(path, data_col_name=None, name=None, regexp=image_extension
                             keep_proportion=keep_proportion, data_col_name=data_col_name,
                             is_seq=True,
                             open_func=open_func,
-                            seq_files_type=seq_files_type,
+                            seq_files_type=seq_files_type, trace_frame=trace_frame)

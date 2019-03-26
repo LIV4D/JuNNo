@@ -1333,7 +1333,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(dataset=self, subgen=subgen, indices=indices, rng=rng, name=name)
 
-    def apply(self, columns, function, cols_format=None, format=None, n_factor='auto', batchwise=False, keep_parent=False,
+    def apply(self, columns, function, format=None, n_factor='auto', batchwise=False, keep_parent=False,
               name=None, item_wise=False):
         if name is None:
             name = getattr(function, '__name__', 'apply')
@@ -1344,7 +1344,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         from .datasets_core import DataSetApply
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
-                            remove_parent_columns=not keep_parent, cols_format=cols_format, batchwise=batchwise,
+                            remove_parent_columns=not keep_parent, batchwise=batchwise,
                             item_wise=item_wise)
 
     def apply_cv(self, columns, function, format=None, n_factor=1, keep_parent=False, name=None):
@@ -2113,7 +2113,12 @@ class DSColumnFormat:
                     ax.set_yticks([])
                     images = []
                     # data = data.reshape((self.undef_dims, c//self.undef_dims, h, w))
-                    for channel_data in data:
+
+                    for i, channel_data in enumerate(data):
+                        time_text = plt.text(0.1, 0.95, '', horizontalalignment='left', verticalalignment='top',
+                                             color='r')
+                        time_text.set_bbox(dict(facecolor='w', alpha=0.5, edgecolor='red'))
+
                         channel_data = np.squeeze(channel_data)
                         html_height = self.html_height(h) if callable(self.html_height) else self.html_height
                         th = html_height
@@ -2124,7 +2129,8 @@ class DSColumnFormat:
                             plt_im = plt.imshow(channel_data, animated=True, cmap='gray')
                         else:
                             plt_im = plt.imshow(channel_data.transpose((1,2,0)), animated=True)
-                        images.append([plt_im])
+                        time_text.set_text('%i/%i' %(i+1,data.shape[0]))
+                        images.append([plt_im, time_text])
                     ani = anim.ArtistAnimation(fig, images, interval=150, blit=True)
                     return ani.to_html5_video(embed_limit=5) # TODO It would be better to remove the controls tag and implements let the fullscreen version acts as it should.
 
@@ -2241,6 +2247,7 @@ class DSColumnFormat:
     def auto_format(col, info=None):
         dtype = col.dtype
         shape = col.shape
+        undef_dims = col.undef_dims
 
         if isinstance(info, DSColumnFormat.Base):
             return info.copy(dtype, shape)
