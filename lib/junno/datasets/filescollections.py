@@ -27,7 +27,9 @@ class FilesCollection(AbstractDataSet):
     def __init__(self, path, read_function, regexp='',
                  remove_extension=True, filename_regexp=False, recursive=True,
                  name='FileCollection',
-                 is_seq=False):
+                 is_seq=False,
+                 seq_files_type='multi',
+                 keep_frame_track=False):
         """
         :param path: Path of the folder to explore
         :param read_function: The function called to read data from a files.
@@ -55,7 +57,19 @@ class FilesCollection(AbstractDataSet):
         self.recursive = recursive
         self.remove_extension = remove_extension
         self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
+        self.seq_files_type = seq_files_type
+        self.keep_frame_track = keep_frame_track
+
         if self.is_seq:
+            if self.seq_files_type == 'single':
+                if self.open_func is None:
+                    raise ValueError("With option 'single' given to seq_files_type argument,"
+                                     " you must provide an option function to open_func argument")
+                if self.keep_frame_track:
+                    raise ValueError(
+                        "With option 'single' given to seq_files_type argument, it is not possible to track the"
+                        "origin of each single frame in the sequence")
+
             self._sequences_sizes = np.zeros(shape=(), dtype=int)
 
         self.update_files()
@@ -80,7 +94,14 @@ class FilesCollection(AbstractDataSet):
         self.len_path += 1 if self.len_path else 0
 
         self.add_column('name', (), np.dtype(('U', 100)))
+
+        if self.keep_frame_track:
+            self.add_column('frames', (), list)
+
         sample = self._read_files(self._files[0])
+        if self.keep_frame_track:
+            sample = sample[0]
+
         if type(sample) == np.ndarray:
             if is_seq:
                 shape = sample.shape[1:]
@@ -99,12 +120,16 @@ class FilesCollection(AbstractDataSet):
         if self.is_seq:
             seq_size_list = []
             for dirs in listdir(self.path):
-                files_list.append(dirs) # TODO implement regexp function for sequences
-                seq_size_list.append(self.get_seqs_size(join(self.path, dirs))) # TODO implement this function
-                self._files = np.asarray(files_list, dtype='str')
-                sorted_indices = np.argsort(self._files)
-                self._files.sort()
-                self._sequences_sizes = np.asarray(seq_size_list, dtype=int)[sorted_indices]
+                files_list.append(dirs)  # TODO implement regexp function for sequences
+                if self.seq_files_type == 'multi':
+                    seq_size_list.append(self.get_seqs_size(join(self.path, dirs)))
+                else:
+                    seq_size_list.append(1)
+
+            self._files = np.asarray(files_list, dtype='str')
+            sorted_indices = np.argsort(self._files)
+            self._files.sort()
+            self._sequences_sizes = np.asarray(seq_size_list, dtype=int)[sorted_indices]
 
 
         else:
@@ -149,17 +174,28 @@ class FilesCollection(AbstractDataSet):
                 r[i, 'pk'] = pk
                 if 'name' in r:
                     r[i, 'name'] = name
+
                 if 'data' in r:
                     sample = self._read_files(path)
+                    print(sample)
                     if sample is not None:
                         if len(self.columns.data.shape):
                             if self.is_seq:
-                                r[i, 'data'] = sample
+                                if self.keep_frame_track:
+                                    r[i, 'data'] = sample[0]
+                                    r[i, 'frames'] = sample[1]
+                                else:
+                                    r[i, 'data'] = sample
                             else:
                                 shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
                                 r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
-                            r[i, 'data'] = sample
+                            if self.keep_frame_track:
+                                r[i, 'data'] = sample[0]
+                                r[i, 'frames'] = sample[1]
+                            else:
+                                r[i, 'data'] = sample
+
                         del sample
             r = None
 
@@ -195,7 +231,9 @@ class FilesCollection(AbstractDataSet):
 class ImagesCollection(FilesCollection):
     def __init__(self, path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=True,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
-                 is_seq=False, open_func=None, seq_files_type="multi"):
+                 is_seq=False, open_func=None,
+                 seq_files_type="multi",
+                 keep_frame_track=False):
         """
 
         :param path: Path of the folder to explore
@@ -260,21 +298,17 @@ class ImagesCollection(FilesCollection):
             self.r_f = reshape.get('f', self.r_f)
             self.r_interp = reshape.get('interp', self.r_interp)
 
-        self.seq_files_type = seq_files_type
-
         # Finalize
         self.normalize = normalize
         self.open_func = open_func
-
-        if self.seq_files_type=='single' and self.open_func is None:
-            raise ValueError("With option 'single' given to seq_files_type argument, you must provide an option function"
-                             "to open_func argument")
 
         super(ImagesCollection, self).__init__(path=path, read_function=self.read_func if not is_seq else self.read_sequence,
                                                recursive=recursive,
                                                regexp=regexp,
                                                filename_regexp=filename_regexp,
-                                               name=name, is_seq=is_seq)
+                                               name=name, is_seq=is_seq,
+                                               seq_files_type=seq_files_type,
+                                               keep_frame_track=keep_frame_track)
 
     def __str__(self):
         return self.dataset_name + ' ' + self.path
@@ -337,7 +371,6 @@ class ImagesCollection(FilesCollection):
         else:
             raise NotImplementedError
 
-
     def read_func(self, path):
         # --- READ ---
         if self.open_func is None:
@@ -357,17 +390,15 @@ class ImagesCollection(FilesCollection):
         :return:
         """
         sequence = []
-        if self.seq_files_type=='multi':
+        if self.seq_files_type == 'multi':
             folder = join(self.path, path)
             files = sorted(listdir(folder))
             for file in files:
                 sequence.append(self.read_func(join(folder, file)))
-        elif self.seq_files_type=='single':
-            folder = join(self.path, path)
-            files = sorted(listdir(folder))
-            if len(files) != 1:
-                raise ValueError("Found more than one sequence in given folder with option 'single'")
-            path = join(folder, files[0])
+            if self.keep_frame_track:
+                return [np.asarray(sequence), files]
+
+        elif self.seq_files_type == 'single':
             seqs = self.open_func(path)
             for _ in seqs:
                 sequence.append(self.preprocessing(_))
@@ -375,6 +406,7 @@ class ImagesCollection(FilesCollection):
             raise ValueError('Unknown option for reading sequences files')
 
         return np.asarray(sequence)
+
 
     def get_seqs_size(self, dir):
         return len(listdir(dir))
@@ -454,10 +486,18 @@ def images(path, name='ImagesCollection', regexp=image_extensions(), filename_re
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize, is_seq=False,
                             keep_proportion=keep_proportion)
 
+########################################################################################################################
 def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), filename_regexp=False, recursive=False,
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None,
-                     normalize=True, keep_proportion=False, open_func=None, seq_files_type="multi"):
+                     normalize=True,
+                     keep_proportion=False,
+                     open_func=None,
+                     seq_files_type="multi",
+                     keep_frame_track=False):
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
-                            keep_proportion=keep_proportion, is_seq=True, open_func=open_func,
-                            seq_files_type=seq_files_type)
+                            keep_proportion=keep_proportion,
+                            is_seq=True,
+                            open_func=open_func,
+                            seq_files_type=seq_files_type,
+                            keep_frame_track=keep_frame_track)
