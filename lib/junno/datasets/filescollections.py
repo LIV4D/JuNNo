@@ -29,7 +29,7 @@ class FilesCollection(AbstractDataSet):
                  name='FileCollection',
                  is_seq=False,
                  seq_files_type='multi',
-                 keep_frame_track=False):
+                 trace_frame=False):
         """
         :param path: Path of the folder to explore
         :param read_function: The function called to read data from a files.
@@ -58,16 +58,16 @@ class FilesCollection(AbstractDataSet):
         self.remove_extension = remove_extension
         self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
         self.seq_files_type = seq_files_type
-        self.keep_frame_track = keep_frame_track
+        self.trace_frame = trace_frame
 
         if self.is_seq:
             if self.seq_files_type == 'single':
                 if self.open_func is None:
                     raise ValueError("With option 'single' given to seq_files_type argument,"
                                      " you must provide an option function to open_func argument")
-                if self.keep_frame_track:
+                if self.trace_frame:
                     raise ValueError(
-                        "With option 'single' given to seq_files_type argument, it is not possible to track the"
+                        "With option 'single' given to seq_files_type argument, it is not possible to trace the"
                         "origin of each single frame in the sequence")
 
             self._sequences_sizes = np.zeros(shape=(), dtype=int)
@@ -95,11 +95,11 @@ class FilesCollection(AbstractDataSet):
 
         self.add_column('name', (), np.dtype(('U', 100)))
 
-        if self.keep_frame_track:
+        if self.trace_frame:
             self.add_column('frames', (), list)
 
         sample = self._read_files(self._files[0])
-        if self.keep_frame_track:
+        if self.trace_frame:
             sample = sample[0]
 
         if type(sample) == np.ndarray:
@@ -177,11 +177,10 @@ class FilesCollection(AbstractDataSet):
 
                 if 'data' in r:
                     sample = self._read_files(path)
-                    print(sample)
                     if sample is not None:
                         if len(self.columns.data.shape):
                             if self.is_seq:
-                                if self.keep_frame_track:
+                                if self.trace_frame:
                                     r[i, 'data'] = sample[0]
                                     r[i, 'frames'] = sample[1]
                                 else:
@@ -190,7 +189,7 @@ class FilesCollection(AbstractDataSet):
                                 shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
                                 r[i, 'data'][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
-                            if self.keep_frame_track:
+                            if self.trace_frame:
                                 r[i, 'data'] = sample[0]
                                 r[i, 'frames'] = sample[1]
                             else:
@@ -233,7 +232,7 @@ class ImagesCollection(FilesCollection):
                  imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
                  is_seq=False, open_func=None,
                  seq_files_type="multi",
-                 keep_frame_track=False):
+                 trace_frame=False):
         """
 
         :param path: Path of the folder to explore
@@ -308,7 +307,7 @@ class ImagesCollection(FilesCollection):
                                                filename_regexp=filename_regexp,
                                                name=name, is_seq=is_seq,
                                                seq_files_type=seq_files_type,
-                                               keep_frame_track=keep_frame_track)
+                                               trace_frame=trace_frame)
 
     def __str__(self):
         return self.dataset_name + ' ' + self.path
@@ -395,8 +394,8 @@ class ImagesCollection(FilesCollection):
             files = sorted(listdir(folder))
             for file in files:
                 sequence.append(self.read_func(join(folder, file)))
-            if self.keep_frame_track:
-                return [np.asarray(sequence), files]
+            if self.trace_frame:
+                return (np.asarray(sequence), files)
 
         elif self.seq_files_type == 'single':
             seqs = self.open_func(path)
@@ -493,11 +492,11 @@ def images_sequences(path, name='ImagesCollection', regexp=image_extensions(), f
                      keep_proportion=False,
                      open_func=None,
                      seq_files_type="multi",
-                     keep_frame_track=False):
+                     trace_frame=False):
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize,
                             keep_proportion=keep_proportion,
                             is_seq=True,
                             open_func=open_func,
                             seq_files_type=seq_files_type,
-                            keep_frame_track=keep_frame_track)
+                            trace_frame=trace_frame)
