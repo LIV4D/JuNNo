@@ -507,14 +507,16 @@ def from_pandas(df, mapping=None, **kwargs):
 
 ########################################################################################################################
 def images(path, data_col_name=None, name=None, regexp=image_extensions(), filename_regexp=False, recursive=False,
-                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False):
+                 imread_flags=cv2.IMREAD_UNCHANGED, crop=None, reshape=None, normalize=True, keep_proportion=False,
+           open_func=None,):
     if name is None:
         name = data_col_name
     name = if_none(name, basename(path))
     data_col_name = if_none(data_col_name, 'data')
     return ImagesCollection(path=path, name=name, regexp=regexp, filename_regexp=filename_regexp, recursive=recursive,
                             imread_flags=imread_flags, crop=crop, reshape=reshape, normalize=normalize, is_seq=False,
-                            keep_proportion=keep_proportion, data_col_name=data_col_name)
+                            keep_proportion=keep_proportion, data_col_name=data_col_name,
+                            open_func=open_func)
 
 ########################################################################################################################
 def images_sequences(path, data_col_name=None, name=None, regexp=image_extensions(), filename_regexp=False, recursive=False,
