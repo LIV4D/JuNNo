@@ -1234,7 +1234,6 @@ class DataSetApply(AbstractDataSet):
                 format[force_c] = f[2]     # Set the format to DSColumnFormat to be consistent with real unknown columns.
 
         if unknown_columns_format:
-            print(unknown_columns_format, self.col_parents(unknown_columns_format))
             sample = dataset.read_one(0, columns=self.col_parents(unknown_columns_format), extract=False)
             while unknown_columns_format:
                 unkown_col = unknown_columns_format[0]
@@ -1301,7 +1300,6 @@ class DataSetApply(AbstractDataSet):
                         break
             col._dtype = c_format[0]
             col._shape = shape[col.undef_dims:]
-            print(format.get(c_name, None))
             col.format = c_format[2] if len(c_format) > 2 else format.get(c_name, None)[0]
 
     def _generator(self, gen_context):
