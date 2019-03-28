@@ -1029,7 +1029,7 @@ class DataSetSmartGenerator:
         return self._context.parallelism
 
     def __len__(self):
-        return np.ceil((self.stop_id-self.current_id)/self.n)
+        return int(np.ceil((self.stop_id-self.current_id)/self.n))
 
     @property
     def ncore(self):
