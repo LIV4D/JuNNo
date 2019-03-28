@@ -917,7 +917,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             self.export(cb=write_cb, start=start, stop=stop, columns=exported_columns, n=1,
                         determinist=determinist, ncore=ncore)
 
-    def to_pytorch_dataset(self, ncore=1, intime='process'):
+    def to_pytorch_dataset(self, ncore=1, intime='process', extract_columns=None):
         from torch.utils.data import Dataset
 
         class CustomDataLoader(Dataset):
@@ -932,7 +932,12 @@ class AbstractDataSet(metaclass=ABCMeta):
                 if self._gen is None:
                     self._gen = self._dataset.generator(ncore=ncore, intime=intime)
                 try:
-                    return self._gen.next()
+                    if extract_columns is None:
+                        return self._gen.next()
+                    else:
+                        r = self._gen.next()
+                        return tuple(r[_] for _ in extract_columns)
+
                 except StopIteration:
                     raise IndexError
 
