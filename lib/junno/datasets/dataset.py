@@ -1027,7 +1027,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         def conf_mat(pred, true, weight):
             if one_hot:
                 pred = np.argmax(pred, axis=0)
-            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
+            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight.flatten(),
                                                labels=conf_labels)
         if isinstance(true, DSColumn):
             if isinstance(weight, DSColumn):

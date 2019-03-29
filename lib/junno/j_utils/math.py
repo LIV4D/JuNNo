@@ -302,7 +302,7 @@ class ROCCurve(np.ndarray):
         true = true[idx_sorted]
         score = score[idx_sorted]
         if sample_weight is not None:
-            sample_weight = sample_weight[idx_sorted]
+            sample_weight = sample_weight.flatten()[idx_sorted]
         else:
             sample_weight = 1.
 
@@ -310,7 +310,7 @@ class ROCCurve(np.ndarray):
         idx_threshold = np.r_[idx_threshold, true.size - 1]
 
         tpr = np.cumsum(true*sample_weight)[idx_threshold]
-        if sample_weight == 1.:
+        if isinstance(sample_weight, float) and sample_weight == 1.:
             fpr = 1 + idx_threshold - tpr
         else:
             fpr = np.cumsum(np.invert(true)*sample_weight)[idx_threshold]
