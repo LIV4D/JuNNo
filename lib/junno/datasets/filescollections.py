@@ -100,7 +100,6 @@ class FilesCollection(AbstractDataSet):
 
         if self.trace_frame:
             self.add_column('frames', (1,), np.dtype(('U', 100)), undef_dims=1)
-            sample = sample[0]
 
         if type(sample) == np.ndarray:
             if is_seq:
@@ -135,7 +134,6 @@ class FilesCollection(AbstractDataSet):
             sorted_indices = np.argsort(self._files)
             self._files.sort()
             self._sequences_sizes = np.asarray(seq_size_list, dtype=int)[sorted_indices]
-
 
         else:
             for root, dirs, files in walk(self.path, topdown=True):
@@ -183,27 +181,21 @@ class FilesCollection(AbstractDataSet):
                 if 'name' in r:
                     r[i, 'name'] = name
 
+                if self.trace_frame:
+                    if 'frames' in r:
+                        r[i, 'frames'] = self._get_sequences_frames(path)
+
                 if data_name in r:
                     sample = self._read_files(path)
                     if sample is not None:
                         if len(self.data_col.shape):
                             if self.is_seq:
-                                if self.trace_frame:
-                                    r[i, data_name] = sample[0]
-                                    if 'frames' in r:
-                                        r[i, 'frames'] = sample[1]
-                                else:
-                                    r[i, data_name] = sample
+                                r[i, data_name] = sample
                             else:
                                 shape = [min(s1, s2) for s1, s2 in zip(sample.shape, self.columns.data.shape)]
                                 r[i, data_name][tuple(slice(_) for _ in shape)] = sample[tuple(slice(_) for _ in shape)]
                         else:
-                            if self.trace_frame:
-                                r[i, data_name] = sample[0]
-                                if 'frames' in r:
-                                    r[i, 'frames'] = sample[1]
-                            else:
-                                r[i, data_name] = sample
+                            r[i, data_name] = sample
 
                         del sample
             r = None
@@ -230,6 +222,12 @@ class FilesCollection(AbstractDataSet):
         else:
             raise NotImplementedError
         return sample
+
+    def _get_sequences_frames(self, path):
+        folder = join(self.path, path)
+        files = sorted(listdir(folder))
+        return np.expand_dims(np.asarray(files),1)
+
 
     @property
     def size(self):
@@ -408,8 +406,6 @@ class ImagesCollection(FilesCollection):
             files = sorted(listdir(folder))
             for file in files:
                 sequence.append(self.read_func(join(folder, file)))
-            if self.trace_frame:
-                return (np.asarray(sequence), np.expand_dims(np.asarray(files),1))
 
         elif self.seq_files_type == 'single':
             seqs = self.open_func(path)
