@@ -354,11 +354,10 @@ class DataSetPatches(AbstractDataSet):
 
         if not self._cache_center:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=gen_context.start_id//self._n, stop=gen_context.stop_id//self._n)
+                                        start=gen_context.start_id//self._n)
         else:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=self._saved_patch_center[gen_context.start_id, 0],
-                                        stop=self._saved_patch_center[gen_context.stop_id, 0])
+                                        start=self._saved_patch_center[gen_context.start_id, 0])
 
         if not self._cache_center:
             if gen_context.determinist:
@@ -386,8 +385,8 @@ class DataSetPatches(AbstractDataSet):
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
                         except StopIteration:
-                            log.error('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
-                                       %(self._parent, i_global, i_global/n, gen_current_index))
+                            log.error('Reading from %s failed (i_global=%i, i_global/n=%i, gen.id=%i, gen.last_id=%i)'
+                                      % (self._parent, i_global, i_global/self._n, gen_current_index, gen.stop_id))
                             raise StopIteration('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
                                                %(self._parent, i_global, i_global/n, gen_current_index) )
                     gen_current_index = result.start_id
@@ -401,8 +400,7 @@ class DataSetPatches(AbstractDataSet):
                     img_id, center_x, center_y = saved_centers[i+i_global]
                     while result is None or img_id != result.start_id:
                         if img_id != gen.current_id:
-                            gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns,
-                                                        stop=saved_centers[gen_context.stop_id, 0])
+                            gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns)
                         try:
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
@@ -454,6 +452,8 @@ class DataSetPatches(AbstractDataSet):
             r = None
             yield weakref
             i_global += n
+
+        del gen
 
     def is_patch_invariant(self):
         return self._is_patch_invariant

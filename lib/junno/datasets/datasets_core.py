@@ -62,6 +62,7 @@ class PyTableDataSet(AbstractDataSet):
 
         for i in sorted(col_descr.keys()):
             col_name, col_shape, col_dtype = col_descr[i]
+            col_dtype = np.dtype(str(col_dtype).replace('S', 'U'))
             self.add_column(col_name, col_shape, col_dtype)
 
         self._sorted_rows = None
@@ -216,6 +217,31 @@ class PyTableDataSet(AbstractDataSet):
         d = PyTableDataSet(self.pytable, where=where, sortby=sortby, name=self.dataset_name)
         return d
 
+
+def load_hdf(path, name=None):
+    if isinstance(path, str):
+        path_split = path.split(':')
+        if len(path_split) == 1:
+            path = path_split[0]
+            table_name = 'dataset'
+        elif len(path_split) == 2:
+            path, table_name = path_split
+        else:
+            raise ValueError('path should be formated as "PATH:TABLE_NAME"')
+
+    if name is None:
+        name = table_name
+
+    from ..j_utils.path import open_pytable
+    hdf_f = open_pytable(path)
+    if not table_name.startswith('/'):
+        table_name = '/' + table_name
+    table_path, table_name = table_name.rsplit('/', maxsplit=1)
+    if not table_path:
+        table_path = '/'
+
+    hdf_t = hdf_f.get_node(table_path, table_name, 'Table')
+    return PyTableDataSet(hdf_t, name=name)
 
 ########################################################################################################################
 class DataSetSubset(AbstractDataSet):
@@ -1160,8 +1186,6 @@ class DataSetApply(AbstractDataSet):
             raise ValueError("columns_type_shape should be of type dict (provided type: %s)"
                              % type(format).__name__)
 
-        format = {c: f if f != 'same' else dataset.column_by_name(c, False).format for c, f in format.items()}
-
         # Try to infer
         unknown_columns_format = []
         for c in self._single_col_mapping:
@@ -1246,12 +1270,15 @@ class DataSetApply(AbstractDataSet):
             if c_format == "str":
                 col._dtype = np.dtype('O')
                 col._is_text = True
+                col.format = DSColumnFormat.Text()
             else:
                 col._dtype = c_format[0]
                 col._shape = c_format[1] if len(c_format) > 1 else ()
                 if len(c_format) > 2:
                     col.format = c_format[2]
                     col.format = c_format[2]
+                else:
+                    col.format = None
 
     def _generator(self, gen_context):
         i_global = gen_context.start_id
@@ -1402,10 +1429,11 @@ class DataSetApplyCV(DataSetApply):
                                              n_factor=n_factor, name=name)
 
     def compute_f(self, args, rkeys):
-
         args_n = args[0].shape[0]
-
         r = {_: [] for _ in rkeys}
+
+        final_dtype = None
+
         for i in range(args_n):
             kwargs = {}
             for name, a in zip(self.f_params, args):
@@ -1413,8 +1441,10 @@ class DataSetApplyCV(DataSetApply):
                 if isinstance(a, np.ndarray):
                     if a.ndim == 3 and a.shape[0] in (1, 3):
                         a = a.transpose((1, 2, 0))
-                    if 'float' in str(a.dtype):
-                        a = (a * 255).astype(np.uint8)
+                    if 'float' in str(a.dtype) or 'bool' in str(a.dtype):
+                        final_dtype = a.dtype
+                        a = a.astype(np.float, copy=False)
+                        a = (a * 255.).astype(np.uint8)
                 kwargs[name] = a
             f_result = self._f(**kwargs)
             del kwargs
@@ -1447,8 +1477,8 @@ class DataSetApplyCV(DataSetApply):
         for k, a in f_result.items():
             if isinstance(a, np.ndarray) and a.ndim == 4 and a.shape[3] in (1, 3):
                 a = a.transpose((0, 3, 1, 2))
-            if a.dtype == np.uint8:
-                a = a.astype(np.float)/255
+            if a.dtype == np.uint8 and final_dtype:
+                a = (a.astype(np.float)/255).astype(final_dtype, copy=False)
             r[k] = a
 
         return r
