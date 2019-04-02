@@ -1,9 +1,11 @@
 import pandas
-import scipy.interpolate
 import numpy as np
+from copy import copy
+from os.path import exists
 from ..j_utils.string import str2time, time2str
-from ..j_utils.path import format_filepath
-from collections import OrderedDict
+from ..j_utils.path import format_filepath, open_pytable
+from ..j_utils.collections import OrderedDict, AttributeDict, df_empty
+from ..datasets.dataset import DSColumnFormat
 
 
 class History:
@@ -11,122 +13,327 @@ class History:
     Store dataseries by iteration and epoch.
     Data are index through timestamp: the number of iteration since the first iteration of the first epoch.
     """
-    def __init__(self):
-        self._timeline_series = OrderedDict()
-        self._timestamps = pandas.DataFrame(columns=['date', 'time'])
-        self._events = []
-        self._nb_iterations_by_epoch = [0]
+    def __init__(self, path):
+        import tables
+        from tables.nodes import filenode
+        path = format_filepath(path, 'h5log', exists=False)
+        self._hdf_file = open_pytable(path)
 
-        self._current_epoch = 1
-        self._current_epoch_iteration = -1
+        # --- CREATE EPOCH_INFO Table ---
+        try:
+            self._epoch_info_hdf = self._hdf_file.get_node('/', 'epoch_info')
+        except tables.NoSuchNodeError:
+            class DefaultEpochInfoRow(tables.IsDescription):
+                start_iter = tables.Int64Col()
+                max_e_iter = tables.Int32Col()
+            self._epoch_info_hdf = self._hdf_file.create_table('/', 'epoch_info', DefaultEpochInfoRow)
+            r = self._epoch_info_hdf.row
+            r['start_iter'] = 0
+            r['max_e_iter'] = 0
+            r.append()
+            self._epoch_info_hdf.flush()
+        self._epoch_info = np.empty((self._epoch_info_hdf.nrows),
+                                    dtype=np.dtype([('start', np.int64), ('max_iter', np.int32)]))
+        for i, r in enumerate(self._epoch_info_hdf.iterrows()):
+            self._epoch_info[i] = (r['start_iter'], r['max_e_iter'])
 
-    def save(self, path):
-        path = format_filepath(path)
-        df = self.export_dataframe()
+        # --- CREATE TIMELINE ---
+        try:
+            self._timeline_hdf = self._hdf_file.get_node('/', 'timeline')
+        except tables.NoSuchNodeError:
+            class DefaultTimelineRow(tables.IsDescription):
+                epoch = tables.Int32Col()
+                e_iter = tables.Int32Col()
+                date = tables.Time32Col()
+                time = tables.Float32Col()
+            self._timeline_hdf = self._hdf_file.create_table('/', 'timeline', DefaultTimelineRow, 'History Timeline')
 
-    def load(self, path):
-        path = format_filepath(path)
+        self._timeline = df_empty(columns=['epoch', 'e_iter', 'date', 'time'],
+                                  dtypes=['int64', 'int64', 'datetime64[ns]', 'timedelta64[ns]'],
+                                  index=pandas.Index([], dtype='int64'))
+
+        for r in self._timeline_hdf.iterrows():
+            self._timeline.loc[self._epoch_info[r['epoch']-1][0]+r['e_iter']] = [r['epoch'], r['e_iter'],
+                                                                      pandas.to_datetime(r['date']*1e9), r['time']*1e9]
+
+        # --- CREATE EVENTS FILE ---
+        try:
+            events_node = self._hdf_file.get_node('/', 'events')
+            self._events_file = filenode.open_node(events_node, 'a+')
+        except tables.NoSuchNodeError:
+            self._events_file = filenode.new_node(self._hdf_file, where='/', name='events')
+
+        # --- CREATE KEYS  GROUP ---
+        try:
+            self.g_keys = self._hdf_file.get_node('/', 'KEYS')
+        except tables.NoSuchNodeError:
+            self.g_keys = self._hdf_file.create_group('/', 'KEYS')
+
+        timeline_desc = self._timeline_hdf.description._v_colobjects
+        self._keys = list(_[1:] for _ in timeline_desc.keys() if _.startswith('_'))
+
+        # --- SETUP SERIES FORMAT ---
+        self.empty_row = self._timeline_hdf.row
+        self.format = {}
+        for k in self._keys:
+            self.empty_row['_' + k] = 0
+
+            table = self._table_by_key(k)
+            if table is not None:
+                col = table.description._v_colobjects['value']
+                self.format[k] = DSColumnFormat.auto_format(col.dtype.base, col.dtype.shape)
+
+        # --- SET CURRENT TIMESTAMPS ---
+        if len(self._timeline_hdf) > 0:
+            last_row = self._timeline_hdf[-1]
+            self._current_timestamp = TimeStamp.from_timeline_row(last_row)
+            self._current_timeline_id = len(self._timeline_hdf) - 1
+        else:
+            self._current_timestamp = TimeStamp.now(0, 1)
+            self._current_timeline_id = None
+
+    def __del__(self):
+        self._hdf_file.close()
+
+    def add_keys(self, keys):
+        if isinstance(keys, str):
+            if keys in self.keys():
+                return True
+            keys = (keys,)
+        else:
+            keys = tuple(_ for _ in keys if _ not in self.keys())
+            if not keys:
+                return True
+
+        import tables
+        old_timeline = self._timeline_hdf
+        old_timeline._f_rename('timeline_old', overwrite=True)
+
+        timeline_desc = old_timeline.description._v_colobjects.copy()
+        for k in keys:
+            timeline_desc['_'+k] = tables.Int64Col()
+            self._keys.append(k)
+        new_timeline = tables.Table(old_timeline._v_parent, 'timeline', timeline_desc)
+
+        # Copy the user attributes
+        old_timeline.attrs._f_copy(new_timeline)
+
+        # Fill the rows of new table with default values
+        empty_row = new_timeline.row
+        for k in keys:
+            empty_row['_'+k] = np.int64(0)
+        self.empty_row = empty_row
+        for i in range(old_timeline.nrows):
+            empty_row.append()
+        new_timeline.flush()
+
+        # Copy the columns of source table to destination
+        for col in timeline_desc:
+            if not col.startswith('_') or col[1:] not in keys:
+                getattr(new_timeline.cols, col)[:] = getattr(old_timeline.cols, col)[:]
+
+        self._timeline_hdf = new_timeline
+        old_timeline.remove()
+        return True
+
+    def set_key(self, key, value, flush=True):
+        import tables
+        if key not in self.keys():
+            self.add_keys(key)
+
+        try:
+            table = self._hdf_file.get_node(self.g_keys, key, 'Table')
+        except tables.NoSuchNodeError:
+            desc = OrderedDict()
+            desc['timeline_id'] = tables.Int64Col(pos=0)
+            if isinstance(value, np.ndarray):
+                desc['value'] = tables.Col.from_sctype(value.dtype.type, value.shape, pos=1)
+                self.format[key] = DSColumnFormat.auto_format(value.dtype, value.shape)
+            else:
+                v = np.array(value)
+                self.format[key] = DSColumnFormat.auto_format(v.dtype, v.shape)
+                desc['value'] = tables.Col.from_dtype(v.dtype, pos=1)
+            table = self._hdf_file.create_table(self.g_keys, key, description=desc)
+
+        if self._current_timeline_id is None:
+            r = self.empty_row
+            if self._timeline_hdf.nrows > 0:
+                last_row = self._timeline_hdf[-1]
+            else:
+                last_row = {'_'+k: 0 for k in self.keys()}
+            t = self._current_timestamp
+            r['epoch'] = t.epoch
+            r['e_iter'] = t.iteration
+            r['time'] = t.time
+            r['date'] = t.date
+            for k in self.keys():
+                if key == k:
+                    r['_' + k] = table.nrows + 1
+                else:
+                    r['_' + k] = -abs(last_row['_'+k])
+            r.append()
+
+            self._timeline.loc[self._epoch_info[t.epoch-1][0] + t.iteration] = [t.epoch, t.iteration,
+                                                                                pandas.to_datetime(t.date * 1e9),
+                                                                                t.time * 1e9]
+            self._current_timeline_id = len(self._timeline) - 1
+        else:
+            for r in self._timeline_hdf.iterrows(start=self._current_timeline_id):
+                r['_' + key] = table.nrows + 1
+                r.update()
+
+        table_row = table.row
+        table_row['timeline_id'] = self._current_timeline_id
+        table_row['value'] = value
+        table_row.append()
+        if flush:
+            self._timeline_hdf.flush()
+            table.flush()
+
+    def _table_by_key(self, key):
+        import tables
+        if key not in self.keys():
+            raise ValueError('Unknown key: %s.' % key)
+        try:
+            return self._hdf_file.get_node(self.g_keys, key, 'Table')
+        except tables.NoSuchNodeError:
+            return None
 
     # ---  Current Iteration  ---
     @property
+    def timestamp(self):
+        return self._current_timestamp
+
+    @property
     def epoch(self):
-        return self._current_epoch
+        return self._current_timestamp.epoch
+
+    @property
+    def e_iter(self):
+        return self._current_timestamp.iteration
+
+    @property
+    def iter(self):
+        last_e_info = self._epoch_info[-1]
+        return last_e_info['start_iter'] + self._current_timestamp.iteration
 
     @property
     def iteration(self):
-        return self._current_epoch_iteration
-
-    @property
-    def last_timeid(self):
-        return sum(self._nb_iterations_by_epoch)
+        return self.e_iter
 
     def __len__(self):
-        return self.last_timeid + 1
+        last_e_info = self._epoch_info[-1]
+        return last_e_info[0] + last_e_info[1] + 1
 
-    def next_iteration(self, time, date=None):
-        self._current_epoch_iteration += 1
-        self._nb_iterations_by_epoch[-1] = self._current_epoch_iteration
-        self._update_timestamp(time, date)
-
-    def next_epoch(self, time, date=None):
-        self._current_epoch += 1
-        self._current_epoch_iteration = 0
-        self._nb_iterations_by_epoch.append(0)
-        self._update_timestamp(time, date)
-
-    def _update_timestamp(self, time, date):
+    def step(self, iteration=0, time=None, epoch=0, date=None):
         if date is None:
-            date = pandas.Timestamp.now()
-        date = pandas.to_datetime(date)
-        df = pandas.DataFrame([[time, date]], index=[self.last_timeid], columns=['time', 'date'])
-        self._timestamps = self._timestamps.append(df)
+            import time as python_time
+            date = python_time.time()
+        if epoch:
+            self._epoch_info = np.append(self._epoch_info,
+                                         np.array((self._epoch_info[-1][0]+self._epoch_info[-1][1], iteration+1),
+                                                  dtype=self._epoch_info.dtype))
+            r = self._epoch_info_hdf.row
+            r['start_iter'] = self._epoch_info[-1][0]
+            r['max_e_iter'] = self._epoch_info[-1][1]
+            r.append()
+        elif iteration > 0:
+            self._epoch_info[-1][1] += iteration
+            for r in self._epoch_info_hdf.iterrows(start=-1):
+                r['max_e_iter'] = self._epoch_info[-1][1]
+                r.update()
+        self._epoch_info_hdf.flush()
+
+        self._current_timeline_id = None
+        self._current_timestamp = TimeStamp(len(self._epoch_info), self._epoch_info[-1][1], time, date)
+
+    def step_iteration(self, time, date=None):
+        self.step(iteration=1, time=time, date=date)
+
+    def step_epoch(self, time, date=None):
+        self.step(epoch=1, time=time, date=date)
 
     def __setitem__(self, key, value):
         if not isinstance(key, str):
             raise KeyError('History key should be a serie name not (%s, type:%s).'
                            % (str(key), type(key)))
-
-        if key not in self._timeline_series:
-            serie = pandas.Series(data=[value], index=[self.last_timeid], name=key)
-            self._timeline_series[key] = serie
-        else:
-            self._timeline_series[key][self.last_timeid] = value
+        self.set_key(key, value)
 
     # ---  Store/Read Data  ---
     def keys(self):
-        return self._timeline_series.keys()
+        return self._keys
 
     def series(self, only_number=False):
         keys = list(self.keys())
         if only_number:
-            return [k for k in keys if self._timeline_series[k].dtype != 'O']
+            return [k for k in keys if not isinstance(self.format[k], DSColumnFormat.Text)]
         return keys
 
     def __getitem__(self, item):
         if isinstance(item, str):
             if item not in self.keys():
                 raise KeyError('%s is an unknown serie name.' % item)
-            return self._timeline_series[item].iloc[-1]
+            table = self._table_by_key(item)
+            return table[-1]['value'] if table.nrows else None
         elif isinstance(item, tuple):
             if len(item) != 2 or item[0] not in self.keys():
                 raise KeyError("Invalid history index: %s\n"
                                "Index should follow the form: ['series name', time_index]" % repr(item))
             series = item[0]
-            timeid = item[1]
+            iterid = item[1]
 
-            if isinstance(timeid, slice):
-                df = self.read(series=series, start=timeid.start, stop=timeid.stop, step=timeid.step,
+            if isinstance(iterid, str):
+                if ':' in iterid:
+                    iterid_split = iterid.split(':')
+                    if len(iterid_split) in (2, 3):
+                        iterid = slice(*iterid_split)
+            if isinstance(iterid, slice):
+                df = self.read(series=series, start=iterid.start, stop=iterid.stop, step=iterid.step,
                                interpolation='previous', averaged=True, std=False)
                 return df[series].values
             else:
-                return self.get(series=series, timeid=timeid, interpolation='previous')
+                return self.get(series=series, iterid=iterid, previous=True)
         raise IndexError('Invalid index: unable to read from history series')
 
-    def get(self, series, timeid=-1, interpolation='previous', default='raise exception'):
+    def get(self, series, iterid=-1, previous=True, default='raise exception'):
         try:
-            t = self.interpret_timeid(timeid)
             if series not in self.keys():
                 raise KeyError('%s is an unknown serie name.' % series)
         except LookupError as e:
             if default != 'raise exception':
                 return default
             raise e from None
+        table = self._table_by_key(series)
 
-        serie = self._timeline_series[series]
-        if interpolation is None:
-            try:
-                return serie.loc[t]
-            except KeyError:
+        t = self.interpret_iterid(iterid)
+        if t is None:
+            if default != 'raise exception':
+                return default
+            raise IndexError('Invalid iterid: %s.' % str(iterid))
+
+        if previous:
+            t = self._timeline.index.searchsorted(t, side='right')
+            if t == 0:
+                return default if default != 'raise exception' else None
+            t -= 1
+        else:
+            t = self._timeline.index.get_loc(t)
+
+        series_id = self._timeline_hdf[t]['_'+series]
+        if series_id == 0:
+            return default if default != 'raise exception' else None
+
+        if series_id < 0:
+            if previous:
+                series_id = -series_id
+            else:
                 if default != 'raise exception':
                     return default
-                raise IndexError("Serie %s doesn't store any data at time: %s.\n"
-                                 "The interpolation parameter may be use to remove this exception."
-                                 % (series, repr(timeid)))
-        else:
-            serie = scipy.interpolate.interp1d(x=serie.index, y=serie.values,
-                                               kind=interpolation, fill_value='extrapolate',
-                                               assume_sorted=True, copy=False)
-            return serie(timeid)
+                raise IndexError('No data for series %s at iterid %s. \n'
+                                 '(You might consider set previous=True to get the last stored value.)'
+                                 % (series, str(iterid)))
+
+        return table[series_id-1]['value']
 
     def read(self, series=None, start=0, stop=0, step=1, timestamp=None,
              interpolation='previous', smooth=None, averaged=True, std=False):
@@ -164,7 +371,7 @@ class History:
         """
         if stop is None:
             stop = len(self)
-        indexes = np.array(list(self.timeid_iterator(start=start, stop=stop, step=step)), dtype=np.uint32)
+        indexes = np.array(list(self.iterate_timeid(start=start, stop=stop, step=step)), dtype=np.uint32)
         intervals = np.stack((indexes, np.concatenate((indexes[1:], [stop]))), axis=1)
 
         series_name = self.interpret_series_name(series)
@@ -227,43 +434,39 @@ class History:
             smooth = {_: 15 for _ in smooth}
         if smooth:
             import scipy.signal
+        if interpolation:
+            import scipy.interpolate
 
         df = []
         for k in series_name:
-            series = self._timeline_series[k]
+            table = self._table_by_key(k)
             std_series = None
 
             # Sample
             if k in self.series(only_number=True):
-                if k not in averaged:
-                    series = series.reindex(indexes, copy=False)
-                else:
+                s = table.read(start=start_id, stop=end_id)
+                if averaged[k]:
                     mean_series = np.zeros(shape=(intervals.shape[0],))
                     std_series = np.zeros(shape=(intervals.shape[0],)) if k in std else None
                     for i, (start_id, end_id) in enumerate(intervals):
-                        s = series.loc[start_id:end_id-1]
-                        mean_series[i] = np.nanmean(s) if len(s) else np.nan
+                        mean_series[i] = np.mean(s[:, 1]) if s.shape[0] else np.nan
                         if std_series is not None:
-                            std_series[i] = np.nanvar(s) if len(s) else np.nan
-                    series = pandas.Series(index=indexes, data=mean_series, name=series.name)
-                    if std_series is not None:
-                        std_series = pandas.Series(index=indexes, data=std_series, name='STD '+series.name)
+                            std_series[i] = np.var(s[:, 1]) if s.shape[0] else np.nan
+
 
                 # Interpolate
                 if k in interpolation:
-                    if interpolation[k] == 'previous':
-                        series.fillna(method='pad', inplace=True)
-                        if std_series is not None:
-                            std_series.fillna(method='pad', inplace=True)
-                    else:
-                        series.interpolate(method=interpolation[k], inplace=True)
-                        if std_series is not None:
-                            std_series.interpolate(method=interpolation[k], inplace=True)
+                    if averaged[k]:
+                        interpolator = scipy.interpolate.interp1d(s[])
                 # Smooth
                 if k in smooth:
                     s = series.values
                     s = scipy.signal.savgol_filter(s, smooth[k], 3, mode='constant')
                     series = pandas.Series(index=indexes, data=s, dtype=series.dtype, name=series.name)
+
+                series = pandas.Series(index=indexes, data=mean_series, name=series.name)
+                if std_series is not None:
+                    std_series = pandas.Series(index=indexes, data=std_series, name='STD ' + series.name)
             else:
                 series = series.reindex(indexes, copy=False, method='pad')
 
@@ -290,8 +493,8 @@ class History:
                     - date
         :rtype: pandas.DataFrame
         """
-        start = self.interpret_timeid(start)
-        stop = self.interpret_timeid(stop, stop_index=True)
+        start = self.interpret_iterid(start)
+        stop = self.interpret_iterid(stop, stop_index=True)
         series_name = self.interpret_series_name(series)
 
         series = []
@@ -323,36 +526,33 @@ class History:
         df.to_csv(path_or_buf=path)
 
     # ---  Timestamp Conversion ---
-    def epoch_to_timeid(self, epoch, iteration=1):
+    def epoch_to_iterid(self, epoch, iteration=1):
         # Check
         if epoch > self.epoch:
             raise IndexError('Invalid time stamp: %ie%i. (Current iteration is %ie%i)'
-                             % (epoch, iteration, self.epoch, self.last_timeid))
-        if iteration > self._nb_iterations_by_epoch[epoch]:
+                             % (epoch, iteration, self.epoch, self.e_iter))
+        if iteration > self._epoch_info[epoch-1][1]:
             raise IndexError('Invalid time stamp: %ie%i. (Epoch %i only has %i iterations)'
-                             % (epoch, iteration, epoch, self._nb_iterations_by_epoch[epoch]))
+                             % (epoch, iteration, epoch, self._epoch_info[epoch-1][1]))
         # Sum
-        return iteration + sum(nb_it for e, nb_it in enumerate(self._nb_iterations_by_epoch) if e + 1 < epoch) - 1
+        return iteration + self._epoch_info[epoch-1][0]
 
-    def timeid_to_timestamp(self, time_id):
+    def iterid_to_timestamp(self, time_id):
         if not 0 <= time_id < len(self):
             raise ValueError('%i is not a valid timestamp (min:0, max:%i)' % (time_id, len(self)-1))
-        e = 1
-        epoch_iteration = self._nb_iterations_by_epoch[0]
-        while e <= self.epoch and time_id > epoch_iteration:
-            epoch_iteration += self._nb_iterations_by_epoch[e]
+        e = 0
+        while e <= self.epoch and time_id > self._epoch_info[e+1][0]:
             e += 1
-        i = time_id-epoch_iteration
+        i = time_id-self._epoch_info[e][0]
 
-        time = self._timestamps['time'][time_id]
-        date = self._timestamps['date'][time_id]
+        time = self._timeline.loc[time_id, 'time']
+        date = self._timeline.loc[time_id, 'date']
 
         return TimeStamp(epoch=e, iteration=i, time=time, date=date)
 
-    def interpret_timeid(self, timestamp, stop_index=False):
+    def interpret_iterid(self, timestamp, stop_index=False):
         if isinstance(timestamp, TimeStamp):
-            return self.epoch_to_timeid(epoch=timestamp.epoch,
-                                        iteration=timestamp.iteration)
+            return self.epoch_to_iterid(epoch=timestamp.epoch, iteration=timestamp.iteration)
         if isinstance(timestamp, int):
             length = len(self)
             if not -length < timestamp < length+(1 if stop_index else 0):
@@ -364,14 +564,14 @@ class History:
             return timestamp
         else:
             timestamp = TimeStamp.interpret(timestamp)
-            return self.epoch_to_timeid(epoch=timestamp.epoch, iteration=timestamp.iteration)
+            return self.epoch_to_iterid(epoch=timestamp.epoch, iteration=timestamp.iteration)
 
     def interpret_timestamp(self, timestamp):
-        return self.timeid_to_timestamp(self.interpret_timeid(timestamp))
+        return self.iterid_to_timestamp(self.interpret_iterid(timestamp))
 
-    def timeid_iterator(self, start=0, stop=0, step=1, last=False):
-        start = 0 if start is None else self.interpret_timeid(start)
-        stop = len(self) if stop is None else self.interpret_timeid(stop, stop_index=True)
+    def iterate_iterid(self, start=0, stop=None, step=1, last=False):
+        start = 0 if start is None else self.interpret_iterid(start)
+        stop = len(self) if stop is None else self.interpret_iterid(stop, stop_index=True)
         if step is None:
             step = 1
 
@@ -383,20 +583,33 @@ class History:
                 yield i+step
             return
 
-        start_timestamp = self.timeid_to_timestamp(start)
+        start_timestamp = self.iterid_to_timestamp(start)
         step = TimeStamp.interpret(step)
         i = start
-        e = start_timestamp.epoch; e_i = start_timestamp.iteration
+        e = start_timestamp.epoch
+        e_i = start_timestamp.iteration
         while i < stop:
             yield i
             e += step.epoch
             e_i += step.iteration
-            while e < self.epoch and e_i > self._nb_iterations_by_epoch[e]:
-                e_i -= self._nb_iterations_by_epoch[e]
+            while e < self.epoch and e_i > self._epoch_info[e][1]:
+                e_i -= self._epoch_info[e][1]
                 e += 1
-            i = self.epoch_to_timeid(e, e_i)
+            i = self.epoch_to_iterid(e, e_i)
         if i < len(self) and last:
             yield i
+
+    def iterate_timeid(self, start=0, stop=None, step=1, last=False):
+        for iterid in self.iterate_iterid(start=start, stop=stop, step=step, last=last):
+            yield self._timeline.index.searchsorted(iterid, side='right')-1
+
+    def iterate_timeids_list(self, start=0, stop=None, step=1, last=False):
+        iterator = self.iterate_iterid(start=start, stop=stop, step=step, last=last)
+        start_timeid = self._timeline.index.searchsorted(next(iterator), side='right')
+        for iterid in iterator:
+            end_timeid = self._timeline.index.searchsorted(iterid, side='left')
+            yield tuple(range(start_timeid, end_timeid))
+            start_timeid = end_timeid+1
 
     def interpret_series_name(self, series, only_number=False):
         if series is None:
@@ -429,12 +642,12 @@ class History:
         for k in timestamp:
             if k == 'epoch':
                 series = pandas.Series(index=indexes, name='epoch',
-                                       data=indexes.map(lambda timeid: bisect_left(cumul_epoch, timeid+1)))
+                                       data=indexes.map(lambda iterid: bisect_left(cumul_epoch, iterid+1)))
                 df.append(series)
             elif k == 'iteration':
                 series = pandas.Series(index=indexes, name='iteration',
                                        data=indexes.map(
-                                           lambda timeid: timeid - cumul_epoch[bisect_left(cumul_epoch, timeid+1)-1]))
+                                           lambda iterid: iterid - cumul_epoch[bisect_left(cumul_epoch, iterid+1)-1]))
                 df.append(series)
             elif k == 'time':
                 df.append(self._timestamps['time'].reindex(indexes, copy=False))
@@ -479,6 +692,17 @@ class TimeStamp:
         return r
 
     @staticmethod
+    def now(iteration=0, epoch=1):
+        import time as python_time
+        date = python_time.time()
+        return TimeStamp(epoch=epoch, iteration=iteration, time=0, date=date)
+
+    @staticmethod
+    def from_timeline_row(timeline_row):
+        r = timeline_row
+        return TimeStamp(r['epoch'], r['e_iter'], r['time'], r['date'])
+
+    @staticmethod
     def interpret(timestamp):
         if isinstance(timestamp, TimeStamp):
             return timestamp
@@ -494,16 +718,20 @@ class TimeStamp:
             error = ValueError('%s is not a valid timestamp\n'
                                'timestamp string should be formatted: #Ee#I where #E is the epoch and #I the iteration'
                                % timestamp)
+            timestamp = timestamp.replace(' ', '')
             try:
-                timestamp = [int(_) for _ in timestamp.split('e')]
+                if 'e' in timestamp:
+                    timestamp = [int(_) for _ in timestamp.split('e')]
+                    if len(timestamp) not in (1,2):
+                        raise error
+                    if len(timestamp) == 1:
+                        return TimeStamp(epoch=timestamp[0], iteration=0)
+                    else:
+                        return TimeStamp(epoch=timestamp[0], iteration=timestamp[1])
+                elif timestamp.endswith('i'):
+                    return TimeStamp(epoch=0, iteration=int(timestamp[:-1]))
             except TypeError:
-                raise error
-            if len(timestamp) not in (1,2):
-                raise error
-            if len(timestamp) == 1:
-                return TimeStamp(epoch=timestamp[0], iteration=0)
-            else:
-                return TimeStamp(epoch=timestamp[0], iteration=timestamp[1])
+                raise error from None
 
         raise TypeError('%s is not a valid timestamp.\n Invalid timestamp type: %s'
                         % (repr(timestamp), type(timestamp)))

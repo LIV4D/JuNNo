@@ -22,14 +22,14 @@ def abs_path(path, f=None):
 _pytables_files = {}
 
 
-def format_filepath(path, extension=None, origin_path=None):
+def format_filepath(path, extension=None, origin_path=None, exists=True):
     if path.endswith('/'):
         raise ValueError('%s is not a valid file name' % path)
     if extension and not path.endswith('.'+extension):
         path += '.'+extension
 
     apath = abs_path(path, f=origin_path)
-    if not os.path.exists(apath) or os.path.isdir(apath):
+    if (exists and not os.path.exists(apath)) or os.path.isdir(apath):
         raise ValueError('%s not found.' % path)
     return apath
 

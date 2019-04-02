@@ -971,3 +971,14 @@ class Interval:
     @property
     def length(self):
         return self.max - self.min
+
+
+########################################################################################################################
+def df_empty(columns, dtypes, index=None):
+    import pandas as pd
+    assert len(columns) == len(dtypes)
+
+    df = pd.DataFrame(index=index)
+    for c, d in zip(columns, dtypes):
+        df[c] = pd.Series(dtype=d)
+    return df

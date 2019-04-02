@@ -923,7 +923,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         import tables
         from .dataset_generator import DataSetResult
         from collections import OrderedDict
-        from ..j_utils.path import open_pytable
+        from ..j_utils.path import open_pytable, format_filepath
 
         start, stop = interval(self.size, start, stop)
         if columns is None:
@@ -950,6 +950,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 else:
                     raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
 
+                path = format_filepath(path, 'cache', exists=False)
                 hdf_f = open_pytable(path)
                 if not table_name.startswith('/'):
                     table_name = '/' + table_name
@@ -1000,12 +1001,12 @@ class AbstractDataSet(metaclass=ABCMeta):
             chunck_size = min(stop - start, hdf_t.chunkshape[0])
 
             if ncore > 1:
-                with Process('Allocating %s' % label, stop-start, verbose=False) as p:
-                    empty = DataSetResult.create_empty(dataset=self, n=1).to_row_list()[0]
-
+                with Process('Allocating %s' % label, stop-start+1, verbose=False) as p:
+                    empty_row = hdf_t.row
                     for i in range(0, stop-start):
-                        hdf_t.append([empty]*min(chunck_size, stop-i))
+                        empty_row.append()
                         p.step = i
+                    hdf_t.flush()
 
                 with Process('Caching %s' % label, stop-start, verbose=False) as p:
                     from .dataset_generator import DataSetResult
@@ -1739,7 +1740,7 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self._dtype if not self._is_text else 'str', self._shape, f)
+            self._format = DSColumnFormat.auto_format(self.dtype, self.shape, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -2143,9 +2144,7 @@ class DSColumnFormat:
                     return DSColumnFormat.Number(dtype, shape)
             elif 'float' in repr(dtype):
                 return DSColumnFormat.Number(dtype, shape)
-            elif dtype == 'str':
-                return DSColumnFormat.Text(dtype, shape)
-            elif dtype == 'O':
+            elif 'str' in str(dtype) or 'U' in str(dtype) or 'S' in str(dtype) or dtype == np.object:
                 return DSColumnFormat.Text(dtype, shape)
         elif 'int' in repr(dtype) or 'float' in repr(dtype) or dtype in ('bool',):
             if isinstance(info, str) and info.lower() == 'image':
