@@ -208,48 +208,6 @@ def apply_scale(a, range=None, domain=None, clip=None):
         a[a > clip.max] = clip.max
     return a
 
-########################################################################################################################
-#              -------- THEANO IMPROVMENTS -------
-# def merge_axis(a, keep_axis=None, shape=None):
-#     import numpy as np
-#
-#     if keep_axis is not None and keep_axis < 0:
-#         keep_axis += a.dim
-#
-#     if keep_axis is None or keep_axis == 0:
-#         a = a.flatten(ndim=1)
-#     elif keep_axis == 1 and a.dim == 2:
-#         pass
-#     else:
-#         a = np.move_axis(a, keep_axis, 0)
-#         a = a.flatten(ndim=2).dimshuffle((1, 0))
-#
-#     if shape is None:
-#         return a
-#     else:
-#         info = {'axis': keep_axis, 'shape': np.move_axis(list(shape), keep_axis, 0)}
-#         return a, info
-#
-#
-# def unmerge_axis(a, info, output_shape=False):
-#     import numpy as np
-#
-#     axis = info['axis']
-#     shape = tuple(info['shape'])
-#     if axis is not None and axis > 0:
-#         if axis > 1 or len(shape)!=2:
-#             a = a.dimshuffle((1,0)).reshape(shape)
-#             a = np.move_axis(a, 0, axis)
-#     else:
-#         a = a.reshape(shape)
-#
-#     if output_shape:
-#         return a, move_axis(shape, 0, axis)
-#     else:
-#         return a
-#
-#
-
 
 ########################################################################################################################
 class ROCCurve(np.ndarray):

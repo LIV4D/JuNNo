@@ -1581,7 +1581,7 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self, f)
+            self._format = DSColumnFormat.auto_format(self.dtype, self.shape, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -2123,10 +2123,7 @@ class DSColumnFormat:
             self.no_scaling = True
 
     @staticmethod
-    def auto_format(col, info=None):
-        dtype = col.dtype
-        shape = col.shape
-
+    def auto_format(dtype, shape, info=None):
         if isinstance(info, DSColumnFormat.Base):
             return info.copy(dtype, shape)
         elif isinstance(info, DSColumn):
@@ -2183,7 +2180,7 @@ class DSColumnFormat:
                     return DSColumnFormat.Number(dtype, shape)
             elif 'float' in repr(dtype):
                 return DSColumnFormat.Number(dtype, shape)
-            elif col.is_text:
+            elif dtype == 'str' or 'str' in str(dtype) or 'S' in str(dtype) or 'U' in str(dtype):
                 return DSColumnFormat.Text(dtype, shape)
         elif 'int' in repr(dtype) or 'float' in repr(dtype) or dtype in ('bool',):
             if isinstance(info, str) and info.lower() == 'image':

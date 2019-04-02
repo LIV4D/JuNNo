@@ -335,7 +335,7 @@ class History:
 
         return table[series_id-1]['value']
 
-    def read(self, series=None, start=0, stop=0, step=1, timestamp=None,
+    def read(self, series=None, start=0, stop=0, step=1, timestamp=('epoch', 'e_iter'),
              interpolation='previous', smooth=None, averaged=True, std=False):
         """
         Interpolate or average
@@ -371,7 +371,11 @@ class History:
         """
         if stop is None:
             stop = len(self)
-        indexes = np.array(list(self.iterate_timeid(start=start, stop=stop, step=step)), dtype=np.uint32)
+
+        if step == 1:
+            averaged = False
+
+        indexes = np.array(list(self.iterate_iterid(start=start, stop=stop, step=step)), dtype=np.uint32)
         intervals = np.stack((indexes, np.concatenate((indexes[1:], [stop]))), axis=1)
 
         series_name = self.interpret_series_name(series)
@@ -432,52 +436,72 @@ class History:
                 raise ValueError("Can't smooth series: %s.\n"
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
             smooth = {_: 15 for _ in smooth}
-        if smooth:
-            import scipy.signal
-        if interpolation:
+
+        def interpolate(x, y, kind):
             import scipy.interpolate
+            interpolator = scipy.interpolate.interp1d(x, y, kind=kind, copy=False, assume_sorted=True)
+            return interpolator(indexes)
+
+        def perform_smooth(x, factor):
+            import  scipy.signal
+            return scipy.signal.savgol_filter(x, factor, 3, mode='constant')
 
         df = []
+        series = OrderedDict()
         for k in series_name:
             table = self._table_by_key(k)
-            std_series = None
+            serie_std = None
 
             # Sample
             if k in self.series(only_number=True):
-                s = table.read(start=start_id, stop=end_id)
-                if averaged[k]:
-                    mean_series = np.zeros(shape=(intervals.shape[0],))
-                    std_series = np.zeros(shape=(intervals.shape[0],)) if k in std else None
+                if k in averaged:
+                    timeidx = np.empty(shape=(intervals.shape[0],), dtype=np.int64)
+                    serie = np.empty(shape=(intervals.shape[0],))
+                    if serie_std is not None:
+                        serie_std = np.empty(shape=(intervals.shape[0],)) if k in std else None
                     for i, (start_id, end_id) in enumerate(intervals):
-                        mean_series[i] = np.mean(s[:, 1]) if s.shape[0] else np.nan
-                        if std_series is not None:
-                            std_series[i] = np.var(s[:, 1]) if s.shape[0] else np.nan
+                        s = table.read(start=start_id, stop=end_id)
+                        if len(s):
+                            timeidx[i] = s['timeline_id'][0]
+                            serie[i] = np.mean(s['value']) if s.shape[0] else np.nan
+                            if serie_std is not None:
+                                serie_std[i] = np.var(s[:, 1]) if s.shape[0] else np.nan
+                        else:
+                            serie[i] = np.nan
+                            if serie_std is not None:
+                                serie_std[i] = np.nan
 
+                    # Interpolate
+                    if k in interpolation:
+                        serie = interpolate(x=timeidx, y=serie, kind=interpolation[k])
+                        serie_std = interpolate(x=timeidx, y=serie_std, kind=interpolation[k])
 
-                # Interpolate
-                if k in interpolation:
-                    if averaged[k]:
-                        interpolator = scipy.interpolate.interp1d(s[])
-                # Smooth
-                if k in smooth:
-                    s = series.values
-                    s = scipy.signal.savgol_filter(s, smooth[k], 3, mode='constant')
-                    series = pandas.Series(index=indexes, data=s, dtype=series.dtype, name=series.name)
+                    # Smooth
+                    if k in smooth:
+                        serie = perform_smooth(serie, smooth[k])
+                        serie_std = perform_smooth(serie_std, smooth[k])
+                    series[k] = serie
+                    series[k+'_std'] = serie_std
 
-                series = pandas.Series(index=indexes, data=mean_series, name=series.name)
-                if std_series is not None:
-                    std_series = pandas.Series(index=indexes, data=std_series, name='STD ' + series.name)
-            else:
-                series = series.reindex(indexes, copy=False, method='pad')
-
-            # Store
-            df.append(series)
-            if std_series is not None:
-                df.append(std_series)
-
+                else:
+                    s = table.read(start=indexes[0]-1, stop=indexes[-1]+1)
+                    if k in interpolation:
+                        serie = interpolate(s['timeline_id'], s['value'], kind=interpolation[k])
+                    else:
+                        s_value = s['value']
+                        s_id = s['timeline_id']
+                        serie = np.empty(shape=(len(indexes),), dtype=s_value.dtype)
+                        serie.fill(np.nan)
+                        serie[np.isin(indexes, s_id, assume_unique=True)] = \
+                            s[np.isin(s_id, indexes, assume_unique=True), 0]
+                    if k in smooth:
+                        serie = perform_smooth(serie, smooth[k])
+                    series[k] = serie
+        df = pandas.DataFrame(index=indexes, data=series, copy=False)
         if timestamp:
-            df = self.timestamp_dataframe(timestamp, indexes, series_list=True) + df
-        return pandas.DataFrame(df).transpose()
+            timestamp_df = self.export_timeline(timestamp, indexes)
+            return pandas.concat([timestamp_df, df], axis=1)
+        return df
 
     #   --- Export ---
     def export_dataframe(self, series=None, start=0, stop=0, timestamp=None):
@@ -505,7 +529,7 @@ class History:
         df = pandas.DataFrame(series).transpose()
 
         if timestamp:
-            timestamp_df = self.timestamp_dataframe(timestamp, df.index)
+            timestamp_df = self.export_timeline(timestamp, df.index)
             df = pandas.concat([timestamp_df, df], axis=1)
         return df
 
@@ -629,34 +653,12 @@ class History:
 
         return series
 
-    def timestamp_dataframe(self, timestamp=('date', 'time', 'epoch', 'iteration'), indexes=None, series_list=False):
+    def export_timeline(self, timestamp=('date', 'time', 'epoch', 'e_iter'), indexes=None):
         if isinstance(timestamp, str):
             timestamp = (timestamp,)
         if indexes is None:
-            indexes = self._timestamps.index
-
-        from bisect import bisect_left
-        cumul_epoch = np.concatenate(([0], np.cumsum(self._nb_iterations_by_epoch)))
-
-        df = []
-        for k in timestamp:
-            if k == 'epoch':
-                series = pandas.Series(index=indexes, name='epoch',
-                                       data=indexes.map(lambda iterid: bisect_left(cumul_epoch, iterid+1)))
-                df.append(series)
-            elif k == 'iteration':
-                series = pandas.Series(index=indexes, name='iteration',
-                                       data=indexes.map(
-                                           lambda iterid: iterid - cumul_epoch[bisect_left(cumul_epoch, iterid+1)-1]))
-                df.append(series)
-            elif k == 'time':
-                df.append(self._timestamps['time'].reindex(indexes, copy=False))
-            elif k == 'date':
-                df.append(self._timestamps['date'].reindex(indexes, copy=False))
-
-        if series_list:
-            return df
-        return pandas.DataFrame(df).transpose()
+            indexes = list(range(len(self._timeline)))
+        return self._timeline[list(timestamp)].iloc[indexes]
 
 
 class TimeStamp:
