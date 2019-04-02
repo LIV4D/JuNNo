@@ -4,7 +4,7 @@ setup(
     name='JuNNo',
     version='1.0',
     package_dir={'': 'lib'},
-    packages=find_packages('./lib/'),
+    packages=find_packages('lib'),
     url='',
     license='',
     long_description=open('README.md').read(),

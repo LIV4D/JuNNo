@@ -9,7 +9,7 @@ from ..j_utils.j_log import log, Process
 
 ########################################################################################################################
 class DataSetReshape(AbstractDataSet):
-    def __init__(self, dataset, columns, shape, label_columns=None, keep_original=False, name='reshape'):
+    def __init__(self, dataset, columns, shape, keep_parent=False, name='reshape'):
         """
         :type dataset: AbstractDataSets
 
@@ -49,7 +49,7 @@ class DataSetReshape(AbstractDataSet):
 
             column_shape = tuple(k if k > 1 and isinstance(k, int) else int(k * s)
                                  for k, s in zip(shape, column.shape[-2:]))
-            if not keep_original:
+            if not keep_parent:
 
                 column._shape = column._shape[:-2] + column_shape
                 self._reshaped_columns[c] = c
@@ -57,22 +57,7 @@ class DataSetReshape(AbstractDataSet):
                 self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
                 self._reshaped_columns[c + '_reshaped'] = c
 
-        if label_columns is None:
-            label_columns = []
-        if not isinstance(label_columns, list):
-            label_columns = [label_columns]
-
-        self._label_columns = []
-        for c in label_columns:
-            if isinstance(c, DSColumn):
-                c = c.name
-            if isinstance(c, str):
-                if c not in columns:
-                    raise ValueError('Unkown label column: %s' % c)
-            else:
-                raise NotImplementedError('label_column should be a column name, a DatasetColumn or a list of those '
-                                          '(type: %s)' % repr(type(c)))
-            self._label_columns.append(c)
+        self._label_columns = [c.name for c in self.columns if c.format.is_label or 'bool' in str(c.dtype)]
 
     def _generator(self, gen_context):
         from ..j_utils.math import cartesian
@@ -111,7 +96,7 @@ class DataSetReshape(AbstractDataSet):
                 while i < len(indexes_list):
                     if len(indexes_list)-i >= 3:
                         list_id = [list(indexes_list[_]) for _ in (i, i+1, i+2)]
-                        indexes = list(zip(*list_id))
+                        indexes = tuple(zip(*list_id))
                         i += 3
                     else:
                         indexes = tuple(indexes_list[i])
@@ -125,6 +110,10 @@ class DataSetReshape(AbstractDataSet):
                     if c_parent in self._label_columns:
                         h, w, _ = tmp.shape
                         h_target, w_target = target_shape
+                        is_bool = tmp.dtype == np.bool
+
+                        if is_bool:
+                            tmp = tmp.astype(np.uint8)
 
                         if h > h_target or w > w_target:    # Downscale
                             h_bin = int(np.ceil(h / h_target))
@@ -145,6 +134,9 @@ class DataSetReshape(AbstractDataSet):
                             tmp = u[np.argmax(count, axis=2)]
                         else:               # Upscale
                             tmp = cv2.resize(tmp, dsize=target_shape[::-1], interpolation=cv2.INTER_NEAREST)
+
+                        if is_bool:
+                            tmp = tmp != 0
 
                     else:
                         interp = cv2.INTER_AREA
@@ -362,11 +354,10 @@ class DataSetPatches(AbstractDataSet):
 
         if not self._cache_center:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=gen_context.start_id//self._n, stop=gen_context.stop_id//self._n)
+                                        start=gen_context.start_id//self._n)
         else:
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
-                                        start=self._saved_patch_center[gen_context.start_id, 0],
-                                        stop=self._saved_patch_center[gen_context.stop_id, 0])
+                                        start=self._saved_patch_center[gen_context.start_id, 0])
 
         if not self._cache_center:
             if gen_context.determinist:
@@ -394,8 +385,8 @@ class DataSetPatches(AbstractDataSet):
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
                         except StopIteration:
-                            log.error('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
-                                       %(self._parent, i_global, i_global/n, gen_current_index))
+                            log.error('Reading from %s failed (i_global=%i, i_global/n=%i, gen.id=%i, gen.last_id=%i)'
+                                      % (self._parent, i_global, i_global/self._n, gen_current_index, gen.stop_id))
                             raise StopIteration('Reading from %s failed (i_global=%i, i_global/n=%i, gen_id=%i)'
                                                %(self._parent, i_global, i_global/n, gen_current_index) )
                     gen_current_index = result.start_id
@@ -409,8 +400,7 @@ class DataSetPatches(AbstractDataSet):
                     img_id, center_x, center_y = saved_centers[i+i_global]
                     while result is None or img_id != result.start_id:
                         if img_id != gen.current_id:
-                            gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns,
-                                                        stop=saved_centers[gen_context.stop_id, 0])
+                            gen = gen_context.generator(self._parent, n=1, start=img_id, columns=gen_columns)
                         try:
                             gen_current_index = gen.current_id
                             result = gen.next(copy={_: r[i:i+1, _] for _ in copied_columns}, r=r)
@@ -462,6 +452,8 @@ class DataSetPatches(AbstractDataSet):
             r = None
             yield weakref
             i_global += n
+
+        del gen
 
     def is_patch_invariant(self):
         return self._is_patch_invariant

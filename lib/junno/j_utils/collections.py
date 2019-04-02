@@ -684,6 +684,15 @@ class Tree:
 ########################################################################################################################
 class AttributeDict(OrderedDict):
 
+    @staticmethod
+    def from_dict(d, recursive=False):
+        r = AttributeDict()
+        for k, v in d.items():
+            if is_dict(v) and recursive:
+                v = AttributeDict.from_dict(v, True)
+            r[k] = v
+        return r
+
     def __setitem__(self, key, value):
         if not isinstance(key, str) or '.' in key:
             raise ValueError('Invalid AttributeDict key: %s.' % repr(key))
@@ -926,11 +935,25 @@ class Interval:
             elif isinstance(a, Interval):
                 min = a.min
                 max = a.max
+            elif isinstance(a, str):
+                a = a.strip()
+                if a.startswith('(') and a.endswith(')'):
+                    a = a[1:-1]
+                    min, max = a.split(',')
+                    min = float(min) if min != 'None' else None
+                    max = float(max) if max != 'None' else None
+                else:
+                    raise NotImplementedError
+            else:
+                raise NotImplementedError
         self.min = min
         self.max = max
 
         if self and min > max:
             raise ValueError('The min value of an Interval should be lower than the max value')
+
+    def __str__(self):
+        return "(%s,%s)" % (str(self._min), str(self._max))
 
     def __contains__(self, item):
         return self.min > item > self.max

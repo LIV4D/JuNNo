@@ -9,8 +9,9 @@ import weakref
 from ..j_utils.parallelism import N_CORE
 from ..j_utils.collections import istypeof_or_listof, istypeof_or_collectionof, if_none, AttributeDict
 from ..j_utils.j_log import log, float_to_str
+from ..j_utils.math import apply_scale
 
-from .dataset import AbstractDataSet, DSColumn
+from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 
 
 ########################################################################################################################
@@ -29,8 +30,9 @@ class DataSetResult:
         self._start_id = start_id
         self._size = size
         self._dataset = None
-        self.affiliate_dataset(dataset)
-        self._undef_dims = undef_dims
+
+        if dataset:
+            self.affiliate_dataset(dataset)
         self._trace = DataSetResult.Trace(self)
 
         self._ipywidget = None
@@ -96,11 +98,7 @@ class DataSetResult:
                                      % (c.name, repr(a.shape), repr((n,)+c.shape)))
                 data_dict[c.name] = a
             else:
-                if c.is_seq:
-                    new_dimensions = c.undef_dims*[1]
-                    data_dict[c.name] = np.empty(tuple([n]+new_dimensions+list(c.shape)), dtype=c.dtype)
-                else:
-                    data_dict[c.name] = np.empty(tuple([n]+list(c.shape)), dtype=c.dtype)
+                data_dict[c.name] = np.zeros(tuple([n]+list(c.shape)), dtype=c.dtype)
 
         return DataSetResult(data_dict=data_dict, columns=columns, start_id=start_id, size=n, dataset=dataset)
 
@@ -320,6 +318,8 @@ class DataSetResult:
                         self._data_dict[columns] = np.resize(self._data_dict[columns], shape)
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
+                    if isinstance(value, bytes) and self.column_by_name(columns).is_text:
+                        value = value.decode('ascii')
                     self._data_dict[columns][indexes] = value
             else:
                 raise KeyError('Unknown column: %s' % columns)
@@ -409,7 +409,18 @@ class DataSetResult:
 
         return np.core.records.fromarrays(array_list)
     
-    def to_torch(self, *args, device=None):
+    def to_torch(self, *columns, range=None, dtype=None, device=None):
+        """
+        Convert columns into torch tensor.
+        :param columns: Name(s) for the column(s) for which you want to retreive a tensor.
+                (If several names are given, return a tuple of torch.Tensor).
+        :type columns: str, DSColumn
+        :param range: If provided, values of matrix columns will be scaled to this range.
+        :type range: tuple
+        :param dtype: If provided, convert the numpy arrays to dtype before calling torch.from_numpy().
+        :param device: If provided, transfer the tensors to this device.
+        :return:
+        """
         import torch
         r = []
 
@@ -419,15 +430,25 @@ class DataSetResult:
             else:
                 device = "cpu"
 
-        for c in args:
+        for c in columns:
             if c not in self:
                 raise ValueError("Unknown column %s" % str(c))
-            t = torch.from_numpy(self[c])
+            d = self[c]
+
+            if range is not None and isinstance(self.col[c].format, DSColumnFormat.Matrix):
+                d = apply_scale(d, range=range, domain=self.col[c].format.domain, clip=range)
+
+            if dtype is not None:
+                d = d.astype(dtype, copy=False)
+            elif d.dtype not in (np.double, np.float, np.float32, np.float16, np.int64, np.int32, np.uint8):
+                d = d.astype(np.float32)
+
+            t = torch.from_numpy(d)
             if device:
                 t = t.to(device)
             r.append(t)
 
-        return tuple(r)
+        return tuple(r) if len(columns) > 1 else r[0]
 
     class Trace:
         def __init__(self, r):
@@ -906,6 +927,8 @@ class DataSetSmartGenerator:
             while self._generator_process.is_alive():
                 self._send_to_subprocess(False, log_broken_pipe=False)
                 time.sleep(1e-3)
+                if hasattr(self._generator_process, 'terminate'):
+                    self._generator_process.terminate()
             del self._generator_process
             self._generator_process = None
         if self._generator_conn:
