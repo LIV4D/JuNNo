@@ -274,11 +274,16 @@ class History:
 
     def __getitem__(self, item):
         if isinstance(item, str):
-            if item not in self.keys():
-                raise KeyError('%s is an unknown serie name.' % item)
-            table = self._table_by_key(item)
-            return table[-1]['value'] if table.nrows else None
-        elif isinstance(item, tuple):
+            if item in self.keys():
+                table = self._table_by_key(item)
+                return table[-1]['value'] if table.nrows else None
+            if ':' in item:
+                item_split = item.split(':')
+                if len(item_split) in (2, 3):
+                    item = slice(*(_ if _ != "" else None for _ in item_split))
+            else:
+                item = self.interpret_timestamp(item)
+        if isinstance(item, tuple):
             if len(item) != 2 or item[0] not in self.keys():
                 raise KeyError("Invalid history index: %s\n"
                                "Index should follow the form: ['series name', time_index]" % repr(item))
@@ -289,13 +294,18 @@ class History:
                 if ':' in iterid:
                     iterid_split = iterid.split(':')
                     if len(iterid_split) in (2, 3):
-                        iterid = slice(*iterid_split)
+                        iterid = slice(*(_ if _ != "" else None for _ in iterid_split))
             if isinstance(iterid, slice):
                 df = self.read(series=series, start=iterid.start, stop=iterid.stop, step=iterid.step,
                                interpolation='previous', averaged=True, std=False)
                 return df[series].values
             else:
                 return self.get(series=series, iterid=iterid, previous=True)
+        elif isinstance(item, TimeStamp):
+            return self.get(series=None, iterid=item)
+        elif isinstance(item, slice):
+            return self.read(start=item.start, stop=item.stop, step=item.step, interpolation='previous',
+                             timestamp=['epoch', 'e_iter'])
         raise IndexError('Invalid index: unable to read from history series')
 
     def get(self, series, iterid=-1, previous=True, default='raise exception'):
@@ -488,14 +498,19 @@ class History:
                 serie = np.empty(shape=(len(intervals),))
                 mask = np.empty(shape=(len(intervals),), dtype=np.bool)
                 mask.fill(True)
+
                 if k in std is not None:
                     serie_std = np.empty(shape=(len(intervals),)) if k in std else None
+
+                last_start_id = 0
                 for i, interval in enumerate(intervals):
-                    if interval:
+                    if interval and last_start_id < table.nrows:
                         start_id, end_id = interval
-                        s = table.read(start=start_id, stop=end_id)
+                        s = table.read_where("(start_id <= timeline_id) & (timeline_id < end_id)",
+                                             condvars=dict(start_id=start_id, end_id=end_id))
                         if len(s):
-                            timeidx[i] = s['timeline_id'][0]
+                            last_start_id += len(s)
+                            timeidx[i] = self._timeline.index[s['timeline_id'][0]]
                             serie[i] = np.mean(s['value']) if s.shape[0] else np.nan
                             if serie_std is not None:
                                 serie_std[i] = np.var(s['value']) if s.shape[0] else np.nan
@@ -531,23 +546,38 @@ class History:
                     series[k+'_std'] = serie_std
 
             else:
+
                 start_table = max(abs(self._timeline_hdf[start_timeid]['_'+k])-1, 0)
                 end_table = max(abs(self._timeline_hdf[end_timeid]['_' + k]), 0)
                 s = table.read(start=start_table, stop=end_table)
+                s_id = s['timeline_id']
+                s_id = self._timeline.iloc[s_id].index.values
+                s_value = s['value']
+
                 interp_k = interpolation.get(k, None)
                 if interp_k is not None and interp_k != 'previous':
-                    serie = interpolate(s['timeline_id'], s['value'], kind=interpolation[k])
+                    serie = interpolate(s_id, s_value, kind=interpolation[k])
                     mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
                 else:
-                    s_value = s['value']
-                    s_id = s['timeline_id']
-                    serie = np.empty(shape=(len(indexes),)+s_value.shape[1:], dtype=s_value.dtype)
+
+                    if interp_k == 'previous':
+                        import sortednp as snp
+                        indexes_k = snp.merge(s_id, indexes.astype(s_id.dtype, copy=False))
+                        # Remove doubles
+                        indexes_k = indexes_k[np.concatenate(([True], indexes_k[1:] != indexes_k[:-1]))]
+                    else:
+                        indexes_k = indexes
+
+                    serie = np.empty(shape=(len(indexes_k),)+s_value.shape[1:], dtype=s_value.dtype)
                     serie.fill(np.nan)
-                    mask = np.isin(indexes, s_id, assume_unique=True)
-                    serie[mask] = s_value[np.isin(s_id, indexes, assume_unique=True)]
+                    mask = np.isin(indexes_k, s_id, assume_unique=True)
+                    mask_in = np.isin(s_id, indexes_k, assume_unique=True)
+                    serie[mask] = s_value[mask_in]
+
                     if interp_k == 'previous':
                         pad_forward_na(serie, inplace=True, mask=mask)
                         mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
+                        serie = serie[np.isin(indexes_k, indexes, assume_unique=True)]
                     else:
                         mask_na[k] = mask
                 if k in smooth:
@@ -736,10 +766,10 @@ class History:
             epoch = np.searchsorted(epoch_starts, nan_idx, side='right', sorter=np.arange(len(epoch_starts)))
             if 'e_iter' in timestamp:
                 e_iter = nan_idx - epoch_starts[epoch-1]
-                timeline.iloc[nan_idx, timestamp.index('e_iter')] = e_iter
+                timeline.loc[nan_idx, 'e_iter'] = e_iter
                 timeline['e_iter'] = timeline['e_iter'].astype('int64')
             if 'epoch' in timestamp:
-                timeline.iloc[nan_idx, timestamp.index('epoch')] = epoch
+                timeline.loc[nan_idx, 'epoch'] = epoch
                 timeline['epoch'] = timeline['epoch'].astype('int64')
         if 'date' in timestamp:
             timeline['date'].interpolate(method='pad', inplace=True)
