@@ -209,6 +209,30 @@ def apply_scale(a, range=None, domain=None, clip=None):
     return a
 
 
+def pad_forward_na(x, inplace=False, axis=0, mask=None):
+    reduce_axes = tuple(_ for _ in range(x.ndim) if _ != axis)
+    if mask is None:
+        mask = np.isnan(x).sum(axis=reduce_axes) == 0
+
+    if mask.sum() == 0:
+        return x
+    idx = np.where(mask, np.arange(mask.shape[axis]), 0)
+    np.maximum.accumulate(idx, out=idx)     # Forward pad index
+
+    slice_idx = (slice(None),) * x.ndim
+    if inplace:
+        np.invert(mask, out=mask)
+        pad_idx = list(slice_idx)
+        pad_idx[axis] = idx[mask]
+        mask_idx = list(slice_idx)
+        mask_idx[axis] = mask
+        x[tuple(mask_idx)] = x[tuple(pad_idx)]
+    else:
+        pad_idx = list(slice_idx)
+        pad_idx[axis] = idx
+        return x[tuple(pad_idx)]
+
+
 ########################################################################################################################
 class ROCCurve(np.ndarray):
     def __new__(cls, input_array, labels=None):

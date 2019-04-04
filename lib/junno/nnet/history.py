@@ -5,6 +5,7 @@ from os.path import exists
 from ..j_utils.string import str2time, time2str
 from ..j_utils.path import format_filepath, open_pytable
 from ..j_utils.collections import OrderedDict, AttributeDict, df_empty
+from ..j_utils.math import pad_forward_na
 from ..datasets.dataset import DSColumnFormat
 
 
@@ -33,7 +34,7 @@ class History:
             r.append()
             self._epoch_info_hdf.flush()
         self._epoch_info = np.empty((self._epoch_info_hdf.nrows),
-                                    dtype=np.dtype([('start', np.int64), ('max_iter', np.int32)]))
+                                    dtype=np.dtype([('start_iter', np.int64), ('max_e_iter', np.int32)]))
         for i, r in enumerate(self._epoch_info_hdf.iterrows()):
             self._epoch_info[i] = (r['start_iter'], r['max_e_iter'])
 
@@ -266,7 +267,9 @@ class History:
     def series(self, only_number=False):
         keys = list(self.keys())
         if only_number:
-            return [k for k in keys if not isinstance(self.format[k], DSColumnFormat.Text)]
+            return [k for k in keys
+                    if np.issubdtype(self.format[k].dtype, np.number)
+                    and self.format[k].shape == ()]
         return keys
 
     def __getitem__(self, item):
@@ -338,8 +341,9 @@ class History:
     def read(self, series=None, start=0, stop=0, step=1, timestamp=('epoch', 'e_iter'),
              interpolation='previous', smooth=None, averaged=True, std=False):
         """
-        Interpolate or average
-        :param series: Keys of the variables to read
+        Read data from the specified range and return it as a pandas Dataframe. The data can be averaged over ``step``
+        elements, interpolated, and smoothed (in this order). When averaged, the standard deviation may be computed.
+        :param series: Names of the series to be read
         :type series: str or tuple or set
         :param start: timestamp from which data should be read
         :type start: int, TimeStamp, ...
@@ -352,15 +356,21 @@ class History:
                     - iteration
                     - time
                     - date
-        :param interpolation: Specify which number serie should be interpolated and how.
+        :param interpolation: Specify which number series should be interpolated and how.
         NaN in number series can automatically be replaced by interpolated values using pandas interpolation algorithms.
         This parameter most be one of those:
             - True: All numbers series are interpolated linearly
             - False: No interpolation is applied (NaN are not replaced)
             - List of series name: The specified series are interpolated linearly
             - Dictionary associating an interpolation method to a series name.
+            Valid interpolation method are: 'previous', 'nearest', 'linear', 'zero', 'slinear', 'quadratic', 'cubic'.
         :param smooth: Specify which number series should be smoothed and how much.
-        Specified series are Savitzky-Golay filter of order 3. The window size may be chosen (default is 15).
+        Specified series are Savitzky-Golay filter of order 3.
+        This parameter most be one of those:
+            - None or False: Series are not smoothed (default).
+            - True: All numbers series are smoothed with a window of 15.
+            - List of series name: The specified series are smoothed with a window of 15.
+            - Dictionary: associating series names with smoothing window size.
         :param averaged: Names of the time series whose values should be averaged along each step
         instead of being naively down-sampled. Can only be applied on number series.
         True means that all number series are be averaged and False means no series are.
@@ -375,21 +385,38 @@ class History:
         if step == 1:
             averaged = False
 
-        indexes = np.array(list(self.iterate_iterid(start=start, stop=stop, step=step)), dtype=np.uint32)
-        intervals = np.stack((indexes, np.concatenate((indexes[1:], [stop]))), axis=1)
+        indexes = np.array(list(self.iterate_iterid(start=start, stop=stop, step=step, last=True)), dtype=np.uint32)
+        start_timeid = max(self._timeline.index.searchsorted(indexes[0], side='left')-1, 0)
+        end_timeid = min(self._timeline.index.searchsorted(indexes[-1], side='right')+1, len(self._timeline)-1)
+        if averaged:
+            time_indexes = self._timeline.index.searchsorted(indexes, side='right') - 1
+            intervals = []
+            last_timeid = time_indexes[0]
+            if last_timeid < 0:
+                last_timeid = 0
+            for timeid in time_indexes[1:]:
+                if timeid < 0:
+                    timeid = 0
+                if last_timeid is not None and last_timeid != timeid:
+                    intervals.append((last_timeid, timeid))
+                    last_timeid = timeid
+                else:
+                    intervals.append(None)
+        indexes = indexes[:-1]
 
         series_name = self.interpret_series_name(series)
+        number_series_name = self.series(only_number=True)
+        number_series_name = [_ for _ in series_name if _ in number_series_name]
 
         if isinstance(averaged, bool):
-            averaged = self.series(only_number=True) if averaged else []
+            averaged = number_series_name if averaged else []
         else:
             averaged = self.interpret_series_name(averaged, only_number=True)
 
         if isinstance(std, bool):
             std = averaged if std else []
         else:
-            if isinstance(std, str):
-                std = [std]
+            std = self.interpret_series_name(std, only_number=True)
             not_averaged_series = set(std).difference(averaged)
             if not_averaged_series:
                 raise ValueError("Can't compute standard deviation of: %s.\n"
@@ -397,20 +424,22 @@ class History:
 
         if not interpolation:
             interpolation = {}
-        elif isinstance(interpolation, bool):
-            interpolation = {_: 'linear' for _ in self.series(only_number=True)}
+        elif interpolation is True:
+            interpolation = {_: 'linear' if _ in number_series_name else 'previous' for _ in series_name}
         elif isinstance(interpolation, str):
-            if interpolation in self.series(only_number=True):
+            if interpolation in number_series_name:
                 interpolation = {interpolation: 'linear'}
+            elif interpolation in series_name:
+                interpolation = {interpolation: 'previous'}
             else:
-                interpolation = {_: interpolation for _ in self.series(only_number=True)}
+                interpolation = {_: interpolation if _ in number_series_name else 'previous' for _ in series_name}
         elif isinstance(interpolation, (dict, OrderedDict)):
-            unknown_keys = set(interpolation.keys()).difference(self.series(only_number=True))
+            unknown_keys = set(interpolation.keys()).difference(number_series_name)
             if unknown_keys:
                 raise ValueError("Can't interpolate series: %s.\n"
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
         else:
-            unknown_keys = set(interpolation).difference(self.series(only_number=True))
+            unknown_keys = set(interpolation).difference(number_series_name)
             if unknown_keys:
                 raise ValueError("Can't interpolate series: %s.\n"
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
@@ -419,19 +448,19 @@ class History:
         if not smooth:
             smooth = {}
         elif isinstance(smooth, bool):
-            smooth = {_: 15 for _ in self.series(only_number=True)}
+            smooth = {_: 15 for _ in number_series_name}
         elif isinstance(smooth, str):
-            if smooth not in self.series(only_number=True):
+            if smooth not in number_series_name:
                 raise ValueError("Can't smooth series %s. It is either unknown or doesn't contain number!"
                                  % smooth)
             smooth = {smooth: 15}
         elif isinstance(smooth, (dict, OrderedDict)):
-            unknown_keys = set(smooth.keys()).difference(self.series(only_number=True))
+            unknown_keys = set(smooth.keys()).difference(number_series_name)
             if unknown_keys:
                 raise ValueError("Can't smooth series: %s.\n"
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
         else:
-            unknown_keys = set(smooth).difference(self.series(only_number=True))
+            unknown_keys = set(smooth).difference(number_series_name)
             if unknown_keys:
                 raise ValueError("Can't smooth series: %s.\n"
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
@@ -446,58 +475,96 @@ class History:
             import  scipy.signal
             return scipy.signal.savgol_filter(x, factor, 3, mode='constant')
 
-        df = []
         series = OrderedDict()
+        mask_na = OrderedDict()
+
         for k in series_name:
             table = self._table_by_key(k)
             serie_std = None
 
             # Sample
-            if k in self.series(only_number=True):
-                if k in averaged:
-                    timeidx = np.empty(shape=(intervals.shape[0],), dtype=np.int64)
-                    serie = np.empty(shape=(intervals.shape[0],))
-                    if serie_std is not None:
-                        serie_std = np.empty(shape=(intervals.shape[0],)) if k in std else None
-                    for i, (start_id, end_id) in enumerate(intervals):
+            if k in averaged:
+                timeidx = np.empty(shape=(len(intervals),), dtype=np.int64)
+                serie = np.empty(shape=(len(intervals),))
+                mask = np.empty(shape=(len(intervals),), dtype=np.bool)
+                mask.fill(True)
+                if k in std is not None:
+                    serie_std = np.empty(shape=(len(intervals),)) if k in std else None
+                for i, interval in enumerate(intervals):
+                    if interval:
+                        start_id, end_id = interval
                         s = table.read(start=start_id, stop=end_id)
                         if len(s):
                             timeidx[i] = s['timeline_id'][0]
                             serie[i] = np.mean(s['value']) if s.shape[0] else np.nan
                             if serie_std is not None:
-                                serie_std[i] = np.var(s[:, 1]) if s.shape[0] else np.nan
-                        else:
-                            serie[i] = np.nan
-                            if serie_std is not None:
-                                serie_std[i] = np.nan
+                                serie_std[i] = np.var(s['value']) if s.shape[0] else np.nan
+                            continue
 
-                    # Interpolate
-                    if k in interpolation:
-                        serie = interpolate(x=timeidx, y=serie, kind=interpolation[k])
-                        serie_std = interpolate(x=timeidx, y=serie_std, kind=interpolation[k])
+                    serie[i] = np.nan
+                    mask[i] = False
+                    if serie_std is not None:
+                        serie_std[i] = np.nan
 
-                    # Smooth
-                    if k in smooth:
-                        serie = perform_smooth(serie, smooth[k])
+                # Interpolate
+                if k in interpolation:
+                    if interpolation[k] == 'previous':
+                        pad_forward_na(serie, inplace=True, mask=mask)
+                        if serie_std is not None:
+                            pad_forward_na(serie_std, inplace=True, mask=mask)
+                    else:
+                        serie = interpolate(x=timeidx[mask], y=serie[mask], kind=interpolation[k])
+                        if serie_std is not None:
+                            serie_std = interpolate(x=timeidx[mask], y=serie_std[mask], kind=interpolation[k])
+                mask_na[k] = mask
+                if serie_std is not None:
+                    mask_na[k+'_std'] = mask
+
+                # Smooth
+                if k in smooth:
+                    serie = perform_smooth(serie, smooth[k])
+                    if serie_std is not None:
                         serie_std = perform_smooth(serie_std, smooth[k])
-                    series[k] = serie
+
+                series[k] = serie
+                if serie_std is not None:
                     series[k+'_std'] = serie_std
 
+            else:
+                start_table = max(abs(self._timeline_hdf[start_timeid]['_'+k])-1, 0)
+                end_table = max(abs(self._timeline_hdf[end_timeid]['_' + k]), 0)
+                s = table.read(start=start_table, stop=end_table)
+                interp_k = interpolation.get(k, None)
+                if interp_k is not None and interp_k != 'previous':
+                    serie = interpolate(s['timeline_id'], s['value'], kind=interpolation[k])
+                    mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
                 else:
-                    s = table.read(start=indexes[0]-1, stop=indexes[-1]+1)
-                    if k in interpolation:
-                        serie = interpolate(s['timeline_id'], s['value'], kind=interpolation[k])
+                    s_value = s['value']
+                    s_id = s['timeline_id']
+                    serie = np.empty(shape=(len(indexes),)+s_value.shape[1:], dtype=s_value.dtype)
+                    serie.fill(np.nan)
+                    mask = np.isin(indexes, s_id, assume_unique=True)
+                    serie[mask] = s_value[np.isin(s_id, indexes, assume_unique=True)]
+                    if interp_k == 'previous':
+                        pad_forward_na(serie, inplace=True, mask=mask)
+                        mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
                     else:
-                        s_value = s['value']
-                        s_id = s['timeline_id']
-                        serie = np.empty(shape=(len(indexes),), dtype=s_value.dtype)
-                        serie.fill(np.nan)
-                        serie[np.isin(indexes, s_id, assume_unique=True)] = \
-                            s[np.isin(s_id, indexes, assume_unique=True), 0]
-                    if k in smooth:
-                        serie = perform_smooth(serie, smooth[k])
-                    series[k] = serie
-        df = pandas.DataFrame(index=indexes, data=series, copy=False)
+                        mask_na[k] = mask
+                if k in smooth:
+                    serie = perform_smooth(serie, smooth[k])
+                series[k] = serie
+
+        df_series = OrderedDict()
+        for k, v in series.items():
+            if v.ndim > 1:
+                m = mask_na.get(k, None)
+                if m is None:
+                    m = np.invert(np.isnan(v.sum(axis=tuple(range(1, v.ndim)))))
+                df_series[k] = list(_v if _m else None for _v, _m in zip(v, m))
+            else:
+                df_series[k] = v
+
+        df = pandas.DataFrame(index=indexes, data=df_series, copy=False)
         if timestamp:
             timestamp_df = self.export_timeline(timestamp, indexes)
             return pandas.concat([timestamp_df, df], axis=1)
@@ -653,12 +720,32 @@ class History:
 
         return series
 
-    def export_timeline(self, timestamp=('date', 'time', 'epoch', 'e_iter'), indexes=None):
+    def export_timeline(self, timestamp=('date', 'time', 'epoch', 'e_iter'), iter_ids=None):
         if isinstance(timestamp, str):
             timestamp = (timestamp,)
-        if indexes is None:
-            indexes = list(range(len(self._timeline)))
-        return self._timeline[list(timestamp)].iloc[indexes]
+        if iter_ids is None:
+            iter_ids = list(range(len(self)))
+        timeline = self._timeline[list(timestamp)].reindex(iter_ids, copy=False)
+        nan_idx = timeline.index[timeline['epoch'].isnull()]
+
+        if not len(nan_idx):
+            return timeline
+
+        if 'epoch' in timestamp or 'e_iter' in timestamp:
+            epoch_starts = self._epoch_info['start_iter']
+            epoch = np.searchsorted(epoch_starts, nan_idx, side='right', sorter=np.arange(len(epoch_starts)))
+            if 'e_iter' in timestamp:
+                e_iter = nan_idx - epoch_starts[epoch-1]
+                timeline.iloc[nan_idx, timestamp.index('e_iter')] = e_iter
+                timeline['e_iter'] = timeline['e_iter'].astype('int64')
+            if 'epoch' in timestamp:
+                timeline.iloc[nan_idx, timestamp.index('epoch')] = epoch
+                timeline['epoch'] = timeline['epoch'].astype('int64')
+        if 'date' in timestamp:
+            timeline['date'].interpolate(method='pad', inplace=True)
+        if 'time' in timestamp:
+            timeline['time'].interpolate(method='pad', inplace=True)
+        return timeline
 
 
 class TimeStamp:
