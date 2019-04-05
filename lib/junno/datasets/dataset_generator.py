@@ -20,7 +20,7 @@ class DataSetResult:
     Store the result of an iteration of a generator from DataSet
     """
 
-    def __init__(self, data_dict, columns, start_id, size, dataset=None, undef_dims=None):
+    def __init__(self, data_dict, columns, start_id, size, dataset=None):
         """
         :type data_dict: dict
         :type dataset: AbstractDataSet
@@ -309,13 +309,6 @@ class DataSetResult:
                 if isinstance(value, np.ndarray):
                     col = self.columns[columns]
 
-                    if col.is_seq:
-                        undef_dims = value.shape[:col.undef_dims]
-                        previous_size = self._data_dict[columns].shape
-                        shape = list(previous_size)
-                        for i, dim in enumerate(undef_dims):
-                            shape[i+1] = dim
-                        self._data_dict[columns] = np.resize(self._data_dict[columns], shape)
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
                     if isinstance(value, bytes) and self.column_by_name(columns).is_text:

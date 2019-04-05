@@ -47,15 +47,12 @@ class FilesCollection(AbstractDataSet):
                           Otherwise only the files in the path folder will be listed
         """
         super(FilesCollection, self).__init__(name, pk_type=np.dtype(('U', 100)))
-        self.is_seq = is_seq
         self.path = path
         self.regexp = regexp
         self.filename_regexp = filename_regexp
         self.recursive = recursive
         self.remove_extension = remove_extension
         self._files = np.zeros(shape=(), dtype=np.dtype(('U', 100)))
-        if self.is_seq:
-            self._sequences_sizes = np.zeros(shape=(), dtype=int)
 
         self.update_files()
 
