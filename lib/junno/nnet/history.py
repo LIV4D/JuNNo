@@ -258,6 +258,8 @@ class History:
         if not isinstance(key, str):
             raise KeyError('History key should be a serie name not (%s, type:%s).'
                            % (str(key), type(key)))
+        if type(value).__name__ == "Tensor":
+            value = value.detach().cpu().numpy()
         self.set_key(key, value)
 
     # ---  Store/Read Data  ---
