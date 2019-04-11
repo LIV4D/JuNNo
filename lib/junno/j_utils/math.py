@@ -299,8 +299,13 @@ class ROCCurve(np.ndarray):
 
         tpr = tpr / tpr[-1]
         fpr = fpr / fpr[-1]
-
         thresholds = score[idx_threshold]
+
+        if fpr[0] != 0 or tpr[0] != 0:
+            tpr = np.r_[0, tpr]
+            fpr = np.r_[0, fpr]
+            thresholds = np.r_[thresholds[0]+1, thresholds]
+
         return np.stack([tpr, fpr, thresholds], axis=-1).view(ROCCurve)
 
     def __getitem__(self, item):

@@ -330,6 +330,7 @@ class ImagesCollection(FilesCollection):
     def get_seqs_size(self, dir):
         return len(listdir(dir))
 
+
 ########################################################################################################################
 ########################################################################################################################
 class DataSetPandaDF(AbstractDataSet):
@@ -349,8 +350,7 @@ class DataSetPandaDF(AbstractDataSet):
 
         for c_name, c_id in self.column_index.items():
             if self._df.dtypes[c_id] == object:
-                single_element = self._df[self._df.columns[c_id]].values[0]
-                self.add_column(c_name, (), type(single_element))
+                self.add_column(c_name, (), str)
             else:
                 self.add_column(c_name, (), self._df.dtypes[c_id])
 
@@ -359,16 +359,22 @@ class DataSetPandaDF(AbstractDataSet):
         return len(self._df.axes[0])
 
     def _generator(self, gen_context):
+        data = {}
+        for c in gen_context.columns:
+            col = self.column_by_name(c)
+            if col.is_text:
+                data[c] = self._df[c].fillna('').values.astype(col.dtype)
+            else:
+                data[c] = self._df[c].values.astype(col.dtype)
+
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
             r[:, 'pk'] = list(self._df.axes[0][i_global:i_global+n])
 
-            # data = self._df.values
-            for c in gen_context.columns:
+            for c, series in data.items():
                 if c != 'pk':
-                    data = self._df[self._df.columns[self.column_index[c]]].values
-                    r[:, c] = data[i_global:i_global+n]
+                    r[:, c] = series[i_global:i_global+n]
             yield r
             i_global += n
 

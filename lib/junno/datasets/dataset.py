@@ -1059,6 +1059,93 @@ class AbstractDataSet(metaclass=ABCMeta):
 
             return confmat
 
+    def roc_curve(self, pred, true, weight=None, rowwise=False, negative_label=0,
+                  start=0, stop=None, ncore=1, n=1, determinist=True):
+        from ..j_utils.math import ROCCurve
+
+        # Handle pred, true and weight
+        if isinstance(pred, DSColumn):
+            if pred.dataset is not self:
+                raise ValueError("%s is not a column of %s." % (pred.name, self.dataset_name))
+        elif isinstance(pred, str):
+            pred = self.column_by_name(pred)
+        else:
+            raise ValueError("Invalid type for pred. (Expected type: str or DSColumn, received: %s)" % type(pred))
+        pred_shape = pred.shape
+
+        if isinstance(true, DSColumn):
+            if true.dataset is not self:
+                raise ValueError("%s is not a column of %s." % (true.name, self.dataset_name))
+        elif isinstance(true, str):
+            true = self.column_by_name(true)
+        elif isinstance(true, np.ndarray):
+            pass
+        else:
+            raise ValueError("Invalid type for true. (Expected type: str or DSColumn, received: %s)" % type(true))
+        true_shape = true.shape
+
+        if weight is not None:
+            if isinstance(weight, DSColumn):
+                if weight.dataset is not self:
+                    raise ValueError("%s is not a column of %s." % (weight.name, self.dataset_name))
+            elif isinstance(weight, str):
+                weight = self.column_by_name(weight)
+            elif isinstance(weight, np.ndarray):
+                pass
+            else:
+                raise ValueError(
+                    "Invalid type for weight. (Expected type: str or DSColumn, received: %s)" % type(weight))
+            weight_shape = weight.shape
+        else:
+            weight_shape = None
+
+        if weight is not None and np.prod(true_shape) != np.prod(weight_shape):
+            raise ValueError("Error when computing the confusion matrix of %s and %s:\n"
+                             "Shape mismatch: %s.shape=%s, %s.shape=%s"
+                             % (true.name, weight.name, true.name, true.shape, weight.name, weight.shape))
+
+        start, stop = interval(self.size, start, stop)
+
+        if rowwise:
+            roc_name = pred.name + '_roc' if not isinstance(rowwise, str) else rowwise
+            kwargs = dict(name=roc_name, keep_parent=True, format=DSColumnFormat.ROCCurve(), n_factor=1)
+
+            def roc_curve(pred, true, weight):
+                return ROCCurve.roc_curve(score=pred.flatten(), true=true.flatten(), sample_weight=weight.flatten(),
+                                          negative_label=negative_label)
+
+            if isinstance(true, DSColumn):
+                if isinstance(weight, DSColumn):
+                    roc_D = self.apply({roc_name: (pred, true, weight)}, roc_curve, **kwargs)
+                else:
+                    roc_D = self.apply({roc_name: (pred, true)}, **kwargs,
+                                        function=lambda pred, true: roc_curve(pred, true, weight))
+            else:
+                if isinstance(weight, DSColumn):
+                    roc_D = self.apply({roc_name: (pred, weight)}, **kwargs,
+                                        function=lambda pred, weight: roc_curve(pred, true, weight))
+                else:
+                    roc_D = self.apply({roc_name: pred}, **kwargs,
+                                        function=lambda pred: roc_curve(pred, true, weight))
+            return roc_D
+        else:
+            if isinstance(true, DSColumn):
+                if isinstance(weight, DSColumn):
+                    r = self.read(start=start, stop=stop, columns=(pred, true, weight))
+                    pred, true, weight = r[pred], r[true], r[weight]
+                else:
+                    r = self.read(start=start, stop=stop, columns=(pred, true))
+                    pred, true = r[pred], r[true]
+            else:
+                if isinstance(weight, DSColumn):
+                    r = self.read(start=start, stop=stop, columns=(pred, weight))
+                    pred, weight = r[pred], r[weight]
+                else:
+                    r = self.read(start=start, stop=stop, columns=pred)
+                    pred = r[pred]
+
+            return ROCCurve.roc_curve(score=pred, true=true, sample_weight=weight, negative_label=negative_label)
+
     #   ---   Operations   ---
     @classmethod
     def operation(cls, func):
@@ -1888,49 +1975,10 @@ class DSColumnFormat:
 
     class ROCCurve(Base):
         def __init__(self, shape, dtype='int64'):
-            if isinstance(shape, int):
-                self.n_class = shape
-                shape = (shape, shape)
-            else:
-                self.n_class = shape[-1]
             super(DSColumnFormat.ROCCurve, self).__init__(dtype, shape)
 
         def __repr__(self):
-            return 'ConfMatrix()'
-
-        def format_html(self, data, raw_data, fullscreen=None):
-            table_tmp = """
-            <table style="font-size: 10px;
-                          text-align: center;
-                          margin: auto;
-                          border-collapse: separate;
-                          border-spacing: 2px 2px;"> 
-                {} 
-            </table>
-            """
-            table = ""
-            s = data.sum()
-
-            def color_scale(f, rgb):
-                r,g,b = rgb
-                return (255 - f * (255 - r),
-                        255 - f * (255 - g),
-                        255 - f * (255 - b))
-
-            for i, row in enumerate(data):
-                row_html = ""
-                for j, c in enumerate(row):
-                    f = c/s
-                    r,g,b = color_scale(f, (163,209,76) if i==j else (179,39,39))
-                    row_html += """
-                    <td style="padding: 5px 10px 1px 10px;
-                               background-color: rgb(%i,%i,%i)">%i</td>
-                    """ % (r, g, b, c)
-
-                table += '<tr style="border: none;">' + row_html + "</tr>"
-
-            return table_tmp.format(table)
-
+            return 'ROCCurve()'
 
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False):

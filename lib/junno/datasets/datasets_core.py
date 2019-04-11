@@ -880,7 +880,7 @@ def join(*join_columns, **map_columns):
             dataset = join_col.dataset
             for c in dataset.col:
                 if c.name in map_columns and c is not join_col:
-                    raise ValueError('Column named %s appears in at least to datasets, you must specify a mapping.' % c)
+                    raise ValueError('Column named %s appears in at least 2 datasets, you must specify a mapping.' % c)
                 map_columns[c.name] = c
 
     return DataSetJoin(join_columns, **map_columns)
@@ -1267,10 +1267,11 @@ class DataSetApply(AbstractDataSet):
         # Apply the format
         for c_name, c_format in format.items():
             col = self.column_by_name(c_name)
-            if c_format == "str":
+            if c_format == "str" or 'U' in str(c_format):
                 col._dtype = np.dtype('O')
                 col._is_text = True
                 col.format = DSColumnFormat.Text()
+                col._shape = ()
             else:
                 col._dtype = c_format[0]
                 col._shape = c_format[1] if len(c_format) > 1 else ()

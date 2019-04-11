@@ -43,6 +43,7 @@ def open_pytable(path):
     import tables
     import weakref
     os.makedirs(dirname(path), exist_ok=True)
+
     f = tables.open_file(path, mode='a')
     _pytables_files[path] = weakref.ref(f)
 
