@@ -1,7 +1,8 @@
+from .function import bind_args
 import functools
-from ..j_utils.function import bind_args
 import math
 import numpy as np
+import pandas
 
 
 def prod(factor):
@@ -234,9 +235,186 @@ def pad_forward_na(x, inplace=False, axis=0, mask=None):
 
 
 ########################################################################################################################
+def vegalite_graph(df, graph_mapping, graph_opt=None, shape=(400, 300)):
+    """
+    :param df: 
+    :param graph_mapping: 
+    - A dictionary associating a graph attribute with a pandas columns or a constant value.
+    - A dictionary associating a series name with a dictionary as specified before.
+
+    Graph attributes are:
+        - Data channel: x, y, std
+        - Mark Property: color, opacity, fillOpacity, strokeOpacity, shape, size, strokeWidth
+        - text, tooltip
+
+    :param graph_opt:
+    :param shape: 
+    :return: 
+    """
+    from vega import VegaLite
+    import pandas
+    from .collections import recursive_dict_update
+
+    if graph_opt is None:
+        graph_opt = {}
+
+    opt = {
+        "spec":{
+            "title": {
+                "anchor": "center"
+            },
+            "mark": "point"
+        }
+    }
+
+    recursive_dict_update(opt, graph_opt)
+
+    binding_opt = {
+        "spec":{
+            "width": shape[0],
+            "height": shape[1],
+        },
+    }
+
+    layers = []
+
+    def interpret_as_layers(mapping):
+        x = mapping.pop('x')
+        y = mapping.pop('y')
+        mark = mapping.pop('mark', "line")
+        std = mapping.pop('std', None)
+        tooltip = mapping.pop('tooltip', None)
+        color = mapping.pop('color', None)
+
+        l = [{
+            "mark": mark,
+            "encoding": {
+                "x": x,
+                "y": y,
+                **mapping
+            }
+        }]
+
+        if std:
+            l += [{
+                "mark": "errorband",
+                "encoding": {
+                    "y": {"field": std},
+                    "y2": {"field": std},
+                    "x": {"field": x}
+                }
+            }]
+        if color:
+            for _ in l:
+                _['encoding']['color'] = color
+
+        return l
+
+    if isinstance(next(graph_mapping.values()), dict):
+
+
+    recursive_dict_update(opt, binding_opt)
+
+    return VegaLite(opt, df)
+
+
+class XYSeries(np.ndarray):
+    """
+    Series X-Y, multiple attribute
+    - X Y1 Y2 std1 std2... -> fields name=Y1 Y2 (c, l) YES
+    - title
+    - axis title
+    - Vegalite mapping: {'Curve1': {y: , std: , "Field": }
+    """
+    def __new__(cls, input_array, labels=None, graph_map=None, graph_opt=None):
+        """
+
+        :param input_array:
+        :param labels: {"name": axis (tuple of length=self.ndim-1)}
+        :param graph_map:
+        :param graph_opt:
+        """
+        a = np.asarray(input_array).view(cls)
+        a.labels = labels
+        a.graph_map = graph_map
+        a.graph_opt = graph_opt
+        return a
+
+    def __array_finalize__(self, obj):
+        if obj is None: return
+        if obj.ndim < 2:
+            print(obj, obj.shape)
+            raise ValueError('XYSeries must have at least 2 axis!')
+        if obj.shape[-2] >= 2:
+            raise ValueError("The length of XYSeries last axis must be at least 2 and not %i." % obj.shape[-1])
+        if not np.issubdtype(obj.dtype, np.number):
+            raise ValueError("XY series dtype should be numeric (not %s)." % str(obj.dtype))
+        self.labels = getattr(obj, 'labels', {})
+        self.graph_map = getattr(obj, 'graph_map', {'x': 0, 'y': 1})
+        self.graph_opt = getattr(obj, 'graph_opt', {})
+
+    def __getitem__(self, item):
+        if isinstance(item, str):
+            if item not in self.labels:
+                raise ValueError('Unkown label: %s.' % item)
+            return super(XYSeries, self).__getitem__(self.labels[item])
+        elif isinstance(item, tuple):
+            if len(item) < self.ndim - 2:
+                a = super(XYSeries, self).__getitem__(item)
+                a_labels = {l[len(item):]: k for l, k in self.labels.items()
+                            if all(i1 == i2 for i1, i2 in zip(l, item))}
+                a.labels = a_labels
+                return a
+        return self.view(np.ndarray)[item]
+
+    def _ipython_display_(self):
+        from IPython.display import display
+        display(self.vegalite_graph())
+
+    @property
+    def title(self):
+        return self.graph_opt['spec']['title']['text']
+
+    @title.setter
+    def title(self, t):
+        self.graph_opt['spec']['title']['text'] = t
+
+    @property
+    def x_title(self):
+        return self.graph_opt['config']['axisX']['title']
+
+    @x_title.setter
+    def x_title(self, t):
+        self.graph_opt['config']['axisX']['title'] = t
+
+    @property
+    def y_title(self):
+        return self.graph_opt['config']['axisY']['title']
+
+    @y_title.setter
+    def y_title(self, t):
+        self.graph_opt['config']['axisY']['title'] = t
+
+
+class VegaDataframe(pandas.DataFrame):
+    _metadata = ['graph_map', 'graph_opt']
+    graph_opt = {}
+    graph_map = {}
+
+    @property
+    def _constructor(self):
+        return VegaDataframe
+
+    def _ipython_display_(self):
+        from IPython.display import display
+        display(self.vegalite_graph())
+
+
+########################################################################################################################
 class ROCCurve(np.ndarray):
     def __new__(cls, input_array, labels=None):
         a = np.asarray(input_array).astype(np.float).view(cls)
+        a.labels = labels
         return a
 
     @property

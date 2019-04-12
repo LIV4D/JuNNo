@@ -1713,11 +1713,11 @@ class DSColumnFormat:
         def dtype_name(self):
             if self.shape != ():
                 return 'array(%s)' % str(self.dtype)
-            if 'int' in str(self.dtype):
+            if np.issubdtype(self.dtype, np.integer):
                 return 'INTEGER'
-            elif 'float' in str(self.dtype):
+            elif np.issubdtype(self.dtype, np.inexact):
                 return 'FLOAT'
-            elif str(self.dtype) in ('str', 'U') or self.dtype == np.str_:
+            elif str(self.dtype) in ('str', 'U') or np.issubdtype(self.dtype, np.character):
                 return 'TEXT'
             return 'UNKNOWN'
 
@@ -2205,16 +2205,14 @@ class DSColumnFormat:
                 return DSColumnFormat.LabelImage(dtype, shape, mapping=args[0] if args else None)
 
         if shape == ():
-            if 'int' in repr(dtype):
+            if np.issubdtype(dtype, np.number):
                 if isinstance(info, dict):
                     return DSColumnFormat.Label(dtype, shape, mapping=info)
                 else:
                     return DSColumnFormat.Number(dtype, shape)
-            elif 'float' in repr(dtype):
-                return DSColumnFormat.Number(dtype, shape)
             elif dtype == 'str' or 'str' in str(dtype) or 'S' in str(dtype) or 'U' in str(dtype):
                 return DSColumnFormat.Text(dtype, shape)
-        elif 'int' in repr(dtype) or 'float' in repr(dtype) or dtype in ('bool',):
+        elif np.issubdtype(dtype, np.number) or dtype == np.bool:
             if isinstance(info, str) and info.lower() == 'image':
                 is_img = True
             elif isinstance(info, str) and info.lower() == 'matrix':

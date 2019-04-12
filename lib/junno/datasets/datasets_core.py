@@ -43,6 +43,10 @@ class NumPyDataSet(AbstractDataSet):
         return self
 
 
+def from_numpy(**data_dict):
+    return NumPyDataSet(data_dict, name='NumpyCache')
+
+
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
     def __init__(self, pytable, where=None, sortby=None, name='PyTableDataset'):

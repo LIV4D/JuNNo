@@ -32,10 +32,12 @@ def is_collection_of(o, t, c=None, recursive=False):
             return False
     return False
 
+
 def istypeof_or_collectionof(o, t, c=None, recursive=False):
     if isinstance(o, t):
         return True
     return is_collection_of(o, t, c, recursive)
+
 
 def istypeof_or_listof(o, t, recursive=False):
     return istypeof_or_collectionof(o, t, c=list, recursive=recursive)
@@ -49,6 +51,7 @@ def recursive_dict_update(destination, origin):
         else:
             destination[n] = v
 
+
 def recursive_dict(dictionnary, function):
     r = {}
     for n, v in dictionnary.items():
@@ -59,13 +62,16 @@ def recursive_dict(dictionnary, function):
         r[n] = v
     return r
 
+
 def if_none(v, default=None):
     if default is None:
         return v is None
     return default if v is None else v
 
+
 def if_else(v, cond, default=None):
     return v if cond(v) else default
+
 
 def if_not(v, default=None):
     if default is None:
