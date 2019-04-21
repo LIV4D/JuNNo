@@ -1266,7 +1266,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 if 0 < ratio < 1:
                     l = math.floor(self.size * ratio)
                 elif ratio >= 1:
-                    l = math.floor(ratio)
+                    l = ratio
                     ratio = l / self.size
                 else:
                     raise NotImplementedError('Datasets ratio must be a positive number')
@@ -1283,7 +1283,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         if eq_ratio:
             ratio = (1-cummulative_ratio)/len(eq_ratio)
             for name in eq_ratio:
-                l = round(self.size * ratio)
+                l = math.floor(self.size * ratio)
                 d[name] = self.subset(offset, offset + l)
                 offset += l
 
