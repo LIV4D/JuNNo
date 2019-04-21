@@ -79,6 +79,7 @@ import os
 from os.path import dirname, exists, join, basename, abspath
 from os import makedirs
 import weakref
+import math
 
 from ..j_utils.j_log import log, Process
 
@@ -1263,12 +1264,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         for name, ratio in kwargs.items():
             if ratio != -1:
                 if 0 < ratio < 1:
-                    l = round(self.size * ratio)
+                    l = math.floor(self.size * ratio)
                 elif ratio >= 1:
-                    l = round(ratio)
+                    l = math.floor(ratio)
                     ratio = l / self.size
                 else:
                     raise NotImplementedError('Datasets ratio must be a positive number')
+
+
                 d[name] = self.subset(offset, offset+l, name=name)
                 offset += l
                 cummulative_ratio += ratio
