@@ -320,6 +320,8 @@ class DataSetResult:
                 elif isinstance(value, np.ndarray) and not isinstance(self._data_dict[columns], DataSetResultPointer):
                     np.copyto(self._data_dict[columns][indexes], value)
                 else:
+                    if isinstance(value, bytes) and self.column_by_name(columns).is_text:
+                        value = value.decode('ascii')
                     self._data_dict[columns][indexes] = value
             else:
                 raise KeyError('Unknown column: %s' % columns)

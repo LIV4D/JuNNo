@@ -1055,6 +1055,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         hdfDataset = PyTableDataSet(hdf_t, name=name)
         for c in columns:
             hdfDataset.col[c].format = self.col[c].format
+            hdfDataset.col[c]._is_text = self.col[c].is_text     # Bof...
         return hdfDataset
 
     #   --- Global operator ---
@@ -1188,7 +1189,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         def conf_mat(pred, true, weight):
             if one_hot:
                 pred = np.argmax(pred, axis=0)
-            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight,
+            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight.flatten(),
                                                labels=conf_labels)
         if isinstance(true, DSColumn):
             if isinstance(weight, DSColumn):
@@ -1361,7 +1362,32 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
                               format=format, remove_parent_columns=not keep_parent)
 
-    def apply_map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
+    def apply_torch(self, columns, torch_callable, device=None, eval=True, n_factor=1, batchwise=True,
+                    keep_parent=True, name=None):
+        import torch
+
+        if name is None:
+            name = 'torch'
+
+        def f(x):
+            reset_to_train = False
+            if eval and getattr(torch_callable, 'training', False):
+                reset_to_train = True
+                torch_callable.eval()
+
+            x = torch.from_numpy(x)
+            if device:
+                x = x.to(device)
+            y = torch_callable(x).detach().cpu().numpy()
+
+            if reset_to_train:
+                torch_callable.train()
+
+            return y
+
+        return self.apply(columns, f, n_factor=n_factor, batchwise=batchwise, keep_parent=keep_parent, name=name)
+
+    def map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
         from .datasets_core import DataSetApply
         from ..j_utils.image import prepare_lut
         if default is None:
@@ -1369,6 +1395,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         f_lut = prepare_lut(mapping, default=default, sampling=sampling)
         return DataSetApply(self, function=f_lut, columns=columns, name=name,
                             format=None, batchwise=True, n_factor=1)
+
+    def scale_values(self, columns, range=(0,1), domain=(0,1), clip=None, name='scale_value'):
+        from .datasets_core import DataSetApply
+        from ..j_utils.math import apply_scale
+        def f_apply_scale(x):
+            return apply_scale(x, range=range, domain=domain, clip=clip)
+        return DataSetApply(self, function=f_apply_scale, columns=columns, name=name,
+                            format='same', batchwise=True, n_factor=1)
 
     def as_label(self, columns, mapping, format=None, sampling=None, name="label"):
         f_mapping = None
@@ -1695,7 +1729,7 @@ class DSColumn:
 
     @property
     def is_text(self):
-        return self._is_text
+        return self._is_text or isinstance(self.format, DSColumnFormat.Text)
 
     @property
     def format(self):
@@ -1836,7 +1870,7 @@ class DSColumnFormat:
             return True
 
         def export_html(self, data, fullscreen=None):
-            return ("<p>%i</p>" if 'int' in str(self.dtype) else "<p>%f.3</p>") % data
+            return ("<p>%i</p>" if 'int' in str(self.dtype) else "<p>%.3f</p>") % data
 
     class Text(Base):
         def __init__(self, dtype='O', shape=()):
@@ -2029,6 +2063,52 @@ class DSColumnFormat:
                 table += '<tr style="border: none;">' + row_html + "</tr>"
 
             return table_tmp.format(table)
+
+    class ROCCurve(Base):
+        def __init__(self, shape, dtype='int64'):
+            if isinstance(shape, int):
+                self.n_class = shape
+                shape = (shape, shape)
+            else:
+                self.n_class = shape[-1]
+            super(DSColumnFormat.ROCCurve, self).__init__(dtype, shape)
+
+        def __repr__(self):
+            return 'ConfMatrix()'
+
+        def format_html(self, data, raw_data, fullscreen=None):
+            table_tmp = """
+            <table style="font-size: 10px;
+                          text-align: center;
+                          margin: auto;
+                          border-collapse: separate;
+                          border-spacing: 2px 2px;"> 
+                {} 
+            </table>
+            """
+            table = ""
+            s = data.sum()
+
+            def color_scale(f, rgb):
+                r,g,b = rgb
+                return (255 - f * (255 - r),
+                        255 - f * (255 - g),
+                        255 - f * (255 - b))
+
+            for i, row in enumerate(data):
+                row_html = ""
+                for j, c in enumerate(row):
+                    f = c/s
+                    r,g,b = color_scale(f, (163,209,76) if i==j else (179,39,39))
+                    row_html += """
+                    <td style="padding: 5px 10px 1px 10px;
+                               background-color: rgb(%i,%i,%i)">%i</td>
+                    """ % (r, g, b, c)
+
+                table += '<tr style="border: none;">' + row_html + "</tr>"
+
+            return table_tmp.format(table)
+
 
     class Image(Matrix):
         def __init__(self, dtype, shape, is_label=False, undef_dims=None):

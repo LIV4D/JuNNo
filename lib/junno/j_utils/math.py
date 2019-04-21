@@ -252,11 +252,113 @@ def apply_scale(a, range=None, domain=None, clip=None):
 
 
 ########################################################################################################################
+class ROCCurve(np.ndarray):
+    def __new__(cls, input_array, labels=None):
+        a = np.asarray(input_array).astype(np.float).view(cls)
+        return a
+
+    @property
+    def tpr(self):
+        return self[..., 0]
+
+    @property
+    def fpr(self):
+        return self[..., 1]
+
+    @property
+    def thresholds(self):
+        return self[..., 2]
+
+    def __array_finalize__(self, obj):
+        if obj is None: return
+        if obj.ndim < 2:
+            print(obj, obj.shape)
+            raise ValueError('ROCCurve must have at least 2 axis!')
+        if obj.shape[-1] != 3:
+            raise ValueError("The length of ROCCurve's last axis must be 3 and not %i." % obj.shape[-1])
+        from sklearn.metrics import auc
+        if hasattr(obj, 'auc'):
+            self.auc = obj.auc
+        else:
+            self.auc = auc(self.fpr, self.tpr)
+
+    @staticmethod
+    def create(tpr, fpr, thresholds):
+        return np.stack([tpr, fpr, thresholds], axis=-1).view(ROCCurve)
+
+    @staticmethod
+    def roc_curve(score, true, sample_weight=None, negative_label=0):
+        if np.prod(score.shape) != np.prod(true.shape):
+            raise ValueError("Proba and True doesn't have the same shape (proba: %s, true: %s)." %
+                             (score.shape, true.shape))
+        if true.dtype != np.bool:
+            true = true != negative_label
+
+        score = score.flatten()
+        true = true.flatten()
+
+        # Sort proba
+        idx_sorted = np.argsort(score, kind="quicksort")[::-1]
+        true = true[idx_sorted]
+        score = score[idx_sorted]
+        if sample_weight is not None:
+            sample_weight = sample_weight.flatten()[idx_sorted]
+        else:
+            sample_weight = 1.
+
+        idx_threshold = np.where(np.diff(score))[0]
+        idx_threshold = np.r_[idx_threshold, true.size - 1]
+
+        tpr = np.cumsum(true*sample_weight)[idx_threshold]
+        if isinstance(sample_weight, float) and sample_weight == 1.:
+            fpr = 1 + idx_threshold - tpr
+        else:
+            fpr = np.cumsum(np.invert(true)*sample_weight)[idx_threshold]
+
+        tpr = tpr / tpr[-1]
+        fpr = fpr / fpr[-1]
+
+        thresholds = score[idx_threshold]
+        return np.stack([tpr, fpr, thresholds], axis=-1).view(ROCCurve)
+
+    def __getitem__(self, item):
+        return self.view(np.ndarray)[item]
+
+    def _ipython_display_(self):
+        from IPython.display import display
+        display(self.vegalite_graph())
+
+    def vegalite_graph(self, shape=(400, 300), simple=False):
+        from vega import VegaLite
+        import pandas
+        idx = np.linspace(0, self.fpr.size - 1, 500, dtype=np.uint)
+        return VegaLite({
+            "title": {
+                "text": "AUC = %.3f       " % self.auc,
+                "anchor": "end"
+            },
+            "width": shape[0],
+            "height": shape[1],
+            "mark": {"type": "area", "line": True, "point": True},
+            "encoding": {
+                "y": {"type": "quantitative", "field": "tpr", "title": "True Positive Rate"},
+                "x": {"type": "quantitative", "field": "fpr", "title": "False Positive Rate"},
+                "tooltip": [{"type": "quantitative", "field": "tpr", "title": "True Positive"},
+                            {"type": "quantitative", "field": "fpr", "title": "False Positive"},
+                            {"type": "quantitative", "field": "thresholds", "title": "Threshold"}]
+            }
+        }, pandas.DataFrame(dict(fpr=self.fpr[idx], tpr=self.tpr[idx], thresholds=self.thresholds[idx])))
+
+
+########################################################################################################################
 def metric(alias=None):
     def decorator(func):
         @functools.wraps(func)
         def compute_metric(self, *params, **kwargs):
-            m = self.no_normed().view(np.ndarray)
+            if isinstance(self, ConfMatrix):
+                m = self.no_normed().view(np.ndarray)
+            else:
+                m = np.ndarray(self)
             params = bind_args(func, *params, **kwargs)
             return func(m=m, **params)
 
@@ -281,11 +383,29 @@ class ConfMatrix(np.ndarray):
 
     @staticmethod
     def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None):
-        from sklearn.metrics import confusion_matrix
-        conf = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=labels, sample_weight=sample_weight)
-        conf = conf.view(ConfMatrix)
-        conf.labels = labels
-        return conf
+        if isinstance(labels, int):
+            labels = list(range(labels))
+        if np.prod(y_true.shape)<=100 or labels is None or len(labels) <= 3:
+            # For small or huge computation use memory optimized method
+            from sklearn.metrics import confusion_matrix
+            conf = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=labels, sample_weight=sample_weight)
+            conf = conf.view(ConfMatrix)
+            conf.labels = labels
+            return conf
+        else:
+            # Else use computation-time optimized method
+            conf = ConfMatrix.zeros(labels)
+            labels = conf.labels
+            if sample_weight is None:
+                sample_weight = 1
+
+            a = np.stack([y_true, y_pred], axis=0)
+
+            for i in labels:
+                for j in labels:
+                    conf[i, j] = np.sum(((a[0] == i) & (a[1] == j))*sample_weight)
+
+            return conf
 
     @staticmethod
     def zeros(labels):
@@ -465,64 +585,118 @@ class ConfMatrix(np.ndarray):
         return _true(m) / _total(m)
 
     @metric(alias=('sensitivity', 'recall'))
-    def true_positive_rate(m, negative_axis=0):
-        tp = _true_positive(m, negative_axis)
-        fn = _false_negative(m, negative_axis)
-        return tp / (tp+fn)
+    def true_positive_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.true_positive_rate(m, i) for i in range(l))
+        else:
+            tp = _true_positive(m, negative_axis)
+            fn = _false_negative(m, negative_axis)
+            return tp / (tp+fn)
     sensitivity = true_positive_rate
     recall = true_positive_rate
 
     @metric()
-    def false_negative_rate(m, negative_axis=0):
-        tp = _true_positive(m, negative_axis)
-        fn = _false_negative(m, negative_axis)
+    def false_negative_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.false_negative_rate(m, i) for i in range(l))
+        else:
+            tp = _true_positive(m, negative_axis)
+            fn = _false_negative(m, negative_axis)
         return fn / (tp + fn)
 
     @metric(alias='specificity')
-    def true_negative_rate(m, negative_axis=0):
-        tn = _true_negative(m, negative_axis)
-        fp = _false_positive(m, negative_axis)
+    def true_negative_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.true_negative_rate(m, i) for i in range(l))
+        else:
+            tn = _true_negative(m, negative_axis)
+            fp = _false_positive(m, negative_axis)
         return tn / (tn+fp)
     specifity = true_negative_rate
 
     @metric()
-    def false_positive_rate(m, negative_axis=0):
-        tn = _true_negative(m, negative_axis)
-        fp = _false_positive(m, negative_axis)
+    def false_positive_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.false_positive_rate(m, i) for i in range(l))
+        else:
+            tn = _true_negative(m, negative_axis)
+            fp = _false_positive(m, negative_axis)
         return fp / (tn + fp)
 
     @metric(alias='precision')
-    def positive_predictive_value(m, negative_axis=0):
-        tp = _true_positive(m, negative_axis)
-        fp = _false_positive(m, negative_axis)
-        return tp / (tp+fp)
+    def positive_predictive_value(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.positive_predictive_value(m, i) for i in range(l))
+        else:
+            tp = _true_positive(m, negative_axis)
+            fp = _false_positive(m, negative_axis)
+            return tp / (tp+fp)
     precision = positive_predictive_value
 
     @metric()
-    def false_discovery_rate(m, negative_axis=0):
-        tp = _true_positive(m, negative_axis)
-        fp = _false_positive(m, negative_axis)
-        return fp / (tp + fp)
+    def false_discovery_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.false_discovery_rate(m, i) for i in range(l))
+        else:
+            tp = _true_positive(m, negative_axis)
+            fp = _false_positive(m, negative_axis)
+            return fp / (tp + fp)
 
     @metric()
-    def negative_predictive_value(m, negative_axis=0):
-        tn = _true_negative(m, negative_axis)
-        fn = _false_negative(m, negative_axis)
-        return tn /(tn+fn)
+    def negative_predictive_value(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.negative_predictive_value(m, i) for i in range(l))
+        else:
+            tn = _true_negative(m, negative_axis)
+            fn = _false_negative(m, negative_axis)
+            return tn / (tn+fn)
 
     @metric()
-    def false_omission_rate(m, negative_axis=0):
-        tn = _true_negative(m, negative_axis)
-        fn = _false_negative(m, negative_axis)
-        return fn / (tn+fn)
+    def false_omission_rate(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.false_omission_rate(m, i) for i in range(l))
+        else:
+            tn = _true_negative(m, negative_axis)
+            fn = _false_negative(m, negative_axis)
+            return fn / (tn+fn)
 
     @metric()
-    def diagnostic_odd_ratio(m, negative_axis=0):
-        tn = _true_negative(m, negative_axis)
-        fn = _false_negative(m, negative_axis)
-        tp = _true_positive(m, negative_axis)
-        fp = _false_positive(m, negative_axis)
-        return (tp*tn) / (fp*fn)
+    def diagnostic_odd_ratio(m, negative_axis=0, average=None):
+        if average == 'micro' or average is True:
+            negative_axis = None
+        if average == 'macro':
+            l = m.shape[-1]
+            return np.mean(ConfMatrix.diagnostic_odd_ratio(m, i) for i in range(l))
+        else:
+            tn = _true_negative(m, negative_axis)
+            fn = _false_negative(m, negative_axis)
+            tp = _true_positive(m, negative_axis)
+            fp = _false_positive(m, negative_axis)
+            return (tp*tn) / (fp*fn)
 
     @metric()
     def TP(m, negative_axis=0):
@@ -578,38 +752,54 @@ class ConfMatrix(np.ndarray):
         double_union = total_trues + total_preds
         return (2. * intersection + smooth) / (double_union + smooth)
 
+    @metric()
+    def F1(m, negative_axis=0, average=None):
+        pre = ConfMatrix.precision(m, negative_axis=negative_axis, average=average)
+        rec = ConfMatrix.recall(m, negative_axis=negative_axis, average=average)
+        return 2*pre*rec / (pre+rec)
+
 
 def _true(m):
     return np.trace(m, axis1=-2, axis2=-1)
 
 
 def _true_positive(m, negative_axis=0):
+    if negative_axis is None:
+        return np.trace(m, axis1=-2, axis2=-1).sum()
     if not isinstance(negative_axis, tuple):
         negative_axis = (negative_axis,)
-    axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
-    return m[..., axis, axis].sum(axis=-1)
+    positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
+    ids = cartesian((positive_axis, positive_axis))
+    return m[..., ids[:, 0], ids[:, 1]].sum(axis=-1)
 
 
 def _true_negative(m, negative_axis=0):
+    if negative_axis is None:
+        return np.trace(m, axis1=-2, axis2=-1).sum() + m.sum() * (m.shape[-1]-2)
     if not isinstance(negative_axis, tuple):
         negative_axis = (negative_axis,)
-    return m[..., negative_axis, negative_axis].sum(axis=-1)
+    ids = cartesian((negative_axis, negative_axis))
+    return m[..., ids[:, 0], ids[:, 1]].sum(axis=-1)
 
 
 def _false_positive(m, negative_axis=0):
+    if negative_axis is None:
+        return m.sum() - np.trace(m, axis1=-2, axis2=-1).sum()
     if not isinstance(negative_axis, tuple):
         negative_axis = (negative_axis,)
     positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
-    x_axis, y_axis = np.meshgrid(positive_axis, negative_axis)
-    return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
+    ids = cartesian((positive_axis, negative_axis))
+    return m[..., ids[:, 0], ids[:, 1]].sum(axis=-1)
 
 
 def _false_negative(m, negative_axis=0):
+    if negative_axis is None:
+        return m.sum() - np.trace(m, axis1=-2, axis2=-1).sum()
     if not isinstance(negative_axis, tuple):
         negative_axis = (negative_axis,)
     positive_axis = [_ for _ in range(m.shape[-1]) if _ not in negative_axis]
-    x_axis, y_axis = np.meshgrid(negative_axis, positive_axis)
-    return m[..., y_axis.flatten(), x_axis.flatten()].sum(axis=-1)
+    ids = cartesian((negative_axis, positive_axis))
+    return m[..., ids[:, 0], ids[:, 1]].sum(axis=-1)
 
 
 def _total(m):

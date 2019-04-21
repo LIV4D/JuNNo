@@ -490,7 +490,12 @@ def load_csv(*same_column, **column_mapping):
     for c in same_column:
         column_mapping[c] = c
 
-    return DataSetPandaDF(df, mapping=column_mapping, name=basename(path))
+    if path.startswith('http'):
+        name = "URL.csv"
+    else:
+        name = basename(path)
+
+    return DataSetPandaDF(df, mapping=column_mapping, name=name)
 
 
 ########################################################################################################################
