@@ -1,4 +1,5 @@
 from .function import bind_args
+from .collections import if_none
 import functools
 import math
 import numpy as np
@@ -235,7 +236,7 @@ def pad_forward_na(x, inplace=False, axis=0, mask=None):
 
 
 ########################################################################################################################
-def vegalite_graph(df, graph_mapping, graph_opt=None, shape=(400, 300)):
+def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
     """
     :param df: 
     :param graph_mapping: 
@@ -251,7 +252,7 @@ def vegalite_graph(df, graph_mapping, graph_opt=None, shape=(400, 300)):
     :param shape: 
     :return: 
     """
-    from vega import VegaLite
+    from vega import Vega
     import pandas
     from .collections import recursive_dict_update
 
@@ -259,63 +260,105 @@ def vegalite_graph(df, graph_mapping, graph_opt=None, shape=(400, 300)):
         graph_opt = {}
 
     opt = {
-        "spec":{
-            "title": {
-                "anchor": "center"
-            },
-            "mark": "point"
-        }
+        "title": {
+            "anchor": "center"
+        },
+        "legends": [
+            {"orient": "top-left", "fill": "color_scale", "offset": 10, "zindex": 1}
+        ],
+        "axes": [
+            {"orient": "bottom", "scale": "x"},
+            {"orient": "left", "scale": "y_ref"}
+        ],
     }
 
-    recursive_dict_update(opt, graph_opt)
+    recursive_dict_update(opt, graph_opt, append=True)
 
     binding_opt = {
-        "spec":{
-            "width": shape[0],
-            "height": shape[1],
-        },
+        "width": shape[0],
+        "height": shape[1],
     }
 
-    layers = []
+    marks = []
+    x_series = []
+    color_scale = []
+    y_scales = {}
 
-    def interpret_as_layers(mapping):
+    def interpret_as_layers(mapping, label=None):
         x = mapping.pop('x')
         y = mapping.pop('y')
-        mark = mapping.pop('mark', "line")
+        label = if_none(label, y)
+        scale = mapping.pop('scale', 'y_default')
+        type = mapping.pop('type', "line")
         std = mapping.pop('std', None)
-        tooltip = mapping.pop('tooltip', None)
         color = mapping.pop('color', None)
 
-        l = [{
-            "mark": mark,
-            "encoding": {
-                "x": x,
-                "y": y,
-                **mapping
+        x_series.append(x)
+        if scale not in y_scales:
+            y_scales[scale] = []
+        y_scales[scale].append(label)
+
+        if color is None:
+            color_scale.append(label)
+            color = {"signal": "scale('color_scale', '%s')" % label}
+
+        marks.append({
+            "type": type,
+            "from": {'data': 'table'},
+            "encode": {
+                "update": {
+                    "x": {'field': x, 'scale': 'x'},
+                    "y": {'field': y, 'scale': scale},
+                    "stroke": color,
+                    **mapping
+                }
             }
-        }]
+        })
 
         if std:
-            l += [{
-                "mark": "errorband",
-                "encoding": {
-                    "y": {"field": std},
-                    "y2": {"field": std},
-                    "x": {"field": x}
+            marks.append({
+                "type": "area",
+                "from": {'data': 'table'},
+                "encode": {
+                    "yc": {"field": y, 'scale': scale},
+                    "height": {"field": std, 'scale': scale},
+                    "x": {"field": x, 'scale': 'x'},
+                    "fill": color,
+                    "opacity": '0.4'
                 }
-            }]
-        if color:
-            for _ in l:
-                _['encoding']['color'] = color
+            })
 
-        return l
+    if 'x' in graph_mapping and 'y' in graph_mapping:
+        interpret_as_layers(graph_mapping)
+    else:
+        for label, mapping in graph_mapping.items():
+            interpret_as_layers(mapping, label=label)
 
-    if isinstance(next(graph_mapping.values()), dict):
+    binding_opt['marks'] = marks
+    binding_opt['scales'] = [
+                {'name': 'x',
+                 'domain': {'fields': [{'data': 'table', 'field': _} for _ in x_series]},
+                 'range': 'width'},
+                {'name': 'y_ref',
+                 'domain': [0, 1],
+                 'range': 'height'}]
 
+    binding_opt['scales'].append({'name': 'color_scale', 'type': 'ordinal',
+                                  'domain': color_scale, 'range': {'scheme': 'tableau20'}})
 
-    recursive_dict_update(opt, binding_opt)
+    for scale_name, scale_fields in y_scales.items():
+        binding_opt['scales'].append({
+            'name': scale_name,
+            'domain':  {'fields': [{'data': 'table', 'field': _} for _ in scale_fields]},
+            'range': 'height'})
 
-    return VegaLite(opt, df)
+    recursive_dict_update(opt, binding_opt, append=True)
+
+    # import json
+    # print(json.dumps(opt, indent='   '))
+    opt['data'] = [{'name': 'table', 'values': df.to_dict(orient='records')}]
+
+    return Vega(opt)
 
 
 class XYSeries(np.ndarray):

@@ -43,11 +43,13 @@ def istypeof_or_listof(o, t, recursive=False):
     return istypeof_or_collectionof(o, t, c=list, recursive=recursive)
 
 
-def recursive_dict_update(destination, origin):
+def recursive_dict_update(destination, origin, append=False):
     for n, v in origin.items():
         dest_v = destination.get(n, None)
         if is_dict(v) and is_dict(dest_v):
             recursive_dict_update(destination[n], v)
+        elif append and isinstance(v, list) and isinstance(dest_v, list):
+            destination[n].append(v)
         else:
             destination[n] = v
 
