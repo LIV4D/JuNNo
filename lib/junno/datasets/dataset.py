@@ -913,6 +913,8 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         def write_cb(r):
             for c in r.keys():
+                if c == 'pk':
+                    continue
                 result[0, c] += r[:, c].sum(axis=0)
             result.trace.affiliate_parent_trace(r.trace)
 
