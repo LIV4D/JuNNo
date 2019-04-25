@@ -264,7 +264,7 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
             "anchor": "center"
         },
         "legends": [
-            {"orient": "top-left", "fill": "color_scale", "offset": 10, "zindex": 1}
+            {"orient": "top-right", "fill": "color_scale", "offset": 10, "zindex": 1}
         ],
         "axes": [
             {"orient": "bottom", "scale": "x"},
@@ -320,11 +320,15 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
                 "type": "area",
                 "from": {'data': 'table'},
                 "encode": {
-                    "yc": {"field": y, 'scale': scale},
-                    "height": {"field": std, 'scale': scale},
-                    "x": {"field": x, 'scale': 'x'},
-                    "fill": color,
-                    "opacity": '0.4'
+                    "enter": {
+                        "fill": color,
+                        "opacity": {'value': 0.2}
+                    },
+                    "update": {
+                        "y": {"signal": "datum.%s+.5*datum.%s" % (y, std), 'scale': scale},
+                        "y2": {"signal": "datum.%s-.5*datum.%s" % (y, std), 'scale': scale},
+                        "x": {"field": x, 'scale': 'x'},
+                    }
                 }
             })
 
@@ -593,7 +597,7 @@ class ConfMatrix(np.ndarray):
     def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None):
         if isinstance(labels, int):
             labels = list(range(labels))
-        if np.prod(y_true.shape)<=100 or labels is None or len(labels) <= 3:
+        if labels is None or len(labels) >= 5:
             # For small or huge computation use memory optimized method
             from sklearn.metrics import confusion_matrix
             conf = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=labels, sample_weight=sample_weight)
@@ -829,7 +833,7 @@ class ConfMatrix(np.ndarray):
             tn = _true_negative(m, negative_axis)
             fp = _false_positive(m, negative_axis)
         return tn / (tn+fp)
-    specifity = true_negative_rate
+    specificity = true_negative_rate
 
     @metric()
     def false_positive_rate(m, negative_axis=0, average=None):

@@ -54,7 +54,7 @@ class History:
                                   index=pandas.Index([], dtype='int64'))
 
         for r in self._timeline_hdf.iterrows():
-            self._timeline.loc[self._epoch_info[r['epoch']-1][0]+r['e_iter']] = [r['epoch'], r['e_iter'],
+            self._timeline.loc[self._epoch_info[r['epoch']-1][0]+r['e_iter']-1] = [r['epoch'], r['e_iter'],
                                                                       pandas.to_datetime(r['date']*1e9), r['time']*1e9]
 
         # --- CREATE EVENTS FILE ---
@@ -174,7 +174,7 @@ class History:
                     r['_' + k] = -abs(last_row['_'+k])
             r.append()
 
-            self._timeline.loc[self._epoch_info[t.epoch-1][0] + t.iteration] = [t.epoch, t.iteration,
+            self._timeline.loc[self._epoch_info[t.epoch-1][0] + t.iteration - 1] = [t.epoch, t.iteration,
                                                                                 pandas.to_datetime(t.date * 1e9),
                                                                                 t.time * 1e9]
             self._current_timeline_id = len(self._timeline) - 1
@@ -515,7 +515,7 @@ class History:
                             timeidx[i] = self._timeline.index[s['timeline_id'][0]]
                             serie[i] = np.mean(s['value']) if s.shape[0] else np.nan
                             if serie_std is not None:
-                                serie_std[i] = np.var(s['value']) if s.shape[0] else np.nan
+                                serie_std[i] = np.std(s['value']) if s.shape[0] else np.nan
                             continue
 
                     serie[i] = np.nan
@@ -658,7 +658,7 @@ class History:
             raise IndexError('Invalid time stamp: %ie%i. (Epoch %i only has %i iterations)'
                              % (epoch, iteration, epoch, self._epoch_info[epoch-1][1]))
         # Sum
-        return iteration + self._epoch_info[epoch-1][0]
+        return iteration + self._epoch_info[epoch-1][0] - 1
 
     def iterid_to_timestamp(self, time_id):
         if not 0 <= time_id < len(self):
@@ -671,7 +671,7 @@ class History:
         time = self._timeline.loc[time_id, 'time']
         date = self._timeline.loc[time_id, 'date']
 
-        return TimeStamp(epoch=e, iteration=i, time=time, date=date)
+        return TimeStamp(epoch=e+1, iteration=i+1, time=time, date=date)
 
     def interpret_iterid(self, timestamp, stop_index=False):
         if isinstance(timestamp, TimeStamp):
@@ -713,12 +713,18 @@ class History:
         e_i = start_timestamp.iteration
         while i < stop:
             yield i
+
             e += step.epoch
             e_i += step.iteration
+
             while e < self.epoch and e_i > self._epoch_info[e][1]:
                 e_i -= self._epoch_info[e][1]
                 e += 1
-            i = self.epoch_to_iterid(e, e_i)
+
+            try:
+                i = self.epoch_to_iterid(e, e_i)
+            except IndexError:
+                i = len(self)
         if i < len(self) and last:
             yield i
 
@@ -842,8 +848,8 @@ class TimeStamp:
             timestamp = timestamp.replace(' ', '')
             try:
                 if 'e' in timestamp:
-                    timestamp = [int(_) for _ in timestamp.split('e')]
-                    if len(timestamp) not in (1,2):
+                    timestamp = [int(_) for _ in timestamp.split('e') if _]
+                    if len(timestamp) not in (1, 2):
                         raise error
                     if len(timestamp) == 1:
                         return TimeStamp(epoch=timestamp[0], iteration=0)
