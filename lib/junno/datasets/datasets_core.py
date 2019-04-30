@@ -269,14 +269,14 @@ class DataSetSubset(AbstractDataSet):
     def size(self):
         return self.stop - self.start
 
-    def subset(self, start=0, stop=None, *args):
+    def subset(self, *args, start=0, stop=None, name='subset'):
         if len(args) == 1:
             start = 0
             stop = args[0]
         elif len(args) == 2:
             start = args[0]
             stop = args[1]
-        return DataSetSubset(self._parent, start + self.start, min(self.start + stop, self.stop))
+        return DataSetSubset(self._parent, start + self.start, min(self.start + stop, self.stop), name=name)
 
 
 ########################################################################################################################
