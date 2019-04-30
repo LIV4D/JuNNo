@@ -1,5 +1,5 @@
 from .function import bind_args
-from .collections import if_none
+from .collections import if_none, is_dict
 import functools
 import math
 import numpy as np
@@ -280,7 +280,7 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
     }
 
     marks = []
-    x_series = []
+    x_series = set()
     color_scale = []
     y_scales = {}
 
@@ -293,10 +293,10 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
         std = mapping.pop('std', None)
         color = mapping.pop('color', None)
 
-        x_series.append(x)
+        x_series.add(x)
         if scale not in y_scales:
-            y_scales[scale] = []
-        y_scales[scale].append(label)
+            y_scales[scale] = set()
+        y_scales[scale].add(y)
 
         if color is None:
             color_scale.append(label)
@@ -331,12 +331,15 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
                     }
                 }
             })
-
-    if 'x' in graph_mapping and 'y' in graph_mapping:
-        interpret_as_layers(graph_mapping)
+    if is_dict(graph_mapping):
+        if 'x' in graph_mapping and 'y' in graph_mapping:
+            interpret_as_layers(graph_mapping)
+        else:
+            for label, mapping in graph_mapping.items():
+                interpret_as_layers(mapping, label=label)
     else:
-        for label, mapping in graph_mapping.items():
-            interpret_as_layers(mapping, label=label)
+        for m in graph_mapping:
+            interpret_as_layers(m)
 
     binding_opt['marks'] = marks
     binding_opt['scales'] = [
