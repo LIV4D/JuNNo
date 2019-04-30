@@ -791,6 +791,10 @@ class AbstractDataSet(metaclass=ABCMeta):
         start, stop = interval(self.size, start, stop)
         if columns is None:
             columns = self.columns_name()
+        elif isinstance(columns, str):
+            columns = [columns]
+        else:
+            columns = list(columns)
 
         if name is None:
             label = self._name
@@ -888,6 +892,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     for r in self.generator(n=chunck_size, start=start, stop=stop, determinist=True, columns=columns):
                         hdf_t.append(r.to_row_list())
                         p.update(r.size)
+            hdf_f.flush()
 
         from .datasets_core import PyTableDataSet
         hdfDataset = PyTableDataSet(hdf_t, name=name)
@@ -1027,8 +1032,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         def conf_mat(pred, true, weight):
             if one_hot:
                 pred = np.argmax(pred, axis=0)
-            return ConfMatrix.confusion_matrix(y_pred=pred.flatten(), y_true=true.flatten(), sample_weight=weight.flatten(),
-                                               labels=conf_labels)
+            c = ConfMatrix.confusion_matrix(y_pred=pred, y_true=true, sample_weight=weight, labels=conf_labels)
+            return c
+
         if isinstance(true, DSColumn):
             if isinstance(weight, DSColumn):
                 conf_D = self.apply({confmat_name: (pred, true, weight)}, conf_mat, **kwargs)
