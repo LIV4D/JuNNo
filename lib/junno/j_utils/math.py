@@ -288,15 +288,16 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
         x = mapping.pop('x')
         y = mapping.pop('y')
         label = if_none(label, y)
-        scale = mapping.pop('scale', 'y_default')
+        scale = if_none(mapping.pop('scale', None), 'y_default')
         type = mapping.pop('type', "line")
         std = mapping.pop('std', None)
         color = mapping.pop('color', None)
 
         x_series.add(x)
-        if scale not in y_scales:
-            y_scales[scale] = set()
-        y_scales[scale].add(y)
+        if scale != 'y_ref':
+            if scale not in y_scales:
+                y_scales[scale] = set()
+            y_scales[scale].add(y)
 
         if color is None:
             color_scale.append(label)
@@ -598,12 +599,17 @@ class ConfMatrix(np.ndarray):
 
     @staticmethod
     def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None):
+        if (labels == 2 or labels == [0,1]) and np.issubdtype(y_pred.dtype, np.floating):
+            y_pred = (y_pred > 0.5) * 1
         if isinstance(labels, int):
             labels = list(range(labels))
-        if labels is None or len(labels) >= 5:
+        if labels is None or len(labels) > 5:
             # For small or huge computation use memory optimized method
             from sklearn.metrics import confusion_matrix
-            conf = confusion_matrix(y_true=y_true, y_pred=y_pred, labels=labels, sample_weight=sample_weight)
+            if isinstance(sample_weight, np.ndarray):
+                sample_weight = sample_weight.flatten()
+            conf = confusion_matrix(y_true=y_true.flatten(), y_pred=y_pred.flatten(), labels=labels,
+                                    sample_weight=sample_weight)
             conf = conf.view(ConfMatrix)
             conf.labels = labels
             return conf
@@ -613,6 +619,8 @@ class ConfMatrix(np.ndarray):
             labels = conf.labels
             if sample_weight is None:
                 sample_weight = 1
+            else:
+                sample_weight = sample_weight*1.
 
             a = np.stack([y_true, y_pred], axis=0)
 

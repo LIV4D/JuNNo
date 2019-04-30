@@ -4,7 +4,7 @@ from copy import copy
 from os.path import exists
 from ..j_utils.string import str2time, time2str
 from ..j_utils.path import format_filepath, open_pytable
-from ..j_utils.collections import OrderedDict, AttributeDict, df_empty
+from ..j_utils.collections import OrderedDict, AttributeDict, df_empty, if_none
 from ..j_utils.math import pad_forward_na
 from ..datasets.dataset import DSColumnFormat
 
@@ -602,6 +602,23 @@ class History:
             return pandas.concat([timestamp_df, df], axis=1)
         return df
 
+    def plot(self, series=None, start=0, stop=0, step=1, interpolation='previous', smooth=None, averaged=True):
+        from ..j_utils.math import vega_graph
+        from IPython.display import display
+        series = if_none(series, self.series(only_number=True))
+        df = self.read(series=series, std=True, start=start, stop=stop, step=step, interpolation=interpolation,
+                       smooth=smooth, averaged=averaged)
+        df['id'] = df.index
+
+        def is_percent(serie_name):
+            return 'accuracy' in serie_name or 'kappa' in serie_name or\
+                   'sensitivity' in serie_name or 'specificity' in serie_name
+
+        map = {s: {'x': 'id', 'y': s, 'std': s+'_std', 'scale': 'y_ref' if is_percent(s) else None} for s in series}
+        graph = vega_graph(df, map)
+        display(graph)
+        return graph
+
     #   --- Export ---
     def export_dataframe(self, series=None, start=0, stop=0, timestamp=None):
         """
@@ -664,7 +681,7 @@ class History:
         if not 0 <= time_id < len(self):
             raise ValueError('%i is not a valid timestamp (min:0, max:%i)' % (time_id, len(self)-1))
         e = 0
-        while e <= self.epoch and time_id > self._epoch_info[e+1][0]:
+        while e < self.epoch-1 and time_id > self._epoch_info[e+1][0]:
             e += 1
         i = time_id-self._epoch_info[e][0]
 
