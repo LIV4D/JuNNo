@@ -1296,30 +1296,55 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
                               format=format, remove_parent_columns=not keep_parent)
 
-    def apply_torch(self, columns, torch_callable, device=None, eval=True, n_factor=1, batchwise=True,
+    def apply_torch(self, columns, f, device=None, eval=True, n_factor=1, batchwise=True,
                     keep_parent=True, name=None):
         import torch
-
+        from .datasets_core import DataSetApply
         if name is None:
             name = 'torch'
 
-        def f(x):
-            reset_to_train = False
-            if eval and getattr(torch_callable, 'training', False):
-                reset_to_train = True
-                torch_callable.eval()
+        if isinstance(f, torch.nn.Module):
+            net = f
 
-            x = torch.from_numpy(x)
-            if device:
-                x = x.to(device)
-            y = torch_callable(x).detach().cpu().numpy()
+            def f(x):
+                reset_to_train = False
+                if eval and getattr(net, 'training', False):
+                    reset_to_train = True
+                    net.eval()
 
-            if reset_to_train:
-                torch_callable.train()
+                x = torch.from_numpy(np.array(x)*1)
+                if device:
+                    x = x.to(device)
+                y = net(x).detach().cpu().numpy()
 
-            return y
+                if reset_to_train:
+                    net.train()
 
-        return self.apply(columns, f, n_factor=n_factor, batchwise=batchwise, keep_parent=keep_parent, name=name)
+                return y
+
+            return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
+                                remove_parent_columns=not keep_parent, name=name)
+        else:
+
+            def before_apply(**kwargs):
+                kwargs = {k: torch.from_numpy(np.array(v)*1) for k, v in kwargs.items()}
+                if device:
+                    return {k: v.to(device) for k, v in kwargs.items()}
+                else:
+                    return kwargs
+
+            def after_apply(r):
+                if isinstance(r, torch.Tensor):
+                    return r.detach().cpu().numpy()
+                elif isinstance(r, tuple):
+                    return tuple(after_apply(_) for _ in r)
+                elif isinstance(r, list):
+                    return list(after_apply(_) for _ in r)
+                return r
+
+            return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
+                                remove_parent_columns=not keep_parent, name=name,
+                                before_apply=before_apply, after_apply=after_apply)
 
     def map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
         from .datasets_core import DataSetApply

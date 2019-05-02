@@ -1043,6 +1043,7 @@ class DataSetApply(AbstractDataSet):
     Apply a function to some columns of a dataset, all other columns are copied
     """
     def __init__(self, dataset, function, columns=None, remove_parent_columns=True, format=None,
+                 before_apply=None, after_apply=None,
                  n_factor=None, batchwise=False, name='apply'):
         """
         :param dataset: Dataset on which the function should be applied
@@ -1076,6 +1077,17 @@ class DataSetApply(AbstractDataSet):
                                 a similar behaviour will be attempted based on the column name.
                             Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
                             format will be copied from **dataset**.
+
+        :param before_apply: A function called before **function** to apply a preprocessing on its arguments.
+                             This function will receive all the arguments of **function** as **kwargs and should return
+                             a dictionary with the preprocessed values.
+                             ::Exemple::
+                             def preprocessing(**kwargs):
+                                return {k: do_stuff(v) for k, v in kwargs.items()}
+
+        :param after_apply: A function called after **function** to apply a postprocesing on its results.
+                            Please remember that a **function** may return a single value or an array,
+                            a tuple or a list of those and a list of tuple of those...
 
         :param n_factor: The number of rows generated for each row given to the function. If not specified,
                             the value will be read by passing the **dataset** first row to the function.
@@ -1169,6 +1181,8 @@ class DataSetApply(AbstractDataSet):
 
         # ---  HANDLE FUNCTION  ---
         self._f = function
+        self._before_apply = before_apply
+        self._after_apply = after_apply
         self._batchwise = batchwise
         self._n_factor = n_factor
 
@@ -1372,8 +1386,13 @@ class DataSetApply(AbstractDataSet):
             r = {_: [] for _ in rkeys}
             for i in range(args_n):
                 kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
+                if self._before_apply:
+                    kwargs = self._before_apply(kwargs)
                 f_result = self._f(**kwargs)
                 del kwargs
+
+                if self._after_apply:
+                    f_result = self._after_apply(f_result)
 
                 if not isinstance(f_result, list):
                     if self._n_factor == 1 or self._n_factor is None:
@@ -1401,9 +1420,13 @@ class DataSetApply(AbstractDataSet):
             return {n: np.stack(d) for n, d in r.items()}
         else:
             kwargs = {arg: c for arg, c in zip(self.f_params, args)}
+            if self._before_apply:
+                kwargs = self._before_apply(kwargs)
             f_result = self._f(**kwargs)
             del kwargs
 
+            if self._after_apply:
+                f_result = self._after_apply(f_result)
             r = {}
 
             if not isinstance(f_result, tuple):
