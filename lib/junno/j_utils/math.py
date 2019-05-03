@@ -360,6 +360,26 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
             'domain':  {'fields': [{'data': 'table', 'field': _} for _ in scale_fields]},
             'range': 'height'})
 
+    # binding_opt['signal'] = [{
+    #     "name": "highlightedX",
+    #     "value": None,
+    #     "on": [
+    #         {"events": "mouseover", "update": "invert('x', clamp(x(), 0, width))"},
+    #         {"events": "mouseout", "update": "null"}
+    #     ]
+    # }]
+
+    # binding_opt['marks'].append({'type': 'rule',
+    #                              "encode": {
+    #                                 "update": {
+    #                                   "x": {"scale": "x", "signal": "highlightedX", "offset": 0.5},
+    #                                   "y": {"value": 0},
+    #                                   "y2": {"field": {"group": "height"}},
+    #                                   "stroke": {"value": "#bbb"}
+    #                                 }
+    #                               }
+    #                     })
+
     recursive_dict_update(opt, binding_opt, append=True)
 
     # import json

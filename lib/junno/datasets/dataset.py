@@ -1057,7 +1057,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         else:
             confmat = ConfMatrix.zeros(labels=label)
 
-            with Process('Confustion Matrix: %s' % label, stop - start, verbose=False) as p:
+            with Process('Confusion Matrix: %s' % label, stop - start, verbose=False) as p:
                 def write_cb(r):
                     confmat[:] += r[confmat_name].sum(axis=0)
                     p.update(r.size)
