@@ -2,6 +2,7 @@ import pandas
 import numpy as np
 from copy import copy
 from os.path import exists
+from os import remove
 from ..j_utils.string import str2time, time2str
 from ..j_utils.path import format_filepath, open_pytable
 from ..j_utils.collections import OrderedDict, AttributeDict, df_empty, if_none
@@ -14,10 +15,13 @@ class History:
     Store dataseries by iteration and epoch.
     Data are index through timestamp: the number of iteration since the first iteration of the first epoch.
     """
-    def __init__(self, path):
+    def __init__(self, path, overwrite=False):
         import tables
         from tables.nodes import filenode
         path = format_filepath(path, 'h5log', exists=False)
+
+        if overwrite and exists(path):
+            remove(path)
         self._hdf_file = open_pytable(path)
 
         # --- CREATE EPOCH_INFO Table ---
