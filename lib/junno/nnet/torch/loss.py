@@ -6,7 +6,7 @@ import torch
 from torch.nn import functional as F
 
 
-def bce_loss(true, logits, mask=None, pos_weight=None):
+def bce_loss(true, logits, weight=None, pos_weight=None):
     """Computes the weighted binary cross-entropy loss.
 
     Args:
@@ -21,14 +21,10 @@ def bce_loss(true, logits, mask=None, pos_weight=None):
         bce_loss: the weighted binary cross-entropy loss.
     """
 
-    if mask is not None:
-        mask = mask.nonzero().flatten().detach()
-        logits = logits.flatten()[mask]
-        true = true.flatten()[mask]
-
     bce_loss = F.binary_cross_entropy_with_logits(
         logits.float(),
         true.float(),
+        weight=weight,
         pos_weight=pos_weight,
     )
     return bce_loss
