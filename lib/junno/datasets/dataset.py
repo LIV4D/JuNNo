@@ -253,8 +253,30 @@ class AbstractDataSet(metaclass=ABCMeta):
         else:
             return r[columns][0]
 
-    def at(self, row, columns=None):
-        return self.read_one(row=row, columns=columns, extract=False)
+    @property
+    def at(self):
+        return AbstractDataSet.DatasetReader(self)
+
+    class DatasetReader:
+        def __init__(self, dataset):
+            self._dataset = dataset
+
+        @property
+        def dataset(self):
+            return self._dataset
+
+        def __getitem__(self, item):
+            if isinstance(item, slice) or isinstance(item, int):
+                item = (item, None)
+            if isinstance(item, tuple):
+                if isinstance(item[0], int):
+                    return self.dataset.read_one(row=item[0], columns=item[1], extract=False)
+                elif isinstance(item[0], slice):
+                    return self.dataset.read(item[0].start, item[0].stop, columns=item[1], extract=False)
+            raise NotImplementedError
+
+        def __call__(self, row, columns=None):
+            return self.dataset.read_one(row=row, columns=columns, extract=False)
 
     #   ---   Generators   ---
     def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0):
@@ -783,7 +805,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return CustomDataLoader(self)
 
     def cache(self, start=0, stop=None, columns=None, ncore=1, ondisk=None, name=None,
-              overwrite='auto'):
+              overwrite='auto', compression='auto'):
         import tables
         from .dataset_generator import DataSetResult
         from collections import OrderedDict
@@ -802,6 +824,13 @@ class AbstractDataSet(metaclass=ABCMeta):
             name = 'cache'
         else:
             label = name
+
+        if compression == 'auto':
+            if ondisk:
+                compression = 5 if any(np.prod(c.shape) > 100 for c in self._columns) else 0
+            else:
+                compression = 0
+        comp_filters = tables.Filters(complevel=compression) if compression else None
 
         hdf_t = None
         if ondisk:
@@ -872,7 +901,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 else:
                     desc[col.name] = tables.Col.from_sctype(col.dtype.type, col.shape, pos=i)
             hdf_t = hdf_f.create_table(table_path, table_name, description=desc, expectedrows=self.size,
-                                     createparents=True, track_times=False)
+                                     createparents=True, track_times=False, filters=comp_filters)
             chunck_size = min(stop - start, hdf_t.chunkshape[0])
 
             if ncore > 1:
@@ -1296,55 +1325,134 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
                               format=format, remove_parent_columns=not keep_parent)
 
-    def apply_torch(self, columns, f, device=None, eval=True, n_factor=1, batchwise=True,
-                    keep_parent=True, name=None):
+    def apply_torch(self, columns, f, device=None, eval=True, forward_hooks=None, backward_hooks=None,
+                    n_factor=1, batchwise=True, keep_parent=True, name=None):
         import torch
         from .datasets_core import DataSetApply
         if name is None:
             name = 'torch'
 
+        def after_apply(r):
+            if isinstance(r, torch.Tensor):
+                return r.detach().cpu().numpy()
+            elif isinstance(r, tuple):
+                return tuple(after_apply(_) for _ in r)
+            elif isinstance(r, list):
+                return list(after_apply(_) for _ in r)
+            return r
+
+        def before_apply(**kwargs):
+            kwargs = {k: torch.from_numpy(np.array(v) * 1) for k, v in kwargs.items()}
+            if device:
+                return {k: v.to(device) for k, v in kwargs.items()}
+            else:
+                return kwargs
+
         if isinstance(f, torch.nn.Module):
             net = f
 
+            if (forward_hooks or backward_hooks) and (isinstance(columns, (dict, list)) and len(columns) > 1):
+                raise ValueError('Forward and backward hooks are not supported with multiple source columns.')
+
+            source_cols = None
+            if isinstance(columns, dict):
+                k, source_cols = next(columns.items())
+                if isinstance(k, str):
+                    cols_name = [k]
+                else:
+                    cols_name = list(k)
+            elif isinstance(columns, str):
+                cols_name = [columns]
+            else:
+                cols_name = list(columns)
+
+            f_hooks = []
+            if forward_hooks:
+                for cols, module in forward_hooks.items():
+                    if isinstance(cols, str):
+                        cols = (cols,)
+                    else:
+                        cols = tuple(cols)
+                    if not isinstance(module, torch.nn.Module):
+                        raise ValueError('Wrong forward_hooks arguments: %s is not a torch module.' % repr(module))
+                    f_hooks.append((module, cols))
+                    cols_name += list(cols)
+
+            b_hooks = []
+            if backward_hooks:
+                for cols, module in backward_hooks.items():
+                    if isinstance(cols, str):
+                        cols = (cols,)
+                    else:
+                        cols = tuple(cols)
+                    if not isinstance(module, torch.nn.Module):
+                        raise ValueError('Wrong forward_hooks arguments: %s is not a torch module.' % repr(module))
+                    b_hooks.append((module, cols))
+                    cols_name += list(cols)
+
             def f(x):
+                # Create hooks
+                hooks_handle = []
+                tensor_store = [None for _ in range(len(f_hooks) + len(b_hooks))]
+
+                def hook(i, forward):
+                    if forward:
+                        def _hook(module, input, output):
+                            tensor_store[i] = output
+                    else:
+                        def _hook(module, grad_input, grad_output):
+                            tensor_store[i] = grad_input
+                    return _hook
+
+                i = 0
+                for module, cols in f_hooks:
+                    hooks_handle.append(module.register_forward_hook(hook(i, forward=True)))
+                    i += 1
+
+                for module, cols in b_hooks:
+                    hooks_handle.append(module.register_backward_hook(hook(i, forward=False)))
+                    i += 1
+
+                # Process data
                 reset_to_train = False
                 if eval and getattr(net, 'training', False):
                     reset_to_train = True
                     net.eval()
 
-                x = torch.from_numpy(np.array(x)*1)
-                if device:
-                    x = x.to(device)
-                y = net(x).detach().cpu().numpy()
+                y = net(x)
 
                 if reset_to_train:
                     net.train()
 
-                return y
-
-            return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
-                                remove_parent_columns=not keep_parent, name=name)
-        else:
-
-            def before_apply(**kwargs):
-                kwargs = {k: torch.from_numpy(np.array(v)*1) for k, v in kwargs.items()}
-                if device:
-                    return {k: v.to(device) for k, v in kwargs.items()}
+                #
+                if isinstance(y, tuple):
+                    r = list(y)
                 else:
-                    return kwargs
+                    r = [y]
 
-            def after_apply(r):
-                if isinstance(r, torch.Tensor):
-                    return r.detach().cpu().numpy()
-                elif isinstance(r, tuple):
-                    return tuple(after_apply(_) for _ in r)
-                elif isinstance(r, list):
-                    return list(after_apply(_) for _ in r)
-                return r
+                for handle, tensors, (module, cols) in zip(hooks_handle, tensor_store, f_hooks+b_hooks):
+                    handle.remove()
+                    if tensors is None:
+                        r.append(None)
+                    else:
+                        if not isinstance(tensors, tuple):
+                            tensors = (tensors,)
+                        if len(tensors) != len(cols):
+                            raise ValueError('The torch module hooked to columns %s returned %i tensors (%i was expected)'
+                                             % (repr(cols), len(tensors), len(cols)))
+                        r += list(tensors)
 
-            return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
-                                remove_parent_columns=not keep_parent, name=name,
-                                before_apply=before_apply, after_apply=after_apply)
+                return tuple(r)
+
+            columns = {tuple(cols_name): source_cols} if source_cols else tuple(cols_name)
+
+        else:
+            if backward_hooks or forward_hooks:
+                raise ValueError('Forward and backward hooks are not supported when f is not a torch module.')
+
+        return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
+                            remove_parent_columns=not keep_parent, name=name,
+                            before_apply=before_apply, after_apply=after_apply)
 
     def map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
         from .datasets_core import DataSetApply
