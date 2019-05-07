@@ -1387,7 +1387,7 @@ class DataSetApply(AbstractDataSet):
             for i in range(args_n):
                 kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
                 if self._before_apply:
-                    kwargs = self._before_apply(kwargs)
+                    kwargs = self._before_apply(**kwargs)
                 f_result = self._f(**kwargs)
                 del kwargs
 
@@ -1421,7 +1421,7 @@ class DataSetApply(AbstractDataSet):
         else:
             kwargs = {arg: c for arg, c in zip(self.f_params, args)}
             if self._before_apply:
-                kwargs = self._before_apply(kwargs)
+                kwargs = self._before_apply(**kwargs)
             f_result = self._f(**kwargs)
             del kwargs
 
