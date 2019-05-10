@@ -288,14 +288,14 @@ class DataSetPatches(AbstractDataSet):
             if self._saved_patch_center is not None:
                 return
             self._saved_patch_center = [None] * self.parent_dataset.size
-            with Process("Caching center positions", self.parent_dataset.size) as p:
+            with Process("Caching center positions", self.parent_dataset.size, verbose=False) as p:
                 def store_result(c):
                     self._saved_patch_center[c[0, 0]] = c
                     p.update(1)
                 parallel_exec(self.generate_one_patches_center, seq=range(self.parent_dataset.size), cb=store_result)
 
     def generate_all_patches_center(self):
-        with Process("Caching center positions", self.parent_dataset.size) as p:
+        with Process("Caching center positions", self.parent_dataset.size, verbose=False) as p:
             centers = [0]
 
             def store_result(c):

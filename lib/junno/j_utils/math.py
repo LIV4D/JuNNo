@@ -640,9 +640,9 @@ class ConfMatrix(np.ndarray):
             if sample_weight is None:
                 sample_weight = 1
             else:
-                sample_weight = sample_weight*1.
+                sample_weight = sample_weight.flatten()*1.
 
-            a = np.stack([y_true, y_pred], axis=0)
+            a = np.stack([y_true.flatten(), y_pred.flatten()], axis=0)
 
             for i in labels:
                 for j in labels:

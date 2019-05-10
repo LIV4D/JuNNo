@@ -855,4 +855,28 @@ class Process(Logs):
         else:
             return step
 
+
+class IterProcess(Process):
+    def __init__(self, iterable, name='', verbose=False, raise_on_fail=True, parent='auto'):
+        total = None
+        try:
+            total = len(iterable)
+        except TypeError:
+            pass
+
+        self.iterable = iterable
+        super(IterProcess, self).__init__(name=name, total=total, start=False, raise_on_fail=raise_on_fail,
+                                          verbose=verbose, parent=parent)
+
+    def __len__(self):
+        return len(self.iterable)
+
+    def __iter__(self):
+        self.start()
+        for d in self.iterable:
+            yield d
+            self.update(1)
+        self.succeed()
+
 log.Process = Process
+log.iter = IterProcess
