@@ -396,6 +396,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         for c in columns:
             c.format = format[c]
 
+        return self
+
     #   ---   Dataset Hierarchy   ---
     @property
     def parent_datasets(self):

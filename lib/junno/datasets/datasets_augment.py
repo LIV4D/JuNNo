@@ -322,44 +322,37 @@ class DataAugment:
             brightness = _RD.auto(brightness)
 
         if contrast is None:
-            contrast = _RD.constant(1)
+            contrast = _RD.constant(0)
         else:
             contrast = _RD.auto(contrast)
 
         if gamma is None:
-            gamma = _RD.constant(1)
+            gamma = _RD.constant(0)
         else:
             gamma = _RD.auto(gamma)
 
-        if r is None:
-            r = _RD.constant(0)
-        else:
+        if r is not None:
             r = _RD.auto(r)
-        if g is None:
-            g = _RD.constant(0)
-        else:
+        if g is not None:
             g = _RD.auto(g)
-        if b is None:
-            b = _RD.constant(0)
-        else:
+        if b is not None:
             b = _RD.auto(b)
-
-        a_min = np.array([0, 0, 0], np.float32)
-        a_max = np.array([1, 1, 1], np.float32)
 
         def augment(x, rng):
             _bright = brightness(rng)
-            _contrast = contrast(rng)
-            _gamma = gamma(rng)
-            _r = r(rng)
-            _b = b(rng)
-            _g = g(rng)
-            bgr = np.array([_b, _g, _r])
-
+            _contrast = 1.+contrast(rng)
+            _gamma = 1.+gamma(rng)
             x = ((x+_bright)*_contrast)**_gamma
-            x = x + bgr[np.newaxis, :, np.newaxis, np.newaxis]
-            return np.clip(x, a_min=a_min[np.newaxis, :, np.newaxis, np.newaxis],
-                              a_max=a_max[np.newaxis, :, np.newaxis, np.newaxis])
+            
+            if r or b or g :
+                n = x.shape[0]//3
+                _r = r(rng) if r else 0
+                _g = g(rng) if g else 0
+                _b = b(rng) if b else 0
+                bgr = np.array([_b, _g, _r]*n)
+                x[:3*n] = x[:3*n] + bgr[:, np.newaxis, np.newaxis]
+
+            return np.clip(x, a_min=0, a_max=1)
         return augment
 
     def brightness(self, brightness=(-0.1, 0.1)):
