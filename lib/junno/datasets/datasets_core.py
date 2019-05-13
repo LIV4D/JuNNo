@@ -49,7 +49,7 @@ def from_numpy(**data_dict):
 
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
-    def __init__(self, pytable, where=None, sortby=None, name='PyTableDataset'):
+    def __init__(self, pytable, rows=None, name='PyTableDataset'):
         if pytable.description._v_is_nested:
             raise NotImplementedError('PyTable with nested columns are not supported.')
 
@@ -69,54 +69,12 @@ class PyTableDataSet(AbstractDataSet):
             col_dtype = np.dtype(str(col_dtype).replace('S', 'U'))
             self.add_column(col_name, col_shape, col_dtype)
 
+        self._rows = rows
+
+        self.sortby = None
+        self.where = None
         self._sorted_rows = None
         self._filtered_rows = None
-        self._rows = None
-
-        self.sortby = sortby
-        self._solve_sortby()
-        self.where = where
-        self._solve_where()
-
-    def _solve_where(self):
-        if self.where is None:
-            self._filtered_rows = None
-            if self._sorted_rows is not None:
-                self._rows = self._sorted_rows
-            else:
-                self._rows = None
-        else:
-            self._filtered_rows = self.pytable.get_where_list(self.where, condvars=None)
-            if self._sorted_rows is not None:
-                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
-                rows[self._filtered_rows] = 1
-                self._rows = self._sorted_rows[rows[self._sorted_rows]]
-            else:
-                self._rows = self._filtered_rows
-
-    def _solve_sortby(self):
-        if self.sortby is None:
-            self._sorted_rows = None
-            if self._filtered_rows is not None:
-                self._rows = self._filtered_rows
-            else:
-                self._rows = None
-        else:
-            reversed_sort = self.sortby.startswith('!')
-            sortby = self.sortby[1:] if reversed_sort else self.sortby
-            if not getattr(self.pytable.cols, sortby).is_indexed:
-                # Create a full index
-                getattr(self.pytable.cols, sortby).create_csindex()
-
-            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False).read_indices()
-            if reversed_sort:
-                self._sorted_rows = self._sorted_rows[::-1]
-            if self._filtered_rows is not None:
-                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
-                rows[self._filtered_rows] = 1
-                self._rows = self._sorted_rows[rows[self._sorted_rows]]
-            else:
-                self._rows = self._sorted_rows
 
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
@@ -218,8 +176,57 @@ class PyTableDataSet(AbstractDataSet):
             return self.sort(sortby)
         if sortby is None:
             return self.select(where)
-        d = PyTableDataSet(self.pytable, where=where, sortby=sortby, name=self.dataset_name)
+        d = PyTableDataSet(self.pytable, name=self.dataset_name)
+        d.sortby = sortby
+        d.where = where
+        d._solve_sortby()
+        d._solve_where()
+        for c_name, c in self.columns.items():
+            d.col[c_name].format = c.format
         return d
+
+    def _solve_where(self):
+        if self.where is None:
+            self._filtered_rows = None
+            if self._sorted_rows is not None:
+                self._rows = self._sorted_rows
+            else:
+                self._rows = None
+        else:
+            self._filtered_rows = self.pytable.get_where_list(self.where, condvars=None)
+            if self._sorted_rows is not None:
+                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
+                rows[self._filtered_rows] = 1
+                self._rows = self._sorted_rows[rows[self._sorted_rows]]
+            else:
+                self._rows = self._filtered_rows
+
+    def _solve_sortby(self):
+        if self.sortby is None:
+            self._sorted_rows = None
+            if self._filtered_rows is not None:
+                self._rows = self._filtered_rows
+            else:
+                self._rows = None
+        else:
+            reversed_sort = self.sortby.startswith('!')
+            sortby = self.sortby[1:] if reversed_sort else self.sortby
+            if not getattr(self.pytable.cols, sortby).is_indexed:
+                # Create a full index
+                getattr(self.pytable.cols, sortby).create_csindex()
+
+            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False).read_indices()
+            if reversed_sort:
+                self._sorted_rows = self._sorted_rows[::-1]
+            if self._filtered_rows is not None:
+                rows = np.zeros(shape=(self.pytable.nrows,), dtype=np.bool)
+                rows[self._filtered_rows] = 1
+                self._rows = self._sorted_rows[rows[self._sorted_rows]]
+            else:
+                self._rows = self._sorted_rows
+
+    def has_custom_rows(self):
+        return self._rows is not None and self._filtered_rows is None and self._sorted_rows is None
 
 
 def load_hdf(path, name=None):
@@ -246,6 +253,78 @@ def load_hdf(path, name=None):
 
     hdf_t = hdf_f.get_node(table_path, table_name, 'Table')
     return PyTableDataSet(hdf_t, name=name)
+
+
+########################################################################################################################
+class RandomVersionPyTableDataSet(AbstractDataSet):
+    def __init__(self, pytables, name='PyTableDataset'):
+
+        col_descr = {}
+        exception = NotImplementedError
+        for i, pytable in enumerate(pytables):
+            if pytable.description._v_is_nested:
+                raise NotImplementedError('PyTable with nested columns are not supported.')
+
+            pk_type = None
+            if i==0:
+                nrows = len(pytable)
+            elif nrows != len(pytable):
+                raise exception
+
+            for col_name, col in pytable.description._v_colobjects.items():
+                if i==0:
+                    if col_name=='pk':
+                        pk_type = col.dtype.base
+                    else:
+                        col_descr[col._v_pos] = col_name, col.dtype.shape, col.dtype.base
+                else:
+                    if col_name=='pk':
+                        if pk_type != col.dtype.base:
+                            raise exception
+                    elif any(_1!=_2 for _1, _2 in
+                     zip((col_name, col.dtype.shape, col.dtype.base),col_descr.get(col._v_pos, (None,)*3))):
+                        raise exception
+
+        super(RandomVersionPyTableDataSet, self).__init__(name=name, pk_type=if_none(pk_type, np.uint32))
+        self.pytables = pytables
+
+        for i in sorted(col_descr.keys()):
+            col_name, col_shape, col_dtype = col_descr[i]
+            col_dtype = np.dtype(str(col_dtype).replace('S', 'U'))
+            self.add_column(col_name, col_shape, col_dtype)
+
+    @property
+    def size(self):
+        return len(self.pytables[0])
+
+    def _generator(self, gen_context):
+        columns = gen_context.columns
+        start = gen_context.start_id
+        stop = gen_context.stop_id
+
+        n = len(self.pytables)
+        length = stop-start
+        if gen_context.determinist:
+            hd5_gens = [t.iterrows(start+i, stop, step=n) for i, t in enumerate(self.pytables)]
+            table_seq = np.repeat(np.arange(n), length//n, axis=1).flatten()
+            table_seq = np.concatenate((table_seq, np.arange(length % n)))
+        else:
+            table_seq = np.stack([i]*(length//n + round(i/n)) for i in range(n))
+            self.rng.shuffle(table_seq)
+            hd5_gens = [t.itersequence(np.argwhere(table_seq == i)) for i, t in enumerate(self.pytables)]
+
+        while not gen_context.ended():
+            i, n, weakref = gen_context.create_result()
+            r = weakref()
+
+            for j in range(n):
+                row = next(hd5_gens[table_seq[i+j-start]])
+                for c in columns:
+                    r[j, c] = row[c]
+
+            r = None
+            yield weakref
+
 
 ########################################################################################################################
 class DataSetSubset(AbstractDataSet):
