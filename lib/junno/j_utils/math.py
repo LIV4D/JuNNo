@@ -236,7 +236,7 @@ def pad_forward_na(x, inplace=False, axis=0, mask=None):
 
 
 ########################################################################################################################
-def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
+def vega_graph(df, graph_mapping, graph_opt=None, tooltip=None, shape=(500, 300)):
     """
     :param df: 
     :param graph_mapping: 
@@ -254,7 +254,7 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
     """
     from vega import Vega
     import pandas
-    from .collections import recursive_dict_update
+    from .collections import recursive_dict_update, AttributeDict
 
     if graph_opt is None:
         graph_opt = {}
@@ -280,6 +280,7 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
     }
 
     marks = []
+    series = {}
     x_series = set()
     color_scale = []
     y_scales = {}
@@ -306,24 +307,29 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
         marks.append({
             "type": type,
             "from": {'data': 'table'},
+            "interactive": False,
             "encode": {
                 "update": {
                     "x": {'field': x, 'scale': 'x'},
                     "y": {'field': y, 'scale': scale},
                     "stroke": color,
+                    "strokeWidth": {"signal": "hoverSeries=='%s' ? 2 : 1" % label},
                     **mapping
                 }
             }
         })
 
+        series[label] = AttributeDict(dict(x=x, y=y, yscale=scale, color=color))
+
         if std:
             marks.append({
                 "type": "area",
                 "from": {'data': 'table'},
+                "interactive": False,
                 "encode": {
                     "enter": {
                         "fill": color,
-                        "opacity": {'value': 0.2}
+                        "opacity": {'value': 0.1}
                     },
                     "update": {
                         "y": {"signal": "datum.%s+.5*datum.%s" % (y, std), 'scale': scale},
@@ -360,31 +366,87 @@ def vega_graph(df, graph_mapping, graph_opt=None, shape=(500, 300)):
             'domain':  {'fields': [{'data': 'table', 'field': _} for _ in scale_fields]},
             'range': 'height'})
 
-    # binding_opt['signal'] = [{
-    #     "name": "highlightedX",
-    #     "value": None,
-    #     "on": [
-    #         {"events": "mouseover", "update": "invert('x', clamp(x(), 0, width))"},
-    #         {"events": "mouseout", "update": "null"}
-    #     ]
-    # }]
-
-    # binding_opt['marks'].append({'type': 'rule',
-    #                              "encode": {
-    #                                 "update": {
-    #                                   "x": {"scale": "x", "signal": "highlightedX", "offset": 0.5},
-    #                                   "y": {"value": 0},
-    #                                   "y2": {"field": {"group": "height"}},
-    #                                   "stroke": {"value": "#bbb"}
-    #                                 }
-    #                               }
-    #                     })
-
     recursive_dict_update(opt, binding_opt, append=True)
 
-    # import json
-    # print(json.dumps(opt, indent='   '))
     opt['data'] = [{'name': 'table', 'values': df.to_dict(orient='records')}]
+
+    for label, s in series.items():
+        opt['data'].append({"name": 'scaled_'+s.y,
+                            "source": "table",
+                            "transform":[{
+                                  "type": "formula",
+                                  "as": "y",
+                                  "expr": "scale('%s', datum.%s)" % (s.yscale, s.y)
+                                },
+                                {
+                                  "type": "formula",
+                                  "as": "x",
+                                  "expr": "scale('x', datum.%s)" % s.x
+                                },
+                                {
+                                  "type": "formula",
+                                  "as": "seriesName",
+                                  "expr": "'%s'" % label
+                                }
+                            ]})
+    opt['data'].append({"name": 'scaled_concat_data',
+                        "source": ['scaled_'+s.y for s in series.values()]})
+    opt['marks'].append({
+                          "name": "voronoi",
+                          "type": "path",
+                          "from": {"data": "scaled_concat_data"},
+                          "encode": {
+                            "update": {
+                              "fill": {"value": "transparent"},
+                              "strokeWidth": {"value": 0},
+                              "stroke": {"value": "red"},
+                              "strokeOpacity": {"value": 0.2},
+                              "isVoronoi": {"value": True},
+                            }
+                          },
+                          "transform": [
+                            {
+                              "type": "voronoi",
+                              "x": "datum.x",
+                              "y": "datum.y",
+                              "size": [{"signal": "width"}, {"signal": "height"}]
+                            }
+                          ]
+                        })
+    if tooltip:
+        opt['marks'][-1]['encode']['update']['tooltip'] = tooltip
+
+    opt['signals'] = [{
+                          "name": "hover",
+                          "value": None,
+                          "on": [
+                            {"events": "@voronoi:mouseover", "update": "datum"},
+                            {"events": "@voronoi:mouseout", "update": "null"}
+                          ]
+                        },
+                        {
+                          "name": "hoverSeries",
+                          "value": None,
+                          "update": "hover ? hover.seriesName: null"
+                        }]
+
+    opt['data'].append({"name": 'focusPoint',
+                        "source": 'scaled_concat_data',
+                        "transform": [{'type': 'filter', 'expr': "hover && hover.x === datum.x && hover.y === datum.y"}]})
+    opt['marks'].append({"name": 'focusPointMark',
+                         "from": {"data": "focusPoint"},
+                         "type": "symbol",
+                         "interactive": False,
+                         "encode": {
+                             "update": {
+                                 "x": {"field": "x"},
+                                 "y": {"field": "y"},
+                                 "fill": {"field": "seriesName", "scale": "color_scale"},
+                                 "strokeWidth": {"value": 0},
+                                 "size": {"value": 70}
+                             }
+                         }
+                         })
 
     return Vega(opt)
 
