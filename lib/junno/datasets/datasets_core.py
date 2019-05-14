@@ -239,6 +239,8 @@ def load_hdf(path, name=None):
             path, table_name = path_split
         else:
             raise ValueError('path should be formated as "PATH:TABLE_NAME"')
+    else:
+        raise NotImplementedError
 
     if name is None:
         name = table_name
@@ -260,12 +262,13 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
     def __init__(self, pytables, name='PyTableDataset'):
 
         col_descr = {}
+        pk_type = None
         exception = NotImplementedError
         for i, pytable in enumerate(pytables):
             if pytable.description._v_is_nested:
                 raise NotImplementedError('PyTable with nested columns are not supported.')
 
-            pk_type = None
+
             if i==0:
                 nrows = len(pytable)
             elif nrows != len(pytable):
@@ -302,21 +305,21 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
         start = gen_context.start_id
         stop = gen_context.stop_id
 
-        n = len(self.pytables)
-        length = stop-start
+        table_count = len(self.pytables)
+        N = stop-start
         if gen_context.determinist:
-            hd5_gens = [t.iterrows(start+i, stop, step=n) for i, t in enumerate(self.pytables)]
-            table_seq = np.repeat(np.arange(n), length//n, axis=1).flatten()
-            table_seq = np.concatenate((table_seq, np.arange(length % n)))
+            hd5_gens = [iter(t.iterrows(start+i, stop, step=table_count)) for i, t in enumerate(self.pytables)]
+            table_seq = np.repeat([np.arange(table_count, dtype=np.int)], N//table_count, axis=0).flatten()
+            table_seq = np.concatenate((table_seq, np.arange(N % table_count, dtype=np.int)))
         else:
-            table_seq = np.stack([i]*(length//n + round(i/n)) for i in range(n))
+            table_seq = np.concatenate(list([i]*(N//table_count + round(i/table_count)) for i in range(table_count)))
             self.rng.shuffle(table_seq)
-            hd5_gens = [t.itersequence(np.argwhere(table_seq == i)) for i, t in enumerate(self.pytables)]
+            hd5_gens = [iter(t.itersequence(np.argwhere(table_seq == i).flatten()))
+                        for i, t in enumerate(self.pytables)]
 
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
             r = weakref()
-
             for j in range(n):
                 row = next(hd5_gens[table_seq[i+j-start]])
                 for c in columns:
