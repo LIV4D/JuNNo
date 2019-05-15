@@ -314,14 +314,14 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
         else:
             table_seq = np.concatenate(list([i]*(N//table_count + round(i/table_count)) for i in range(table_count)))
             self.rng.shuffle(table_seq)
-            hd5_gens = [iter(t.itersequence(np.argwhere(table_seq == i).flatten()))
+            hd5_gens = [iter(t.itersequence(np.argwhere(table_seq == i).flatten()+start))
                         for i, t in enumerate(self.pytables)]
 
         while not gen_context.ended():
             i, n, weakref = gen_context.create_result()
             r = weakref()
             for j in range(n):
-                row = next(hd5_gens[table_seq[i+j-start]])
+                row = next(hd5_gens[int(table_seq[i+j-start])])
                 for c in columns:
                     r[j, c] = row[c]
 
@@ -633,7 +633,7 @@ class DataSetShuffle(AbstractDataSet):
             r = weakref()
 
             if self.subgen <= 1:
-                seq = list(indices[i_global:i_global+n])
+                seq = indices[i_global:i_global+n]
                 if len(subgen) > 1:  # -- Mutliple core, No subgen --
                     waiting_seq = len(seq)
                     while waiting_seq:
@@ -654,8 +654,6 @@ class DataSetShuffle(AbstractDataSet):
                 else:       # -- Single core, No subgen --
                     for i, seq_id in enumerate(seq):
                         subgen[0].next(copy=r[i:i+1], r=r, seek=seq_id)
-                    if gen_context.is_last() or indices[i_global+n] != indices[i_global+n-1]+1:
-                        subgen[0].clean()
             else:
                 seq_subgens = subgen_index[i_global:i_global+n]
                 if async_subgen:    # -- Async subgen --
