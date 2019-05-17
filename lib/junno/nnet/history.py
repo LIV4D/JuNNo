@@ -243,12 +243,12 @@ class History:
             import time as python_time
             date = python_time.time()
         if epoch:
-            self._epoch_info = np.append(self._epoch_info,
-                                         np.array((self._epoch_info[-1,0]+self._epoch_info[-1, 1], iteration+1),
-                                                  dtype=self._epoch_info.dtype))
+            self._epoch_info = np.concatenate((self._epoch_info,
+                                         np.array([[self._epoch_info[-1, 0]+self._epoch_info[-1, 1], iteration+1]],
+                                                  dtype=self._epoch_info.dtype)))
             r = self._epoch_info_hdf.row
-            r['start_iter'] = self._epoch_info[-1,0]
-            r['max_e_iter'] = self._epoch_info[-1,1]
+            r['start_iter'] = self._epoch_info[-1, 0]
+            r['max_e_iter'] = self._epoch_info[-1, 1]
             r.append()
         elif iteration > 0:
             self._epoch_info[-1][1] += iteration

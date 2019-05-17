@@ -433,19 +433,23 @@ def vega_graph(df, graph_mapping, graph_opt=None, tooltip=None, shape=(500, 300)
     opt['data'].append({"name": 'focusPoint',
                         "source": 'scaled_concat_data',
                         "transform": [{'type': 'filter', 'expr': "hover && hover.x === datum.x && hover.y === datum.y"}]})
-    opt['marks'].append({"name": 'focusPointMark',
-                         "from": {"data": "focusPoint"},
-                         "type": "symbol",
-                         "interactive": False,
-                         "encode": {
-                             "update": {
-                                 "x": {"field": "x"},
-                                 "y": {"field": "y"},
-                                 "fill": {"field": "seriesName", "scale": "color_scale"},
-                                 "strokeWidth": {"value": 0},
-                                 "size": {"value": 70}
+    opt['marks'].append({"type": "group",
+                         "marks": [
+                             {"name": 'focusPointMark',
+                             "from": {"data": "focusPoint"},
+                             "type": "symbol",
+                             "interactive": False,
+                             "zindex": 5,
+                             "encode": {
+                                 "update": {
+                                     "x": {"field": "x"},
+                                     "y": {"field": "y"},
+                                     "fill": {"field": "seriesName", "scale": "color_scale"},
+                                     "strokeWidth": {"value": 0},
+                                     "size": {"value": 70}
+                                 }
                              }
-                         }
+                             }]
                          })
 
     return Vega(opt)
