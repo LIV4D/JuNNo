@@ -1341,7 +1341,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
                               format=format, remove_parent_columns=not keep_parent)
 
-    def apply_torch(self, columns, f, device=None, eval=True, forward_hooks=None, backward_hooks=None,
+    def apply_torch(self, columns, f, format=None, device=None, eval=True, forward_hooks=None, backward_hooks=None,
                     n_factor=1, batchwise=True, keep_parent=True, name=None):
         import torch
         from .datasets_core import DataSetApply
@@ -1467,7 +1467,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 raise ValueError('Forward and backward hooks are not supported when f is not a torch module.')
 
         return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
-                            remove_parent_columns=not keep_parent, name=name,
+                            remove_parent_columns=not keep_parent, name=name, format=format,
                             before_apply=before_apply, after_apply=after_apply)
 
     def map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):

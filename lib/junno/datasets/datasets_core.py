@@ -1,6 +1,7 @@
 import numpy as np
 import time
 
+from os.path import basename
 from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
@@ -245,7 +246,8 @@ def load_hdf(path, name=None):
     if name is None:
         name = table_name
 
-    from ..j_utils.path import open_pytable
+    from ..j_utils.path import open_pytable, format_filepath
+    path = format_filepath(path, 'cache', exists=True)
     hdf_f = open_pytable(path)
     if not table_name.startswith('/'):
         table_name = '/' + table_name
@@ -328,6 +330,45 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
             r = None
             yield weakref
 
+
+def load_random_version_hdf(path, name=None):
+    import tables
+    if isinstance(path, str):
+        path_split = path.split(':')
+        if len(path_split) == 1:
+            path = path_split[0]
+            table_name = 'dataset'
+        elif len(path_split) == 2:
+            path, table_name = path_split
+        else:
+            raise ValueError('path should be formated as "PATH:TABLE_NAME"')
+    else:
+        raise NotImplementedError
+
+    if name is None:
+        name = basename(path)
+
+    from ..j_utils.path import open_pytable, format_filepath
+    path = format_filepath(path, 'cache', exists=True)
+    hdf_f = open_pytable(path)
+    
+    if not table_name.startswith('/'):
+        table_name = '/' + table_name
+    table_path, table_name = table_name.rsplit('/', maxsplit=1)
+    if not table_path:
+        table_path = '/'
+
+    hdf_tables = []
+    i = 0
+
+    while True:
+        try:
+            hdf_tables.append(hdf_f.get_node(table_path, table_name+'_'+str(i), 'Table'))
+        except tables.NoSuchNodeError:
+            break
+        i += 1
+
+    return RandomVersionPyTableDataSet(hdf_tables, name=name)
 
 ########################################################################################################################
 class DataSetSubset(AbstractDataSet):
@@ -1187,11 +1228,8 @@ class DataSetApply(AbstractDataSet):
 
         def str_tuple(c):
             if isinstance(c, str):
-                if c in parent_columns_name:
-                    return {c: c}
-                else:
-                    return {c: ()}
-            elif isinstance(c, tuple):
+                c = tuple(c.split(','))
+            if isinstance(c, tuple):
                 if all(_ in dataset.col for _ in c):
                     return {c:c[:len(self.f_params)]}
                 else:
@@ -1216,10 +1254,12 @@ class DataSetApply(AbstractDataSet):
 
         for own_c, parent_c in columns.items():
             if isinstance(own_c, str):
-                own_c = (own_c,)
+                own_c = tuple(own_c.split(','))
             if parent_c is None or not parent_c:
                 parent_c = []
-            elif isinstance(parent_c, (str, DSColumn)):
+            elif isinstance(parent_c, str):
+                parent_c = parent_c.split(',')
+            elif isinstance(parent_c, DSColumn):
                 parent_c = [parent_c]
             elif isinstance(parent_c, tuple):
                 parent_c = list(parent_c)
