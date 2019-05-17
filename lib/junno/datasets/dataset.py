@@ -2270,8 +2270,7 @@ class DSColumnFormat:
             from copy import copy
             m = copy(self.mapping)
             m['default'] = self.default
-            json_mapping = dumps(m, indent=0).replace('\n', '')
-            return 'LabelImage(%s)' % json_mapping
+            return 'LabelImage()'
 
         def _preformat(self, data):
             if len(self.shape) == 2:

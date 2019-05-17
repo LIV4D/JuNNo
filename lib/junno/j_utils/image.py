@@ -304,6 +304,7 @@ def str2color(str_color, bgr=True, uint8=True):
             pruple=(127,0,255),
             pink=(255,0,127),
             white=(255,255,255),
+            grey=(127,127,127),
             black=(0,0,0)
         )[c_str.lower()]
     except KeyError:

@@ -1561,6 +1561,9 @@ class DataSetApply(AbstractDataSet):
                                      % (len(f_result), len(rkeys)))
 
             for c_name, c_data in zip(rkeys, f_result):
+                if c_data.shape == ():
+                    raise ValueError('The function was applied batchwise but returned an array with shape (). '
+                                     '(Please note that even if the batchsize is 1, the array shape should be (1,))')
                 if self._n_factor is not None and c_data.shape[0] != self._n_factor*args_n:
                     raise ValueError('The function returned %i rows for columns %s, but %i was expected.'
                                      % (c_data.shape[0], c_name, self._n_factor*args_n))
