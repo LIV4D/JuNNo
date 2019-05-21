@@ -4,7 +4,8 @@ from copy import copy
 from os.path import exists
 from os import remove
 from ..j_utils.string import str2time, time2str
-from ..j_utils.path import format_filepath, open_pytable
+from ..j_utils.path import format_filepath
+from ..j_utils.threadsafe_pytables import open_pytable, tables
 from ..j_utils.collections import OrderedDict, AttributeDict, df_empty, if_none
 from ..j_utils.math import pad_forward_na
 from ..datasets.dataset import DSColumnFormat
@@ -16,8 +17,8 @@ class History:
     Data are index through timestamp: the number of iteration since the first iteration of the first epoch.
     """
     def __init__(self, path, overwrite=False):
-        import tables
-        from tables.nodes import filenode
+        from ..j_utils.threadsafe_pytables.tables import nodes as filenode
+
         path = format_filepath(path, 'h5log', exists=False)
 
         if overwrite and exists(path):

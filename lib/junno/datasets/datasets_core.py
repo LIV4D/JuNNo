@@ -79,7 +79,7 @@ class PyTableDataSet(AbstractDataSet):
 
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
-        from ..j_utils.path import open_pytable
+        from ..j_utils.threadsafe_pytables import open_pytable
         f = open_pytable(path)
         table_path, table_name = table.rsplit('/', 1)
         if not table_path.startswith('/'):
@@ -89,8 +89,7 @@ class PyTableDataSet(AbstractDataSet):
 
     @staticmethod
     def from_numpy(data_dict, cache_path=None, name='PyTableDataset'):
-        import tables
-        from ..j_utils.path import open_pytable
+        from ..j_utils.threadsafe_pytables import open_pytable, tables
         from ..j_utils.collections import is_dict
 
         if is_dict(data_dict):
@@ -246,7 +245,8 @@ def load_hdf(path, name=None):
     if name is None:
         name = table_name
 
-    from ..j_utils.path import open_pytable, format_filepath
+    from ..j_utils.path import format_filepath
+    from ..j_utils.threadsafe_pytables import open_pytable
     path = format_filepath(path, 'cache', exists=True)
     hdf_f = open_pytable(path)
     if not table_name.startswith('/'):
@@ -348,7 +348,8 @@ def load_random_version_hdf(path, name=None):
     if name is None:
         name = basename(path)
 
-    from ..j_utils.path import open_pytable, format_filepath
+    from ..j_utils.path import format_filepath
+    from ..j_utils.threadsafe_pytables import open_pytable
     path = format_filepath(path, 'cache', exists=True)
     hdf_f = open_pytable(path)
     

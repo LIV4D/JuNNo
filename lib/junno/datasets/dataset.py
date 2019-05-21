@@ -808,9 +808,9 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     def cache(self, start=0, stop=None, columns=None, ncore=1, ondisk=None, name=None, random_version=None,
               overwrite='auto', compression='auto'):
-        import tables
         from collections import OrderedDict
-        from ..j_utils.path import open_pytable, format_filepath
+        from ..j_utils.path import format_filepath
+        from ..j_utils.threadsafe_pytables import open_pytable, tables
 
         start, stop = interval(self.size, start, stop)
         if columns is None:

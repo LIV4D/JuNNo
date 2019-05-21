@@ -19,9 +19,6 @@ def abs_path(path, f=None):
     return path
 
 
-_pytables_files = {}
-
-
 def format_filepath(path, extension=None, origin_path=None, exists=True):
     if path.endswith('/'):
         raise ValueError('%s is not a valid file name' % path)
@@ -32,22 +29,6 @@ def format_filepath(path, extension=None, origin_path=None, exists=True):
     if (exists and not os.path.exists(apath)) or os.path.isdir(apath):
         raise ValueError('%s not found.' % path)
     return apath
-
-
-def open_pytable(path):
-    path = abspath(path)
-    f = _pytables_files.get(path, None)
-    if f is not None and f() is not None:
-        return f()
-
-    import tables
-    import weakref
-    os.makedirs(dirname(path), exist_ok=True)
-
-    f = tables.open_file(path, mode='a')
-    _pytables_files[path] = weakref.ref(f)
-
-    return f
 
 
 class ZippedProject:
