@@ -17,7 +17,7 @@ class History:
     Data are index through timestamp: the number of iteration since the first iteration of the first epoch.
     """
     def __init__(self, path, overwrite=False):
-        from ..j_utils.threadsafe_pytables.tables import nodes as filenode
+        from tables.nodes import filenode
 
         path = format_filepath(path, 'h5log', exists=False)
 
