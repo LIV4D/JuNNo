@@ -695,7 +695,11 @@ class DataSetShuffle(AbstractDataSet):
 
                 else:       # -- Single core, No subgen --
                     for i, seq_id in enumerate(seq):
-                        subgen[0].next(copy=r[i:i+1], r=r, seek=seq_id)
+                        try:
+                            subgen[0].next(copy=r[i:i+1], r=r, seek=seq_id)
+                        except StopIteration:
+                            raise RuntimeError('%s generator stopped early at id=%i (parent id=%i).'
+                                               % (self._name, i+i_global, seq_id))
             else:
                 seq_subgens = subgen_index[i_global:i_global+n]
                 if async_subgen:    # -- Async subgen --

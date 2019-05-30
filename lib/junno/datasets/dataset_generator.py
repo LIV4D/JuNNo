@@ -796,9 +796,6 @@ class DataSetSmartGenerator:
             self._context.id = self.stop_id
             raise StopIteration
 
-        if ask_next:
-            self.ask()
-
         self._context.n = min(self.stop_id - self.current_id, self._context.start_n)
 
         if copy is not None:
@@ -814,6 +811,8 @@ class DataSetSmartGenerator:
             self.clean()
             if self.n > r.size:
                 r.truncate(self.n)
+        elif ask_next:
+                self.ask()
 
         # Reapply column format
         for c in r._columns:
@@ -899,7 +898,7 @@ class DataSetSmartGenerator:
             self.dataset.step_rng()
 
             mpArg = dict(target=parallel_generator_exec,
-                         args=(self.context, pipe[1]),
+                         args=(self.context.lite_copy(), pipe[1]),
                          name='%s.generator' % self.dataset.dataset_name)
 
             if self.intime == 'process':
