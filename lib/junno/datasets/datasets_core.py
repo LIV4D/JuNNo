@@ -1298,6 +1298,9 @@ class DataSetApply(AbstractDataSet):
                 self._single_col_mapping[c] = parent_c
             self._columns_mapping[own_c] = parent_c
 
+        # Removing doublons from parent_copied_columns
+        parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in self._columns_mapping]
+
         self._columns = own_columns + parent_copied_columns
 
         # ---  HANDLE FUNCTION  ---

@@ -1558,15 +1558,18 @@ class AbstractDataSet(metaclass=ABCMeta):
             if not isinstance(patch_shape, tuple):
                 patch_shape = (patch_shape, patch_shape)
 
-            if not isinstance(columns, list):
-                if isinstance(columns, DSColumn):
-                    columns = columns.name
-                patches_def[columns] = (columns, patch_shape)
-            else:
+            if isinstance(columns, DSColumn):
+                columns = (columns.name,)
+            elif isinstance(columns, str):
+                columns = columns.split(',')
+            if isinstance(columns, (list, tuple)):
                 for c_id, c in enumerate(columns):
                     if isinstance(c, DSColumn):
                         c = c.name
                     patches_def[c] = (c, patch_shape)
+            else:
+                raise ValueError('columns parameters should be of type: [DSColumn, str, list, tuple], not %s.\n'
+                                 '(columns=%s)' % (type(columns), repr(columns)))
         else:
             if not isinstance(patch_shape, dict):
                 raise ValueError('If columns is not defined, patch_shape should be a dictionary of patch shapes.')
