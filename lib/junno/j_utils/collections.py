@@ -49,7 +49,16 @@ def recursive_dict_update(destination, origin, append=False):
         if is_dict(v) and is_dict(dest_v):
             recursive_dict_update(destination[n], v)
         elif append and isinstance(v, list) and isinstance(dest_v, list):
-            destination[n].append(v)
+            for list_v in v:
+                append_needed = True
+                if is_dict(list_v) and isinstance(append, str) and append in list_v:
+                    key = list_v[append]
+                    for i in range(len(dest_v)):
+                        if is_dict(dest_v[i]) and dest_v[i] and dest_v[i].get(append, None) == key:
+                            recursive_dict_update(dest_v[i], list_v, append=append)
+                            append_needed = False
+                if append_needed:
+                    dest_v.append(list_v)
         else:
             destination[n] = v
 

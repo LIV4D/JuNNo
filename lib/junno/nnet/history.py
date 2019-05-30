@@ -279,12 +279,14 @@ class History:
     def keys(self):
         return self._keys
 
-    def series(self, only_number=False):
+    def series(self, only_number=False, no_std=False):
         keys = list(self.keys())
         if only_number:
             return [k for k in keys
                     if np.issubdtype(self.format[k].dtype, np.number)
                     and self.format[k].shape == ()]
+        if no_std:
+            keys = [k for k in keys if not (k.endswith('_std') and k[:-4] in keys)]
         return keys
 
     def __getitem__(self, item):
@@ -440,12 +442,18 @@ class History:
 
         if isinstance(std, bool):
             std = averaged if std else []
-        else:
+        if isinstance(std, (list, tuple)):
             std = self.interpret_series_name(std, only_number=True)
+            std = {_: _+'_std' if _+'_std' in self.series(only_number=True) else None for _ in std}
+        if isinstance(std, dict):
             not_averaged_series = set(std).difference(averaged)
             if not_averaged_series:
                 raise ValueError("Can't compute standard deviation of: %s.\n"
                                  "Those series are not averaged." % repr(not_averaged_series))
+        else:
+            raise ValueError('Invalid value for argument **std**: %s.\n '
+                             'Valid types are bool, list/tuple, dict. Given is %s.' % (repr(std), type(std)))
+
 
         if not interpolation:
             interpolation = {}
@@ -491,10 +499,14 @@ class History:
                                  "Those series are either unknown or don't contain numbers!" % repr(unknown_keys))
             smooth = {_: 15 for _ in smooth}
 
-        def interpolate(x, y, kind):
+        def interpolate(x, y, kind, start_i, end_i):
             import scipy.interpolate
             interpolator = scipy.interpolate.interp1d(x, y, kind=kind, copy=False, assume_sorted=True)
-            return interpolator(indexes)
+            r = np.empty(shape=(len(indexes),), dtype=y.dtype)
+            r[:start_i] = np.nan
+            r[start_i:end_i+1] = interpolator(indexes[start_i:end_i+1])
+            r[end_i+1:] = np.nan
+            return r
 
         def perform_smooth(x, factor):
             import  scipy.signal
@@ -509,27 +521,71 @@ class History:
 
             # Sample
             if k in averaged:
-                timeidx = np.empty(shape=(len(intervals),), dtype=np.int64)
+                # timeidx = np.empty(shape=(len(intervals),), dtype=np.int64)
                 serie = np.empty(shape=(len(intervals),))
                 mask = np.empty(shape=(len(intervals),), dtype=np.bool)
                 mask.fill(True)
 
-                if k in std is not None:
+                table_std = None
+                if k in std:
                     serie_std = np.empty(shape=(len(intervals),)) if k in std else None
+                    if isinstance(std[k], str):
+                        table_std = self._table_by_key(std[k])
 
-                last_start_id = 0
+                last_row_read = -1
+                first_not_nan_i = None
+                last_not_nan_i = None
                 for i, interval in enumerate(intervals):
-                    if interval and last_start_id < table.nrows:
+                    if interval and last_row_read < table.nrows:
                         start_id, end_id = interval
-                        s = table.read_where("(start_id <= timeline_id) & (timeline_id < end_id)",
-                                             condvars=dict(start_id=start_id, end_id=end_id))
-                        if len(s):
-                            last_start_id += len(s)
-                            timeidx[i] = self._timeline.index[s['timeline_id'][0]]
-                            serie[i] = np.mean(s['value']) if s.shape[0] else np.nan
-                            if serie_std is not None:
-                                serie_std[i] = np.std(s['value']) if s.shape[0] else np.nan
-                            continue
+                        ids = table.get_where_list("(start_id <= timeline_id) & (timeline_id < end_id)",
+                                                   condvars=dict(start_id=start_id, end_id=end_id))
+
+                        if len(ids):
+                            s = table.read_coordinates(ids)
+                            last_row_read += len(s)
+                            # timeidx[i] = self._timeline.index[s['timeline_id'][0]]
+                            if s.shape[0]:
+                                serie[i] = np.mean(s['value'])
+                                if serie_std is not None:
+                                    if table_std:  # Aggregate std
+                                        std_ids = table_std.get_where_list(
+                                            "(start_id <= timeline_id) & (timeline_id < end_id)",
+                                            condvars=dict(start_id=start_id, end_id=end_id))
+                                        if not len(std_ids):
+                                            serie_std[i] = np.nan
+                                            continue
+
+                                        # Retreive std values and index
+                                        s_std = table_std.read_coordinates(std_ids)
+                                        s0_sigma = self._timeline2iter(s_std['timeline_id'])
+                                        s0_sigma[1:] -= s0_sigma[:-1]
+                                        sigma = s_std['value']
+                                        if std_ids[0] > 0:
+                                            s0_sigma[0] -= self._timeline2iter(table_std[std_ids[0]-1]['timeline_id'])
+
+                                        # Retreive mean index
+                                        s0_mu = self._timeline2iter(s['timeline_id'])
+                                        s0_mu[1:] -= s0_mu[:-1]
+                                        mu = s['value']
+                                        if ids[0] > 0:
+                                            s0_mu[0] -= self._timeline2iter(table[ids[0]-1]['timeline_id'])
+
+                                        s1 = mu * s0_mu
+                                        s2 = s0_sigma*sigma*sigma + s0_mu*mu*mu
+                                        s0_mu = s0_mu.sum()
+                                        s0_sigma = s0_sigma.sum()
+                                        s1 = s1.sum()
+                                        s2 = s2.sum()
+                                        s0 = np.sqrt(s0_mu*s0_sigma)
+
+                                        serie_std[i] = np.sqrt(s2/s0 - np.power(s1/s0_mu, 2))
+                                    else:
+                                        serie_std[i] = np.std(s['value'])
+                                if first_not_nan_i is None:
+                                    first_not_nan_i = i
+                                last_not_nan_i = i
+                                continue
 
                     serie[i] = np.nan
                     mask[i] = False
@@ -537,15 +593,21 @@ class History:
                         serie_std[i] = np.nan
 
                 # Interpolate
-                if k in interpolation:
+                if k in interpolation and last_not_nan_i is not None:
                     if interpolation[k] == 'previous':
                         pad_forward_na(serie, inplace=True, mask=mask)
                         if serie_std is not None:
                             pad_forward_na(serie_std, inplace=True, mask=mask)
                     else:
-                        serie = interpolate(x=timeidx[mask], y=serie[mask], kind=interpolation[k])
+                        try:
+                            serie = interpolate(x=indexes[mask], y=serie[mask], kind=interpolation[k],
+                                                start_i=first_not_nan_i, end_i=last_not_nan_i)
+                        except ValueError as v:
+                            print(indexes[last_not_nan_i], indexes[mask][-1], mask[last_not_nan_i])
+                            raise v
                         if serie_std is not None:
-                            serie_std = interpolate(x=timeidx[mask], y=serie_std[mask], kind=interpolation[k])
+                            serie_std = interpolate(x=indexes[mask], y=serie_std[mask], kind=interpolation[k],
+                                                    start_i=first_not_nan_i, end_i=last_not_nan_i)
                 mask_na[k] = mask
                 if serie_std is not None:
                     mask_na[k+'_std'] = mask
@@ -565,13 +627,16 @@ class History:
                 start_table = max(abs(self._timeline_hdf[start_timeid]['_'+k])-1, 0)
                 end_table = max(abs(self._timeline_hdf[end_timeid]['_' + k]), 0)
                 s = table.read(start=start_table, stop=end_table)
-                s_id = s['timeline_id']
-                s_id = self._timeline.iloc[s_id].index.values
+                s_id = self._timeline2iter(s['timeline_id'])
                 s_value = s['value']
 
+                first_not_nan_i = np.argmax(indexes >= s_id[0])
+                last_not_nan_i = np.argmax(indexes <= s_id[-1])
+
                 interp_k = interpolation.get(k, None)
-                if interp_k is not None and interp_k != 'previous':
-                    serie = interpolate(s_id, s_value, kind=interpolation[k])
+                if interp_k is not None and interp_k != 'previous' :
+                    serie = interpolate(s_id, s_value, kind=interpolation[k],
+                                        start_i=first_not_nan_i, end_i=last_not_nan_i)
                     mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
                 else:
 
@@ -615,10 +680,15 @@ class History:
             return pandas.concat([timestamp_df, df], axis=1)
         return df
 
-    def plot(self, series=None, start=0, stop=0, step=1, interpolation='previous', smooth=None, averaged=True):
+    def plot(self, series=None, start=0, stop=0, step=1, interpolation='quadratic', smooth=None, averaged=True):
         from ..j_utils.math import vega_graph
         from IPython.display import display
-        series = if_none(series, self.series(only_number=True))
+        if series is None:
+            series = self.series(only_number=True, )
+            print(series)
+            series = [s for s in series if not (s.endswith('_std') and s[:-4] in series)]
+            print(series)
+
         df = self.read(series=series, std=True, start=start, stop=stop, step=step, interpolation=interpolation,
                        smooth=smooth, averaged=averaged)
         df['id'] = df.index
@@ -628,9 +698,15 @@ class History:
                    'sensitivity' in serie_name or 'specificity' in serie_name
 
         map = {s: {'x': 'id', 'y': s, 'std': s+'_std', 'scale': 'y_ref' if is_percent(s) else None} for s in series}
-        graph = vega_graph(df, map)
+        opt = {'scales':
+                   [ {'name': "xepoch",
+                      'domain': {'fields': [{'data': "table", 'field': "epoch"}]},
+                      'range': "width"
+                   }],
+               'axes': [{'name': "XAxis", 'scale': "xepoch", 'title': "Epoch"}]
+               }
+        graph = vega_graph(df,  map, opt, shape=(800, 400))
         display(graph)
-        return graph
 
     #   --- Export ---
     def export_dataframe(self, series=None, start=0, stop=0, timestamp=None):
@@ -772,7 +848,7 @@ class History:
 
     def interpret_series_name(self, series, only_number=False):
         if series is None:
-            return self.series(only_number=only_number)
+            return self.series(only_number=only_number, no_std=True)
         if isinstance(series, str):
             series = [series]
         elif not isinstance(series, list):
@@ -814,6 +890,11 @@ class History:
         if 'time' in timestamp:
             timeline['time'].interpolate(method='pad', inplace=True)
         return timeline
+
+    def _timeline2iter(self, t):
+        r = np.array(self._timeline.index[t], dtype=np.int64)
+        return r
+        return self._timeline.iloc[t].index.values
 
 
 class TimeStamp:
