@@ -660,10 +660,10 @@ class DataSetUnPatch(AbstractDataSet):
                                     if h0 <= 0 or w0 <= 0:
                                         continue
 
-                                    win_out = [slice(None, None)]*(len(s_out)-2) + \
-                                              [slice(y1, y1+h0), slice(x1, x1+w0)]
-                                    win_patch = [slice(None, None)]*(len(s_out)-2) + \
-                                                [slice(y0, y0+h0), slice(x0, x0+w0)]
+                                    win_out = tuple([slice(None, None)]*(len(s_out)-2) +
+                                                    [slice(y1, y1+h0), slice(x1, x1+w0)])
+                                    win_patch = tuple([slice(None, None)]*(len(s_out)-2) +
+                                                      [slice(y0, y0+h0), slice(x0, x0+w0)])
                                     r[i, c][win_out] = patch[win_patch]
                         else:
                             raise NotImplementedError

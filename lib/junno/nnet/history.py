@@ -482,6 +482,8 @@ class History:
             smooth = {}
         elif isinstance(smooth, bool):
             smooth = {_: 15 for _ in number_series_name}
+        elif isinstance(smooth, int):
+            smooth = {_: smooth for _ in number_series_name}
         elif isinstance(smooth, str):
             if smooth not in number_series_name:
                 raise ValueError("Can't smooth series %s. It is either unknown or doesn't contain number!"
@@ -510,7 +512,7 @@ class History:
 
         def perform_smooth(x, factor):
             import  scipy.signal
-            return scipy.signal.savgol_filter(x, factor, 3, mode='constant')
+            return scipy.signal.savgol_filter(x, factor, 3, mode='nearest')
 
         series = OrderedDict()
         mask_na = OrderedDict()
@@ -594,20 +596,17 @@ class History:
 
                 # Interpolate
                 if k in interpolation and last_not_nan_i is not None:
-                    if interpolation[k] == 'previous':
-                        pad_forward_na(serie, inplace=True, mask=mask)
-                        if serie_std is not None:
-                            pad_forward_na(serie_std, inplace=True, mask=mask)
-                    else:
-                        try:
+                    if mask[0] or mask.argmax() != 0:
+                        if interpolation[k] == 'previous':
+                            pad_forward_na(serie, inplace=True, mask=mask)
+                            if serie_std is not None:
+                                pad_forward_na(serie_std, inplace=True, mask=mask)
+                        else:
                             serie = interpolate(x=indexes[mask], y=serie[mask], kind=interpolation[k],
                                                 start_i=first_not_nan_i, end_i=last_not_nan_i)
-                        except ValueError as v:
-                            print(indexes[last_not_nan_i], indexes[mask][-1], mask[last_not_nan_i])
-                            raise v
-                        if serie_std is not None:
-                            serie_std = interpolate(x=indexes[mask], y=serie_std[mask], kind=interpolation[k],
-                                                    start_i=first_not_nan_i, end_i=last_not_nan_i)
+                            if serie_std is not None:
+                                serie_std = interpolate(x=indexes[mask], y=serie_std[mask], kind=interpolation[k],
+                                                        start_i=first_not_nan_i, end_i=last_not_nan_i)
                 mask_na[k] = mask
                 if serie_std is not None:
                     mask_na[k+'_std'] = mask
@@ -627,39 +626,47 @@ class History:
                 start_table = max(abs(self._timeline_hdf[start_timeid]['_'+k])-1, 0)
                 end_table = max(abs(self._timeline_hdf[end_timeid]['_' + k]), 0)
                 s = table.read(start=start_table, stop=end_table)
+
                 s_id = self._timeline2iter(s['timeline_id'])
                 s_value = s['value']
 
-                first_not_nan_i = np.argmax(indexes >= s_id[0])
-                last_not_nan_i = np.argmax(indexes <= s_id[-1])
-
                 interp_k = interpolation.get(k, None)
-                if interp_k is not None and interp_k != 'previous' :
-                    serie = interpolate(s_id, s_value, kind=interpolation[k],
-                                        start_i=first_not_nan_i, end_i=last_not_nan_i)
-                    mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
-                else:
+                if interp_k and len(s_id) < len(indexes):
 
-                    if interp_k == 'previous':
+                    first_not_nan_i = np.argmax(indexes >= s_id[0])
+                    last_not_nan_i = np.argmax(indexes >= s_id[-1])
+
+                    if interp_k != 'previous':
+                        serie = interpolate(s_id, s_value, kind=interpolation[k],
+                                            start_i=first_not_nan_i, end_i=last_not_nan_i)
+                        mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
+                    else:
                         import sortednp as snp
                         indexes_k = snp.merge(s_id, indexes.astype(s_id.dtype, copy=False))
                         # Remove doubles
                         indexes_k = indexes_k[np.concatenate(([True], indexes_k[1:] != indexes_k[:-1]))]
-                    else:
-                        indexes_k = indexes
 
-                    serie = np.empty(shape=(len(indexes_k),)+s_value.shape[1:], dtype=s_value.dtype)
+                        serie = np.empty(shape=(len(indexes_k),)+s_value.shape[1:], dtype=s_value.dtype)
+                        serie.fill(np.nan)
+                        mask = np.isin(indexes_k, s_id, assume_unique=True)
+                        mask_in = np.isin(s_id, indexes_k, assume_unique=True)
+                        serie[mask] = s_value[mask_in]
+
+                        pad_forward_na(serie, inplace=True, mask=mask)
+                        mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
+                        serie = serie[np.isin(indexes_k, indexes, assume_unique=True)]
+                else:
+                    import sortednp as snp
+                    indexes_k = snp.merge(s_id, indexes.astype(s_id.dtype, copy=False))
+                    # Remove doubles
+                    indexes_k = indexes_k[np.concatenate(([True], indexes_k[1:] != indexes_k[:-1]))]
+                    serie = np.empty(shape=(len(indexes_k),) + s_value.shape[1:], dtype=s_value.dtype)
                     serie.fill(np.nan)
                     mask = np.isin(indexes_k, s_id, assume_unique=True)
                     mask_in = np.isin(s_id, indexes_k, assume_unique=True)
                     serie[mask] = s_value[mask_in]
+                    mask_na[k] = mask
 
-                    if interp_k == 'previous':
-                        pad_forward_na(serie, inplace=True, mask=mask)
-                        mask_na[k] = np.ones(serie.shape[0], dtype=np.bool)
-                        serie = serie[np.isin(indexes_k, indexes, assume_unique=True)]
-                    else:
-                        mask_na[k] = mask
                 if k in smooth:
                     serie = perform_smooth(serie, smooth[k])
                 series[k] = serie
@@ -680,14 +687,19 @@ class History:
             return pandas.concat([timestamp_df, df], axis=1)
         return df
 
-    def plot(self, series=None, start=0, stop=0, step=1, interpolation='quadratic', smooth=None, averaged=True):
+    def plot(self, series=None, start=0, stop=None, step=None, interpolation='quadratic', smooth=None, averaged=True):
         from ..j_utils.math import vega_graph
         from IPython.display import display
         if series is None:
             series = self.series(only_number=True, )
-            print(series)
             series = [s for s in series if not (s.endswith('_std') and s[:-4] in series)]
-            print(series)
+
+        if stop is None:
+            stop = len(self)
+
+        if step is None:
+            step = (stop-start) // 300 + 1
+            print(step)
 
         df = self.read(series=series, std=True, start=start, stop=stop, step=step, interpolation=interpolation,
                        smooth=smooth, averaged=averaged)

@@ -1282,8 +1282,8 @@ class DataSetApply(AbstractDataSet):
                     parent_c[i] = c.name
                 elif c not in parent_columns_name:
                     raise ValueError('%s is not a columns of %s!' % (c, dataset.dataset_name))
-            # Removing explicit parent columns from
-            if remove_parent_columns:
+            # Removing explicit parent columns from copied parent columns
+            if remove_parent_columns is None:
                 parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in parent_c]
 
             # Solving implicit parent columns
@@ -1291,6 +1291,9 @@ class DataSetApply(AbstractDataSet):
                 if p not in parent_columns_name:
                     raise ValueError('Could not find any correspondence to the not optional parameter: %s.' % (p,))
                 parent_c.append(p)
+            # Removing implicit and explicit parent columns from copied parent columns
+            if remove_parent_columns:
+                parent_copied_columns = [_ for _ in parent_copied_columns if _.name not in parent_c]
 
             # Check own columns
             for c_id, c in enumerate(own_c):

@@ -321,6 +321,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             columns = self._columns.copy()
         elif isinstance(columns, (tuple, set)):
             columns = list(columns)
+        elif isinstance(columns, str):
+            columns = columns.split(',')
         elif not isinstance(columns, list):
             columns = [columns]
         else:
@@ -1319,7 +1321,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetShuffle
         return DataSetShuffle(dataset=self, subgen=subgen, indices=indices, rng=rng, name=name)
 
-    def apply(self, columns, function, format=None, n_factor='auto', batchwise=False, keep_parent=False,
+    def apply(self, columns, function, format=None, n_factor='auto', batchwise=False, keep_parent=None,
               name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
@@ -1329,24 +1331,30 @@ class AbstractDataSet(metaclass=ABCMeta):
             n_factor = 1 if format is not None else None
 
         from .datasets_core import DataSetApply
+        remove_parent_columns = None if keep_parent is None else not keep_parent
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
-                            remove_parent_columns=not keep_parent, batchwise=batchwise)
+                            remove_parent_columns=remove_parent_columns, batchwise=batchwise)
 
-    def apply_cv(self, columns, function, format=None, n_factor=1, keep_parent=False, name=None):
+    def apply_cv(self, columns, function, format=None, n_factor=1, keep_parent=None, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
                 name = "apply"
         from .datasets_core import DataSetApplyCV
+        remove_parent_columns = None if keep_parent is None else not keep_parent
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
-                              format=format, remove_parent_columns=not keep_parent)
+                              format=format, remove_parent_columns=remove_parent_columns)
 
     def apply_torch(self, columns, f, format=None, device=None, eval=True, forward_hooks=None, backward_hooks=None,
-                    n_factor=1, batchwise=True, keep_parent=True, name=None):
+                    requires_grad=False,
+                    n_factor=1, batchwise=True, keep_parent=None, name=None):
         import torch
         from .datasets_core import DataSetApply
         if name is None:
             name = 'torch'
+
+        if not requires_grad:
+            requires_grad = []
 
         def after_apply(r):
             if isinstance(r, torch.Tensor):
@@ -1358,7 +1366,9 @@ class AbstractDataSet(metaclass=ABCMeta):
             return r
 
         def before_apply(**kwargs):
-            kwargs = {k: torch.from_numpy(np.array(v) * 1) for k, v in kwargs.items()}
+            kwargs = {k: torch.tensor(np.array(v) * 1,
+                  requires_grad=requires_grad if not isinstance(requires_grad, (list, tuple)) else k in requires_grad
+                                      ) for k, v in kwargs.items()}
             if device:
                 return {k: v.to(device) for k, v in kwargs.items()}
             else:
@@ -1466,8 +1476,10 @@ class AbstractDataSet(metaclass=ABCMeta):
             if backward_hooks or forward_hooks:
                 raise ValueError('Forward and backward hooks are not supported when f is not a torch module.')
 
+        remove_parent_columns = None if keep_parent is None else not keep_parent
+
         return DataSetApply(dataset=self, function=f, columns=columns, n_factor=n_factor, batchwise=batchwise,
-                            remove_parent_columns=not keep_parent, name=name, format=format,
+                            remove_parent_columns=remove_parent_columns, name=name, format=format,
                             before_apply=before_apply, after_apply=after_apply)
 
     def map_values(self, columns, mapping, default=None, sampling=None, name='map_value'):
