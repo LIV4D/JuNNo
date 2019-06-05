@@ -1258,18 +1258,19 @@ class DataSetApply(AbstractDataSet):
                              '(type provided: %s)' % type(columns).__name__)
 
         for own_c, parent_c in columns.items():
-            if isinstance(own_c, str):
-                own_c = tuple(own_c.split(','))
+            own_c = self.interpret_columns(own_c, exists=False)
             if parent_c is None or not parent_c:
                 parent_c = []
-            elif isinstance(parent_c, str):
-                parent_c = parent_c.split(',')
-            elif isinstance(parent_c, DSColumn):
-                parent_c = [parent_c]
-            elif isinstance(parent_c, tuple):
-                parent_c = list(parent_c)
             else:
-                raise ValueError('Invalid columns description values: %s.' % parent_c)
+                parent_c = dataset.interpret_columns(parent_c)
+            # elif isinstance(parent_c, str):
+            #     parent_c = parent_c.split(',')
+            # elif isinstance(parent_c, DSColumn):
+            #     parent_c = [parent_c]
+            # elif isinstance(parent_c, tuple):
+            #     parent_c = list(parent_c)
+            # else:
+            #     raise ValueError('Invalid columns description values: %s.' % parent_c)
 
             # Check explicit parent columns
             if len(parent_c) > len(self.f_params):

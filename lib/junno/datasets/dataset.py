@@ -308,7 +308,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         pass
 
     #   ---   Columns   ---
-    def interpret_columns(self, columns, to_column_name=True):
+    def interpret_columns(self, columns, to_column_name=True, exists=True):
         """Returns a list of columns name
 
         :param columns: None, list of :class:`DataSetColumn` or str, str or :class:`DataSetColumn`. \
@@ -316,29 +316,35 @@ class AbstractDataSet(metaclass=ABCMeta):
         :return: list of columns name
         :rtype: list
         """
-
+        assert not (to_column_name and not exists)
         if columns is None:
             columns = self._columns.copy()
         elif isinstance(columns, (tuple, set)):
             columns = list(columns)
         elif isinstance(columns, str):
-            columns = columns.split(',')
+            columns = [_.strip() for _ in columns.split(',')]
+
         elif not isinstance(columns, list):
             columns = [columns]
         else:
             columns = columns.copy()
 
         for c_id, c in enumerate(columns):
-            if isinstance(c, DSColumn):
-                if c.dataset is not self:
-                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                if to_column_name:
+            if exists:
+                if isinstance(c, DSColumn):
+                    if c.dataset is not self:
+                        raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
+                    if to_column_name:
+                        columns[c_id] = c.name
+                elif isinstance(c, str):
+                    if c != 'pk' and not c in self.columns_name():
+                        raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
+                    if not to_column_name:
+                        columns[c_id] = self.column_by_name(c)
+            else:
+                if isinstance(c, DSColumn):
                     columns[c_id] = c.name
-            elif isinstance(c, str):
-                if c != 'pk' and not c in self.columns_name():
-                    raise ValueError('%s is not a column of %s' % (c, self.dataset_name))
-                if not to_column_name:
-                    columns[c_id] = self.column_by_name(c)
+
         return columns
 
     def column_by_name(self, name, raise_on_unknown=True):
@@ -1567,21 +1573,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         if isinstance(patch_shape, dict) and columns is not None:
             raise ValueError("If columns is defined, patch_shape can't be a dictionary of patch shapes.")
         if columns is not None:
+            columns = self.interpret_columns(columns)
             if not isinstance(patch_shape, tuple):
                 patch_shape = (patch_shape, patch_shape)
-
-            if isinstance(columns, DSColumn):
-                columns = (columns.name,)
-            elif isinstance(columns, str):
-                columns = columns.split(',')
-            if isinstance(columns, (list, tuple)):
-                for c_id, c in enumerate(columns):
-                    if isinstance(c, DSColumn):
-                        c = c.name
-                    patches_def[c] = (c, patch_shape)
-            else:
-                raise ValueError('columns parameters should be of type: [DSColumn, str, list, tuple], not %s.\n'
-                                 '(columns=%s)' % (type(columns), repr(columns)))
         else:
             if not isinstance(patch_shape, dict):
                 raise ValueError('If columns is not defined, patch_shape should be a dictionary of patch shapes.')
