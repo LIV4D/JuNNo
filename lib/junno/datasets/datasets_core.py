@@ -1258,7 +1258,7 @@ class DataSetApply(AbstractDataSet):
                              '(type provided: %s)' % type(columns).__name__)
 
         for own_c, parent_c in columns.items():
-            own_c = self.interpret_columns(own_c, exists=False)
+            own_c = tuple(self.interpret_columns(own_c, exists=False))
             if parent_c is None or not parent_c:
                 parent_c = []
             else:

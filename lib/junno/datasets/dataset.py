@@ -316,7 +316,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :return: list of columns name
         :rtype: list
         """
-        assert not (to_column_name and not exists)
+        assert to_column_name or exists
         if columns is None:
             columns = self._columns.copy()
         elif isinstance(columns, (tuple, set)):
@@ -969,12 +969,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .dataset_generator import DataSetResult
         result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
 
-        def write_cb(r):
-            for c in r.keys():
-                if c == 'pk':
-                    continue
-                result[0, c] += r[:, c].sum(axis=0)
-            result.trace.affiliate_parent_trace(r.trace)
+        with Process('Summing ' + self.dataset_name, total=stop - start, verbose=False) as p:
+            def write_cb(r):
+                p.update(r.size)
+                for c in r.keys():
+                    if c == 'pk':
+                        continue
+                    result[0, c] += r[:, c].sum(axis=0)
+                result.trace.affiliate_parent_trace(r.trace)
 
         self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
         return result[columns[0]] if single_column else result
@@ -993,17 +995,20 @@ class AbstractDataSet(metaclass=ABCMeta):
         result = DataSetResult.create_from_data({c: np.zeros((2,)+self.col[c].shape, np.float)
                                                  for c in columns})
 
-        if std:
-            def write_cb(r):
-                for c in columns:
-                    result[0, c] += r[:, c].sum(axis=0) / (stop - start)
-                    result[1, c] += np.square(r[:, c]).sum(axis=0) / (stop - start)
-                result.trace.affiliate_parent_trace(r.trace)
-        else:
-            def write_cb(r):
-                for c in columns:
-                    result[0, c] += r[:, c].sum(axis=0)/(stop-start)
-                result.trace.affiliate_parent_trace(r.trace)
+        with Process('Averaging ' + self.dataset_name, total=stop - start, verbose=False) as p:
+            if std:
+                def write_cb(r):
+                    p.update(r.size)
+                    for c in columns:
+                        result[0, c] += r[:, c].sum(axis=0) / (stop - start)
+                        result[1, c] += np.square(r[:, c]).sum(axis=0) / (stop - start)
+                    result.trace.affiliate_parent_trace(r.trace)
+            else:
+                def write_cb(r):
+                    p.update(r.size)
+                    for c in columns:
+                        result[0, c] += r[:, c].sum(axis=0)/(stop-start)
+                    result.trace.affiliate_parent_trace(r.trace)
 
         self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
 
