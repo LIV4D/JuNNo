@@ -1263,14 +1263,6 @@ class DataSetApply(AbstractDataSet):
                 parent_c = []
             else:
                 parent_c = dataset.interpret_columns(parent_c)
-            # elif isinstance(parent_c, str):
-            #     parent_c = parent_c.split(',')
-            # elif isinstance(parent_c, DSColumn):
-            #     parent_c = [parent_c]
-            # elif isinstance(parent_c, tuple):
-            #     parent_c = list(parent_c)
-            # else:
-            #     raise ValueError('Invalid columns description values: %s.' % parent_c)
 
             # Check explicit parent columns
             if len(parent_c) > len(self.f_params):

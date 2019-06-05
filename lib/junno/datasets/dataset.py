@@ -958,7 +958,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     #   --- Global operator ---
     def sum(self, columns=None, start=0, stop=None, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, (str, DSColumn))
+        single_column = (isinstance(columns, str) and ',' not in columns) or isinstance(columns, DSColumn)
         columns = self.interpret_columns(columns)
         for c in columns:
             c = self.column_by_name(c)
@@ -978,11 +978,12 @@ class AbstractDataSet(metaclass=ABCMeta):
                     result[0, c] += r[:, c].sum(axis=0)
                 result.trace.affiliate_parent_trace(r.trace)
 
-        self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
+            self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
+
         return result[columns[0]] if single_column else result
 
     def mean(self, columns=None, start=0, stop=None, std=False, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, (str, DSColumn))
+        single_column = (isinstance(columns, str) and ',' not in columns) or isinstance(columns, DSColumn)
         columns = self.interpret_columns(columns)
         for c in columns:
             c = self.column_by_name(c)
@@ -1010,7 +1011,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                         result[0, c] += r[:, c].sum(axis=0)/(stop-start)
                     result.trace.affiliate_parent_trace(r.trace)
 
-        self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
+            self.export(write_cb, columns=columns, n=n, start=start, stop=stop, ncore=ncore, determinist=determinist)
 
         if std:
             for c in result.keys():
@@ -1019,7 +1020,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return result[0, columns[0]] if single_column else result
 
     def std(self, columns=None, start=0, stop=None, ncore=1, n=1, determinist=True):
-        single_column = isinstance(columns, (str, DSColumn))
+        single_column = (isinstance(columns, str) and ',' not in columns) or isinstance(columns, DSColumn)
         columns = self.interpret_columns(columns)
         result = self.mean(columns=columns, start=start, stop=stop, ncore=ncore, n=n, determinist=determinist, std=True)
         return result[1, columns[0]] if single_column else result.truncate(start=1)
