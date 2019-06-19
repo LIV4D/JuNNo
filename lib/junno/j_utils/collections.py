@@ -710,6 +710,16 @@ class AttributeDict(OrderedDict):
             r[k] = v
         return r
 
+    @staticmethod
+    def from_json(json):
+        from json import loads
+        d = loads(json)
+        AttributeDict.from_dict(d, recursive=True)
+
+    def to_json(self):
+        from json import dumps
+        return dumps(self)
+
     def __setitem__(self, key, value):
         if not isinstance(key, str) or '.' in key:
             raise ValueError('Invalid AttributeDict key: %s.' % repr(key))
