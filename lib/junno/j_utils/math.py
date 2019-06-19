@@ -805,7 +805,7 @@ class ConfMatrix(np.ndarray):
             else:
                 labels_dict[k] = [v]
 
-        d = self.no_normed()
+        d = self.no_normed().view(np.ndarray)
         r = ConfMatrix.zeros([str(_) for _ in labels_dict.keys()])
         for i, y in enumerate(labels_dict.values()):
             for j, x in enumerate(labels_dict.values()):

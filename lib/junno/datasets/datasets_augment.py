@@ -501,6 +501,56 @@ class DataSetAugment(AbstractDataSet):
 
 
 ########################################################################################################################
+class Noise(AbstractDataSet):
+    def __init__(self, N, columns, shapes=None, name='Noise', rng=None):
+        super(Noise, self).__init__(name=name, rng=rng)
+
+        shapes = if_none(shapes, {})
+        for c_name, c_dist in columns.items():
+            self.add_column(c_name, shapes.get(c_name, ()), dtype=np.float32)
+        self.columns_distribution = columns
+        self.N = N
+
+    def _generator(self, gen_context):
+        columns = gen_context.columns
+
+        while not gen_context.ended():
+            i_global, n, weakref = gen_context.create_result()
+            r = weakref()
+
+            for col in columns:
+                r[col] = self.columns_distribution[col](self.rng, shape=(n,)+self.col[col].shape)
+
+            r = None
+            yield weakref
+
+    @property
+    def size(self):
+        return self.N
+
+    @staticmethod
+    def uniform(high=1, low=0, N=1, shape=(), col='noise', name=None):
+        if name is None:
+            name = col
+        return Noise(columns={name: _RD.uniform(high=high, low=low)},
+                     shapes={name: shape}, name=name, N=N)
+
+    @staticmethod
+    def normal(mean=0, std=1, N=1, shape=(), col='noise', name=None):
+        if name is None:
+            name = col
+        return Noise(columns={name: _RD.normal(mean=mean, std=std)},
+                     shapes={name: shape}, name=name, N=N)
+
+    @staticmethod
+    def binary(p=0.5, N=1, shape=(), col='noise', name=None):
+        if name is None:
+            name = col
+        return Noise(columns={name: _RD.binary(p=p)},
+                     shapes={name: shape}, name=name, N=N)
+
+
+########################################################################################################################
 class RandomDistribution:
     def __init__(self, random_f, **kwargs):
         self._f = random_f

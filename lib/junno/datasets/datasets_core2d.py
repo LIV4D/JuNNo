@@ -477,13 +477,15 @@ class DataSetPatches(AbstractDataSet):
 ########################################################################################################################
 class DataSetUnPatch(AbstractDataSet):
     def __init__(self, dataset, columns=None, patch_mix='replace', restore_columns=None, columns_shape=None,
-                 n_patches=None):
+                 n_patches=None, stride_factor=None):
         super(DataSetUnPatch, self).__init__(name='unpatch', parent_datasets=dataset, pk_type=str)
 
         if columns_shape is None:
             columns_shape = {}
         if n_patches is None:
             n_patches = 4
+        if stride_factor is None:
+            stride_factor = {}
 
         # Find DataSetPatches ancestor
         self._patch_dataset = dataset
@@ -497,11 +499,10 @@ class DataSetUnPatch(AbstractDataSet):
             raise ValueError('None of the ancestors of %s is a patch dataset.' % dataset)
 
         if columns is not None:
-            if isinstance(columns, str):
-                if columns == '*':
-                    columns = dataset.columns_name()
-                else:
-                    columns = [columns]
+            if columns == '*':
+                columns = dataset.columns_name()
+            else:
+                columns = dataset.interpret_columns(columns=columns)
 
         # Initialize columns
         self._columns = dataset.copy_columns(self)
@@ -528,16 +529,15 @@ class DataSetUnPatch(AbstractDataSet):
             if columns is None:
                 columns = list({_[0] for _ in self._patch_dataset.patches_def.values()})
             for own_column in columns:
+                if own_column not in stride_factor:
+                    stride_factor[own_column] = 1
                 child_columns = {c: p_shape for c, (c_parent, p_shape) in self._patch_dataset.patches_def.items()
                                             if c_parent == own_column}
-                children_accessible = True
                 for c in child_columns:
                     if c not in dataset.columns_name():
-                        children_accessible = False
                         log.warn("Patched column %s is not accessible, %s won't be restored." % (c, own_column))
                         break
-
-                if children_accessible:
+                else:
                     patch_layer_shape = None
                     for c in child_columns:
                         s = self.column_by_name(c).shape[:-2]
@@ -551,7 +551,8 @@ class DataSetUnPatch(AbstractDataSet):
                     parent_column = self.patch_dataset.parent_dataset.column_by_name(own_column)
                     self._unpatched_columns[own_column] = list(child_columns.keys())
                     self.add_column(name=own_column, dtype=parent_column.dtype, format=parent_column.format,
-                                    shape=patch_layer_shape+parent_column.shape[-2:])
+                                    shape=patch_layer_shape +
+                                          tuple(_//stride_factor[own_column] for _ in parent_column.shape[-2:]))
         else:
             # Dataset will assemble patches into separated columns
             if columns is None:
@@ -560,13 +561,14 @@ class DataSetUnPatch(AbstractDataSet):
             for own_column in columns:
                 self._unpatched_columns[own_column] = [own_column]
                 shape = self.column_by_name(own_column).shape[:-2]
-
+                if own_column not in stride_factor:
+                    stride_factor[own_column] = 1
                 if own_column in columns_shape:
                     shape += columns_shape[own_column]
                 else:
                     c_parent_name = list(self._patch_dataset.patches_def.values())[0][0]
                     c_parent = self._patch_dataset.parent_dataset.column_by_name(c_parent_name)
-                    shape += c_parent.shape[-2:]
+                    shape += tuple(_ // stride_factor[own_column] for _ in c_parent.shape[-2:])
                 self.column_by_name(own_column)._shape = shape
 
         if not self._unpatched_columns:
@@ -580,6 +582,7 @@ class DataSetUnPatch(AbstractDataSet):
         self.patch_mix_method = patch_mix
         self._restore_columns = restore_columns
         self.n_patches = n_patches
+        self.stride_factor = stride_factor
 
     @property
     def size(self):
@@ -628,19 +631,24 @@ class DataSetUnPatch(AbstractDataSet):
                         y, x = (int(_) for _ in key[key.rfind('(') + 1:key.rfind(')')].split(','))
                         if self.patch_mix_method == 'replace':
                             for c, parent_c in unpatched_columns.items():
+                                stride_factor = self.stride_factor[c]
                                 for parent in parent_c:
                                     patch = result[i_patches, parent]
                                     patch_shape = result[i_patches, parent].shape[-2:]
 
+                                    # print(' -------- ')
+                                    # print('x=', x, 'y=', y, 'stride_factor=', stride_factor)
+                                    # print('patch_shape=', patch_shape)
                                     if hasattr(self.patch_dataset, "stride"):
                                         stride = self.patch_dataset.stride
                                         if stride[0] < patch_shape[0] or stride[1] < patch_shape[1]:
-                                            y0 = max(0, (patch_shape[0] - stride[0]) // 2)
-                                            x0 = max(0, (patch_shape[1] - stride[1]) // 2)
-                                            h0 = min(patch_shape[0], stride[0])
-                                            w0 = min(patch_shape[1], stride[1])
-                                            patch = patch[..., y0:y0+h0, x0:x0+w0]
+                                            y1 = max(0, (patch_shape[0] - stride[0] // stride_factor) // 2)
+                                            x1 = max(0, (patch_shape[1] - stride[1] // stride_factor) // 2)
+                                            h0 = min(patch_shape[0], stride[0] // stride_factor)
+                                            w0 = min(patch_shape[1], stride[1] // stride_factor)
+                                            patch = patch[..., y1:y1+h0, x1:x1+w0]
                                             patch_shape = (h0, w0)
+                                            # print('patch_shape=', patch_shape)
 
                                     s_out = r[i, c].shape
                                     h, w = s_out[-2:]
@@ -650,20 +658,22 @@ class DataSetUnPatch(AbstractDataSet):
                                     half_y = patch_shape[0] // 2
                                     odd_y = patch_shape[0] % 2
 
-                                    y0 = int(max(0, half_y - y))
-                                    y1 = int(max(0, y - half_y))
-                                    h0 = int(min(h, y + half_y + odd_y) - y1)
+                                    y0 = y // stride_factor
+                                    y1 = int(max(0, half_y - y0))
+                                    y2 = int(max(0, y0 - half_y))
+                                    h0 = int(min(h, y0 + half_y + odd_y) - y2)
 
-                                    x0 = int(max(0, half_x - x))
-                                    x1 = int(max(0, x - half_x))
-                                    w0 = int(min(w, x + half_x + odd_x) - x1)
+                                    x0 = x // stride_factor
+                                    x1 = int(max(0, half_x - x0))
+                                    x2 = int(max(0, x0 - half_x))
+                                    w0 = int(min(w, x0 + half_x + odd_x) - x2)
                                     if h0 <= 0 or w0 <= 0:
                                         continue
 
                                     win_out = tuple([slice(None, None)]*(len(s_out)-2) +
-                                                    [slice(y1, y1+h0), slice(x1, x1+w0)])
+                                                    [slice(y2, y2+h0), slice(x2, x2+w0)])
                                     win_patch = tuple([slice(None, None)]*(len(s_out)-2) +
-                                                      [slice(y0, y0+h0), slice(x0, x0+w0)])
+                                                      [slice(y1, y1+h0), slice(x1, x1+w0)])
                                     r[i, c][win_out] = patch[win_patch]
                         else:
                             raise NotImplementedError

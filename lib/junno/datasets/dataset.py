@@ -966,6 +966,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                 raise ValueError('Only numeric columns can be summed. (%s is not numeric, dtype: %s).'
                                  % (c.name, c.dtype))
 
+        start, stop = interval(self.size, start, stop)
+
         from .dataset_generator import DataSetResult
         result = DataSetResult.create_empty(n=1, dataset=self, columns=columns)
 
@@ -1582,6 +1584,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             columns = self.interpret_columns(columns)
             if not isinstance(patch_shape, tuple):
                 patch_shape = (patch_shape, patch_shape)
+            for c in columns:
+                patches_def[c] = (c, patch_shape)
         else:
             if not isinstance(patch_shape, dict):
                 raise ValueError('If columns is not defined, patch_shape should be a dictionary of patch shapes.')
@@ -1718,9 +1722,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetPatches(self, patch_shape=patches_def, n=n, center_pos=center_pos, name=name,
                               patches_function=proba_map, post_process=patchify)
 
-    def unpatch(self, columns=None, patch_mix='replace', restore_columns=None, columns_shape=None, n_patches=None):
+    def unpatch(self, columns=None, patch_mix='replace', restore_columns=None, columns_shape=None, n_patches=None,
+                stride_factor=None):
         from .datasets_core2d import DataSetUnPatch
         return DataSetUnPatch(self, patch_mix=patch_mix, columns=columns, n_patches=n_patches,
+                              stride_factor=stride_factor,
                               restore_columns=restore_columns, columns_shape=columns_shape)
 
 

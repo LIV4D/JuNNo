@@ -361,6 +361,8 @@ class DataSetPandaDF(AbstractDataSet):
     def _generator(self, gen_context):
         data = {}
         for c in gen_context.columns:
+            if c == 'pk':
+                continue
             col = self.column_by_name(c)
             if col.is_text:
                 data[c] = self._df[c].fillna('').values.astype(col.dtype)
