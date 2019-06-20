@@ -104,12 +104,12 @@ class MetaClassAttrHandler(ABCMeta):
 class ClassAttrHandler(metaclass=MetaClassAttrHandler):
     def __new__(cls, *args, **kwargs):
         obj = super(ClassAttrHandler, cls).__new__(cls)
-        init_args = args
-        init_kwargs = kwargs
+        new_args = args
+        new_kwargs = kwargs
 
         obj._change_listeners = {}
         obj.prepare_populate_attr()
-        match_params(obj.populate_attr, init_args=init_args, init_kwargs=init_kwargs)
+        match_params(obj.populate_attr, new_args=new_args, new_kwargs=new_kwargs)
         return obj
 
     def __init__(self, *args, **kwargs):

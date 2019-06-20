@@ -74,6 +74,41 @@ def recursive_dict(dictionnary, function):
     return r
 
 
+def dict_walk(dict):
+    for k, v in dict.items():
+        if is_dict(v):
+            for r in dict_walk(v):
+                yield r
+        else:
+            yield dict, k, v
+
+
+def dict_walk_zip(dict1, dict2, raise_on_ignore=False):
+    for k, v2 in dict2.items():
+        try:
+            v1 = dict1[k]
+        except KeyError:
+            if raise_on_ignore:
+                raise KeyError('Unknown key %s.' % k)
+            else:
+                continue
+
+        if is_dict(v1) and is_dict(v2):
+            for _ in dict_walk_zip(v1, v2, raise_on_ignore=raise_on_ignore):
+                yield _
+        else:
+            yield dict1, dict2, k, v1, v2
+
+
+def dict_deep_copy(d):
+    d_copy = type(d)()
+    for k, v in d.items():
+        if is_dict(v):
+            v = dict_deep_copy(v)
+        d_copy[k] = v
+    return d_copy
+
+
 def if_none(v, default=None):
     if default is None:
         return v is None
