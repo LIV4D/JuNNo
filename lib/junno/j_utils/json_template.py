@@ -39,12 +39,38 @@ class JSONAttribute(ClsAttribute):
         return super(JSONAttribute, self).set_attr(handler=handler, value=value)
 
 
+class JSONAttr(JSONAttribute):
+    def __init__(self, types, default=None):
+        super(JSONAttr, self).__init__(types=types, default=default, islist=False)
+
+    class List(JSONAttribute):
+        def __init__(self, types, default=()):
+            super(JSONAttr.List, self).__init__(types=types, default=default, islist=True)
+
+    class String(JSONAttribute):
+        def __init__(self, default='', list=False):
+            super(JSONAttr.String, self).__init__(types=str, default=default, islist=list)
+
+    class Float(JSONAttribute):
+        def __init__(self, default=0, list=False):
+            super(JSONAttr.Float, self).__init__(types=(float,), default=default, islist=list)
+
+    class Int(JSONAttribute):
+        def __init__(self, default=0, list=False):
+            super(JSONAttr.Int, self).__init__(types=(int,), default=default, islist=list)
+
+    class Bool(JSONAttribute):
+        def __init__(self, default=0, list=False):
+            super(JSONAttr.Bool, self).__init__(types=(bool,), default=default, islist=list)
+
+
 def _parse_attribute(data, attr):
     if data is None:
         return None
 
-    types = attr.types
-    for t in types:
+    for t in attr.types:
+        if t is type(data):
+            return data
         try:
             if issubclass(t, JSONClass):
                 return t.from_json(data)
@@ -54,7 +80,8 @@ def _parse_attribute(data, attr):
             pass
     raise JSONClass.ParseException(attr, 'Invalid value for attribute %s: %s.\n'
                                          '(Valid types: %s Provided type: %s)' % (attr.name, repr(data),
-                                                                                  attr.types, type(data)))
+                                                                                  tuple(_.__name__ for _ in attr.types),
+                                                                                  type(data).__name__))
 
 
 class JSONClassList:
@@ -125,11 +152,13 @@ class JSONClassList:
                 for v in model.values():
                     self.add(v, recursive=recursive)
             else:
-                self._list += [_parse_attribute(_, self._attr) for _ in self.values()]
+                self._list += [_parse_attribute(v, self._attr) for v in model.values()]
         elif isinstance(model, (tuple, list)):
             if self._unique_key:
                 for v in model:
                     self.add(v, recursive=recursive)
+            else:
+                self._list += [_parse_attribute(v, self._attr) for v in model]
         else:
             self.add(model)
 
@@ -172,8 +201,6 @@ class JSONClassList:
 
 
 class JSONClass(ClassAttrHandler):
-    List = JSONClassList
-
     __template__ = None
 
     @classmethod
@@ -238,18 +265,17 @@ class JSONClass(ClassAttrHandler):
         if is_dict(model):
             for d1, d2, k, v_old, v_new in dict_walk_zip(self.dict_template(), model, raise_on_ignore=True):
                 if isinstance(v_old, JSONAttribute):
+                    attr = v_old
+                    v_old = getattr(self, attr.name)
                     if recursive:
-                        attr = v_old
-                        v_old = getattr(self, attr.name)
-                        if recursive:
-                            if attr.islist:
-                                v_old.update(v_new, recursive=recursive)
-                            elif isinstance(attr, JSONClass):
-                                v_old.update(v_new, recursive=recursive)
-                            else:
-                                attr.set_attr(self, v_new)
+                        if attr.islist:
+                            v_old.update(v_new, recursive=recursive)
+                        elif isinstance(attr, JSONClass):
+                            v_old.update(v_new, recursive=recursive)
                         else:
                             attr.set_attr(self, v_new)
+                    else:
+                        attr.set_attr(self, v_new)
                 elif v_old != v_new:
                     raise JSONClass.ParseException('Value of %s is not compatible with %s template' % (k, type(self)))
         elif type(self) == type(model):
@@ -288,7 +314,7 @@ class JSONClass(ClassAttrHandler):
         if not is_dict(json):
             raise ValueError('Invalid json type: %s.' % type(json))
 
-        c = cls.__new__()
+        c = cls()
         c.update(json, recursive=False)
         return c
 
