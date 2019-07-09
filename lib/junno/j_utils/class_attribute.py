@@ -62,8 +62,26 @@ class ClsAttribute:
             handler.__dict__[self.name] = value
             self.notify_change(handler=handler)
 
+    def __set__(self, instance, value):
+        if instance is None:
+            raise AttributeError('Read only')
+        else:
+            self.set_attr(instance, value)
+
+    def __get__(self, instance, owner_type):
+        if instance is None:
+            return self
+        else:
+            return self.get_attr(instance)
+
     def get_attr(self, handler, default=None):
         return handler.__dict__.get(self.name, default)
+
+    def __set_name__(self, owner, name):
+        if self.name is None:
+            self.name = name
+        if self.handler_cls is None:
+            self.handler_cls = owner
 
     def init_attr(self, handler, new_attr):
         handler.__dict__[self.name] = new_attr
@@ -146,24 +164,24 @@ class ClassAttrHandler(metaclass=MetaClassAttrHandler):
                 new_attr = attr.new_attr(self)
             attr.init_attr(self, new_attr)
 
-    def __getattribute__(self, item):
-        getattribute = super(ClassAttrHandler, self).__getattribute__
-        attributes = getattribute('__class__').cls_attributes()
-
-        if item in attributes:
-            return attributes[item].get_attr(self)
-
-        return getattribute(item)
-
-    def __setattr__(self, key, value):
-        attributes = self.__class__.cls_attributes()
-        attr = attributes.get(key, None)
-        if attr is not None:
-            if attr.read_only:
-                raise AttributeError('%s is a read-only attribute' % attr.name)
-            attr.set_attr(handler=self, value=value)
-        else:
-            super(ClassAttrHandler, self).__setattr__(key, value)
+    # def __getattribute__(self, item):
+    #     getattribute = super(ClassAttrHandler, self).__getattribute__
+    #     attributes = getattribute('__class__').cls_attributes()
+    #
+    #     if item in attributes:
+    #         return attributes[item].get_attr(self)
+    #
+    #     return getattribute(item)
+    #
+    # def __setattr__(self, key, value):
+    #     attributes = self.__class__.cls_attributes()
+    #     attr = attributes.get(key, None)
+    #     if attr is not None:
+    #         if attr.read_only:
+    #             raise AttributeError('%s is a read-only attribute' % attr.name)
+    #         attr.set_attr(handler=self, value=value)
+    #     else:
+    #         super(ClassAttrHandler, self).__setattr__(key, value)
 
     def on_changed(self, key, cb, call_now=False):
         if isinstance(key, tuple):
