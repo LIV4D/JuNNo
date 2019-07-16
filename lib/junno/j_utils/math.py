@@ -704,7 +704,7 @@ def metric(alias=None):
                 m = self.no_normed().view(np.ndarray)
             else:
                 m = np.ndarray(self)
-            params = bind_args(func, *params, **kwargs)
+            params = bind_args(func, params, kwargs)
             return func(m=m, **params)
 
         _metrics[func.__name__] = compute_metric

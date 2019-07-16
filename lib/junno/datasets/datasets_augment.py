@@ -17,7 +17,7 @@ def augment_method(augment_type=None, cv=False):
     def decorator(func):
         @functools.wraps(func)
         def register_augment(self, *params, **kwargs):
-            params = bind_args(func, *params, **kwargs)
+            params = bind_args(func, params, kwargs)
             self._augment_stack.append((func.__name__, params))
             return self
 
@@ -102,7 +102,7 @@ class DataAugment:
                 augment_stack.append(DataAugment.split_cv if f_cv else DataAugment.merge_cv)
                 cv = f_cv
 
-            params = bind_args_partial(f, **kwargs)
+            params = bind_args_partial(f, kwargs=kwargs)
             params.update(f_params)
             augment_stack.append(match_params(f, self=self, **params))
 

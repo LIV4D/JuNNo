@@ -1,6 +1,6 @@
 import inspect
 from abc import ABCMeta
-from functools import partial
+from functools import partial, wraps
 from .image import cast_shape
 
 
@@ -59,8 +59,8 @@ def optional_args(f):
     return {p_name: p.default for p_name, p in sig.parameters.items() if p.default != inspect._empty}
 
 
-def bind_args(f, *args, **kwargs):
-    bind = bind_args_partial(f, *args, **kwargs)
+def bind_args(f, args=(), kwargs=None):
+    bind = bind_args_partial(f, args, kwargs)
     missing_args = set(not_optional_args(f)).intersection(bind.keys())
     missing_args.difference_update({'self'})
     if missing_args:
@@ -69,8 +69,10 @@ def bind_args(f, *args, **kwargs):
     return bind
 
 
-def bind_args_partial(f, *args, **kwargs):
+def bind_args_partial(f, args=(), kwargs=None):
     from collections import OrderedDict
+    if kwargs is None:
+        kwargs = {}
     params = list(inspect.signature(f).parameters.keys())
     bind = OrderedDict()
     for i, a in enumerate(args):
@@ -80,6 +82,23 @@ def bind_args_partial(f, *args, **kwargs):
     for k, a in kwargs.items():
         bind[k] = a
     return bind
+
+
+def memoized(f):
+    memo = {}
+
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        params = bind_args(f, args, kwargs)
+        memo_key = repr(dict(params))[1:-1]
+        try:
+            return memo[memo_key]
+        except KeyError:
+            r = f(**params)
+            memo[memo_key] = r
+            return r
+
+    return wrapper
 
 
 def function2str(f):
