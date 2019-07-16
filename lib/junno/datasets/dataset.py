@@ -1547,7 +1547,29 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     def reshape(self, columns, shape, keep_parent=False, name='reshape'):
         from .datasets_core2d import DataSetReshape
-        return DataSetReshape(self, columns=columns, shape=shape, keep_parent=keep_parent, name=name)
+        cols_shape = OrderedDict()
+        if is_dict(shape):
+            columns = self.interpret_columns(columns)
+            if len(columns) != 1:
+                raise ValueError('When shape is a dictionary of shape, columns should be the name of a specific column')
+            columns = columns[0]
+            for c, s in shape.items():
+                cols_shape[c] = (columns, s)
+        elif is_dict(columns):
+            for new_c, parent_c in columns.items():
+                parent_c = self.interpret_columns(parent_c)
+                if len(parent_c) != 1:
+                    raise ValueError('Multiple parent for a single column is not supported.')
+                parent_c = parent_c[0]
+                new_c = self.interpret_columns(new_c, exists=False)
+                for c in new_c:
+                    cols_shape[c] = (parent_c, shape)
+        else:
+            columns = self.interpret_columns(columns)
+            suffix = '_reshaped' if keep_parent else ''
+            for c in columns:
+                cols_shape[c+suffix] = (c, shape)
+        return DataSetReshape(self, cols_shape=cols_shape, keep_parent=keep_parent, name=name)
 
     def augment(self, data_augment, columns=None, N=1, original=False, name='augment'):
         from .datasets_augment import DataSetAugment

@@ -5,57 +5,43 @@ from .dataset import AbstractDataSet, DSColumn
 from ..j_utils.function import identity_function, not_optional_args, match_params
 from ..j_utils.parallelism import parallel_exec
 from ..j_utils.j_log import log, Process
+from ..j_utils.collections import if_none
 
 
 ########################################################################################################################
 class DataSetReshape(AbstractDataSet):
-    def __init__(self, dataset, columns, shape, keep_parent=False, name='reshape'):
+    def __init__(self, dataset, cols_shape, keep_parent=False, name='reshape'):
         """
         :type dataset: AbstractDataSets
 
         """
         super(DataSetReshape, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
 
-        # Initialize shape
-        if isinstance(shape, int) or isinstance(shape, float):
-            shape = (shape, shape)
-        if isinstance(shape, tuple):
-            if len(shape) != 2:
-                raise NotImplementedError
-        else:
-            raise NotImplementedError
-        self.shape = shape
+        copy_columns = set(dataset.columns_name())
+
+        for c_new, (c_parent, c_shape) in cols_shape.items():
+            if isinstance(c_shape, (int, float)):
+                c_shape = (c_shape, c_shape)
+            if not isinstance(c_shape, tuple) or len(c_shape) != 2:
+                raise ValueError('Invalid column shape: %s.' % repr(c_shape))
+
+            column = dataset.column_by_name(c_parent)
+            if len(column.shape) not in (2, 3):
+                raise ValueError('%s does not support reshaping' % c_parent)
+
+            c_shape = tuple(k if k > 1 and isinstance(k, int) else int(if_none(k, 1) * s)
+                            for k, s in zip(c_shape, column.shape[-2:]))
+            cols_shape[c_new] = (c_parent, c_shape)
+            if not keep_parent:
+                copy_columns.difference({c_parent})
+        self.cols_reshaped = cols_shape
 
         # Initialize columns
-        self._columns = dataset.copy_columns(self)
-        if not isinstance(columns, list):
-            columns = [columns]
+        self._columns = [c for c in dataset.copy_columns(self) if c.name in copy_columns]
 
-        self._reshaped_columns = {}
-        for c_id, c in enumerate(columns):
-            if isinstance(c, DSColumn):
-                columns[c_id] = c.name
-                c = c.name
-            if isinstance(c, str):
-                if c not in self.columns_name():
-                    raise ValueError('Unkown column: %s' % c)
-            else:
-                raise NotImplementedError('label_column should be a column name, a DatasetColumn or a list of those '
-                                          '(type: %s)' % repr(type(c)))
-
-            column = self.column_by_name(c)
-            if len(column.shape) not in (2, 3):
-                raise ValueError('%s does not support reshaping' % c)
-
-            column_shape = tuple(k if k > 1 and isinstance(k, int) else int(k * s)
-                                 for k, s in zip(shape, column.shape[-2:]))
-            if not keep_parent:
-
-                column._shape = column._shape[:-2] + column_shape
-                self._reshaped_columns[c] = c
-            else:
-                self.add_column(c+'_reshaped', column._shape[:-2] + column_shape, column.dtype, format=column.format)
-                self._reshaped_columns[c + '_reshaped'] = c
+        for c_new, (c_parent, c_shape) in cols_shape.items():
+            col = dataset.column_by_name(c_parent)
+            self.add_column(c_new, col._shape[:-2] + c_shape, col.dtype, format=col.format)
 
         self._label_columns = [c.name for c in self.columns if c.format.is_label or 'bool' in str(c.dtype)]
 
@@ -70,9 +56,9 @@ class DataSetReshape(AbstractDataSet):
         parent_columns = set()
 
         for c in columns:
-            if c in self._reshaped_columns:
+            if c in self.cols_reshaped:
                 reshaped_columns.append(c)
-                parent_columns.add(self._reshaped_columns[c])
+                parent_columns.add(self.cols_reshaped[c][0])
             else:
                 copied_columns.append(c)
                 parent_columns.add(c)
@@ -87,9 +73,8 @@ class DataSetReshape(AbstractDataSet):
 
             # Reshape data
             for c in reshaped_columns:
-                c_parent = self._reshaped_columns[c]
+                c_parent, target_shape = self.cols_reshaped[c]
                 c_shape = result[c_parent].shape[:-2]
-                target_shape = self.column_by_name(c).shape[-2:]
                 indexes_list = cartesian((range(_) for _ in c_shape))
 
                 i=0
