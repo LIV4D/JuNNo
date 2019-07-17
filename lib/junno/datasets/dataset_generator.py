@@ -5,7 +5,7 @@ import traceback
 import threading
 import time
 import weakref
-
+import math
 from ..j_utils.parallelism import N_CORE
 from ..j_utils.collections import istypeof_or_listof, istypeof_or_collectionof, if_none, AttributeDict
 from ..j_utils.j_log import log, float_to_str
@@ -963,7 +963,7 @@ class DataSetSmartGenerator:
         return self._context.parallelism
 
     def __len__(self):
-        return np.ceil((self.stop_id-self.current_id)/self.n)
+        return int(math.ceil((self.stop_id-self.current_id)/self.n))
 
     @property
     def ncore(self):
