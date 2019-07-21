@@ -2,6 +2,7 @@ from traitlets import Unicode, Float, Bool, Int, validate, observe, List
 from ipywidgets import DOMWidget, Layout, VBox, HBox, jsdlink, HTML, BoundedIntText
 from IPython import get_ipython
 import traceback
+from os.path import dirname
 
 from ..math import dimensional_split
 from ..j_log import log
@@ -36,6 +37,7 @@ class SimpleDatabaseView(AutoImportDOMWidget):
         db_id = str(SimpleDatabaseView._database_last_id)
         get_ipython().kernel.comm_manager.register_target('database_comm'+db_id, self.register_target)
         super(SimpleDatabaseView, self).__init__(layout=Layout(width='100%'), dependencies=('DatabaseView',),
+                                                 path=dirname(__file__)+'/js_lib',
                                                  _database_id=db_id, **kwargs)
         self.retreive_data = None
         self.retreive_fullscreen = None

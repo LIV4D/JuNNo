@@ -1,4 +1,5 @@
 from traitlets import Unicode
+from os.path import dirname
 
 from ..math import ConfMatrix
 from .import_js import AutoImportDOMWidget
@@ -24,8 +25,8 @@ class ConfMatrixView(AutoImportDOMWidget):
         labelsStr = '|'.join(str(_) for _ in labels)
         dataStr = ';'.join(','.join(str(_) for _ in r) for r in data)
 
-        super(ConfMatrixView, self).__init__(dependencies=('ConfMatrixView',), labelsStr=labelsStr, dataStr=dataStr,
-                                             normed=normed)
+        super(ConfMatrixView, self).__init__(dependencies=('ConfMatrixView',), path=dirname(__file__)+'/js_lib',
+                                             labelsStr=labelsStr, dataStr=dataStr, normed=normed)
 
     @property
     def labels(self):

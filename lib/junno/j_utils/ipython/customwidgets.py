@@ -4,6 +4,7 @@ from IPython.display import Javascript, display
 from time import time
 from ..function import match_params
 from .import_js import import_js, AutoImportDOMWidget
+from os.path import dirname
 
 
 class TinyLoading(AutoImportDOMWidget):
@@ -16,7 +17,8 @@ class TinyLoading(AutoImportDOMWidget):
     bar_height = Unicode('6px').tag(sync=True)
 
     def __init__(self, value=0, **kwargs):
-        super(TinyLoading, self).__init__(value=value, dependencies=('CustomWidgets',), **kwargs)
+        super(TinyLoading, self).__init__(value=value, dependencies=('CustomWidgets',), path=dirname(__file__)+'/js_lib',
+                                          **kwargs)
 
 
 class RichLabel(AutoImportDOMWidget):
@@ -29,7 +31,8 @@ class RichLabel(AutoImportDOMWidget):
     align = Unicode('right').tag(sync=True)
 
     def __init__(self, value='', **kwargs):
-        super(RichLabel, self).__init__(value=value, dependencies=('CustomWidgets',), **kwargs)
+        super(RichLabel, self).__init__(value=value, dependencies=('CustomWidgets',), path=dirname(__file__)+'/js_lib',
+                                        **kwargs)
 
     @property
     def bold(self):
@@ -137,7 +140,8 @@ class LogView(AutoImportDOMWidget):
     search_filter = Unicode('').tag(sync=True)
 
     def __init__(self, **kwargs):
-        super(LogView, self).__init__(dependencies=('CustomWidgets',), **kwargs)
+        super(LogView, self).__init__(dependencies=('CustomWidgets',), path=dirname(__file__)+'/js_lib',
+                                      **kwargs)
 
 
 class LogToolBar(HBox):
@@ -237,7 +241,8 @@ class HTMLButton(AutoImportDOMWidget):
         self._value_callbacks = []
         if layout is None and size is not None:
             layout = Layout(width='%ipx' % size, height='%ipx'%size)
-        super(HTMLButton, self).__init__(layout=layout, dependencies=('CustomWidgets',), **kwargs)
+        super(HTMLButton, self).__init__(layout=layout, dependencies=('CustomWidgets',), path=dirname(__file__)+'/js_lib',
+                                         **kwargs)
 
     def on_click(self, callback, append=False, **kwargs):
         if append:

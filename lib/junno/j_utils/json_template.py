@@ -28,7 +28,7 @@ class JSONAttribute(ClsAttribute):
         else:
             return self.default
 
-    def set_attr(self, handler, value):
+    def check_attr(self, handler, value):
         if self.islist:
             l = JSONClassList(self)
             for v in value:
@@ -36,7 +36,26 @@ class JSONAttribute(ClsAttribute):
             value = l
         else:
             value = _parse_attribute(value, self)
-        return super(JSONAttribute, self).set_attr(handler=handler, value=value)
+        return value
+
+    def attr_to_json(self, handler, value):
+        if isinstance(value, (JSONClass, JSONClassList)):
+            return value.to_json(to_str=False)
+        return value
+
+    def attr_from_json(self, handler, value):
+        return _parse_attribute(value, self)
+
+    # ---   DECORATORS ---
+    def to_json(self, f):
+        def attr_to_json(self, handler, value):
+            return f(handler, value)
+        self.attr_to_json = attr_to_json
+
+    def from_json(self, f):
+        def attr_from_json(self, handler, value):
+            return f(handler, value)
+        self.attr_from_json = attr_from_json
 
 
 class JSONAttr(JSONAttribute):
@@ -152,18 +171,18 @@ class JSONClassList:
                 for v in model.values():
                     self.add(v, recursive=recursive)
             else:
-                self._list += [_parse_attribute(v, self._attr) for v in model.values()]
+                self._list += [self._attr.attr_from_json(self, v) for v in model.values()]
         elif isinstance(model, (tuple, list)):
             if self._unique_key:
                 for v in model:
                     self.add(v, recursive=recursive)
             else:
-                self._list += [_parse_attribute(v, self._attr) for v in model]
+                self._list += [self._attr.attr_from_json(self, v) for v in model]
         else:
             self.add(model)
 
     def add(self, data, recursive=True):
-        data = _parse_attribute(data, self._attr)
+        data = self._attr.attr_from_json(self, data)
         if self._unique_key:
             key = data[self._unique_key]
             k = self._mapping.get(key, None)
@@ -202,6 +221,7 @@ class JSONClassList:
 
 class JSONClass(ClassAttrHandler):
     __template__ = None
+    __ABSTRACT__ = False
 
     @classmethod
     def template(cls):
@@ -238,25 +258,25 @@ class JSONClass(ClassAttrHandler):
     def __init__(self, **kwargs):
         super(JSONClass, self).__init__(**kwargs)
 
-    # def get(self, item, default=None):
-    #     getattribute = super(ClassAttrHandler, self).__getattribute__
-    #     attributes = getattribute('__class__').cls_attributes(JSONAttribute)
-    #
-    #     attr = attributes.get(item, None)
-    #     if attr is not None:
-    #         return attributes[item].get_attr(self)
-    #     return default
-    #
-    # def set(self, key, value):
-    #     getattribute = super(ClassAttrHandler, self).__getattribute__
-    #     attributes = getattribute('__class__').cls_attributes(JSONAttribute)
-    #     attr = attributes.get(key, None)
-    #     if attr is not None:
-    #         if attr.read_only:
-    #             raise AttributeError('%s is a read-only attribute' % attr.name)
-    #         attr.set_attr(handler=self, value=value)
-    #     else:
-    #         raise AttributeError('%s unknown.' % key)
+    def get(self, item, default=None):
+        getattribute = super(ClassAttrHandler, self).__getattribute__
+        attributes = getattribute('__class__').cls_attributes(JSONAttribute)
+
+        attr = attributes.get(item, None)
+        if attr is not None:
+            return attr.get_attr(self)
+        return default
+
+    def set(self, key, value):
+        getattribute = super(ClassAttrHandler, self).__getattribute__
+        attributes = getattribute('__class__').cls_attributes(JSONAttribute)
+        attr = attributes.get(key, None)
+        if attr is not None:
+            if attr.read_only:
+                raise AttributeError('%s is a read-only attribute' % attr.name)
+            attr.set_attr(handler=self, value=value)
+        else:
+            raise AttributeError('%s unknown.' % key)
 
     def update(self, model, recursive=True):
         if isinstance(model, str):
@@ -273,7 +293,7 @@ class JSONClass(ClassAttrHandler):
                         elif isinstance(attr, JSONClass):
                             v_old.update(v_new, recursive=recursive)
                         else:
-                            attr.set_attr(self, v_new)
+                            attr.set_attr(self, attr.attr_from_json(self, v_new))
                     else:
                         attr.set_attr(self, v_new)
                 elif v_old != v_new:
@@ -323,10 +343,7 @@ class JSONClass(ClassAttrHandler):
             template = dict_deep_copy(self.dict_template())
             for d, k, v in dict_walk(template):
                 if isinstance(v, JSONAttribute):
-                    v = v.get_attr(self)
-                    if isinstance(v, (JSONClass, JSONClassList)):
-                        v = v.to_json(to_str=False)
-                    d[k] = v
+                    d[k] = v.attr_to_json(self, v.get_attr(self))
             return template
         else:
             from json import dumps

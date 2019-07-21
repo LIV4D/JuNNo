@@ -1,63 +1,56 @@
 from IPython.display import Javascript, display
 from ..path import abs_path
+from os.path import basename, dirname
 from ipywidgets.widgets import DOMWidget
+
 
 js_module_cache = {}
 
 
-def import_js(module_name, skip=None):
+def import_js(module_name, path=None, skip=None):
     """
     :param module_name:
     :return:
     """
+    module = abs_path(module_name, path)
+    module_name = basename(module)
+    module_path = dirname(module)
 
     if skip is None:
         skip = []
-
-    if module_name in skip:
+    elif module in skip:
         return []
 
     imported_js = []
 
-    if module_name in js_module_cache:
-        js = js_module_cache[module_name][1]
-        for dep in js_module_cache[module_name][0]:
-            imported_js += import_js(dep, skip+imported_js)
+    if module in js_module_cache:
+        js = js_module_cache[module][1]
+        for dep in js_module_cache[module][0]:
+            imported_js += import_js(dep, path=module_path, skip=skip+imported_js)
     else:
         try:
             if module_name.endswith('.css'):
-                with open(abs_path('javascript/'+module_name, __file__), 'r') as file:
+                with open(module, 'r') as file:
                     js_src = file.read()
             else:
-                with open(abs_path('javascript/'+module_name+'.js', __file__), 'r') as file:
+                with open(module, 'r') as file:
                     js_src = file.read()
         except UnicodeDecodeError as err:
             raise ValueError('%s is not readable:\n%s' % (module_name, err))
         except IOError:
             raise ValueError('%s is not a valid module name.' % module_name)
 
-
         js = ""
         dependencies = []
         for line in js_src.splitlines():
-            if line.startswith('#INCLUDE '):
-                js_include = line[9:]
-                if js_include.startswith('CSS '):
-                    try:
-                        js_include = js_include[4:]
-                        js_include += '.css'
-                        dependencies.append(js_include)
-                        imported_js += import_js(js_include, skip+imported_js)
-                    except ValueError:
-                        raise ValueError('%s is not a valid module name (while loading module %s)'
-                                         % (import_js, module_name))
-                else:
-                    try:
-                        dependencies.append(js_include)
-                        imported_js += import_js(js_include, skip+imported_js)
-                    except ValueError:
-                        raise ValueError('%s is not a valid module name (while loading module %s)'
-                                         % (import_js, module_name))
+            if line.startswith('///INCLUDE '):
+                try:
+                    js_include = line[11:]
+                    dependencies.append(js_include)
+                    imported_js += import_js(js_include, path=module_path, skip=skip+imported_js)
+                except ValueError:
+                    raise ValueError('%s is not a valid module name (while loading module %s)'
+                                         % (js_include, module_name))
             else:
                 js += line + '\n'
         js_module_cache[module_name] = (dependencies, js)
@@ -91,15 +84,17 @@ def import_js(module_name, skip=None):
 
 
 class AutoImportDOMWidget(DOMWidget):
-    def __init__(self, dependencies='', **kwargs):
+    def __init__(self, dependencies='', path='', **kwargs):
         if isinstance(dependencies, str):
             dependencies = (dependencies,)
+        dependencies = tuple(dep if dep.endswith(('.css', '.js')) else dep+'.js' for dep in dependencies)
+        self._path = path
         self._dependencies = dependencies
         super(AutoImportDOMWidget, self).__init__(**kwargs)
 
     def _ipython_display_(self):
         for dep in self._dependencies:
-            import_js(dep)
+            import_js(dep, path=self._path)
         display(super(AutoImportDOMWidget, self))
 
 
@@ -107,7 +102,7 @@ def import_display(dom_widget):
     def recursive_import(w, imported_js):
         if isinstance(w, AutoImportDOMWidget):
             for dep in w._dependencies:
-                imported_js += import_js(dep, imported_js)
+                imported_js += import_js(dep, path=w._path, skip=imported_js)
         elif hasattr(w, 'children'):
             for c in w.children:
                 recursive_import(c, imported_js)

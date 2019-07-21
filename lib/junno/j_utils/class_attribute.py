@@ -38,6 +38,12 @@ class ClsAttribute:
     def _name_changed(self, n):
         pass
 
+    def __set_name__(self, owner, name):
+        if self.name is None:
+            self.name = name
+        if self.handler_cls is None:
+            self.handler_cls = owner
+
     @property
     def name(self):
         return self._name
@@ -56,44 +62,66 @@ class ClsAttribute:
 
         return self.handler_cls.__name__ + '.' + self.name
 
-    def set_attr(self, handler, value):
-        v = self.get_attr(handler)
-        if v != value:
-            handler.__dict__[self.name] = value
-            self.notify_change(handler=handler)
+    def __str__(self):
+        return self.full_name
 
-    def __set__(self, instance, value):
-        if instance is None:
-            raise AttributeError('Read only')
-        else:
-            self.set_attr(instance, value)
-
-    def __get__(self, instance, owner_type):
-        if instance is None:
-            return self
-        else:
-            return self.get_attr(instance)
-
-    def get_attr(self, handler, default=None):
-        return handler.__dict__.get(self.name, default)
-
-    def __set_name__(self, owner, name):
-        if self.name is None:
-            self.name = name
-        if self.handler_cls is None:
-            self.handler_cls = owner
-
+    # --- INIT ---
     def init_attr(self, handler, new_attr):
         handler.__dict__[self.name] = new_attr
 
     def new_attr(self, handler):
         return None
 
-    def __str__(self):
-        return self.name
+    # --- GETTER / SETTER ---
+    def __set__(self, handler, value):
+        if handler is None:
+            raise AttributeError('Read only')
+        else:
+            value = self.check_attr(handler=handler, value=value)
+            v = self.get_attr(handler=handler)
+            if v != value:
+                self.set_attr(handler=handler, value=value)
+                handler._attr_changed(attr_name=self.name)
+                self.attr_changed(handler=handler, value=value)
 
-    def notify_change(self, handler):
-        handler._attr_changed(attr_name=self.name)
+    def check_attr(self, handler, value):
+        return value
+
+    def set_attr(self, handler, value):
+        handler.__dict__[self.name] = value
+
+    def attr_changed(self, handler, value):
+        pass
+
+    def __get__(self, instance, owner_type):
+        if instance is None:
+            return self
+        else:
+            return self.get_attr(handler=instance)
+
+    def get_attr(self, handler, default=None):
+        return handler.__dict__.get(self.name, default)
+
+    # --- DECORATORS ---
+    def setter(self, f):
+        def set_attr(self, handler, value):
+            f(handler, value)
+        self.set_attr = set_attr
+
+    def check(self, f):
+        def check_attr(self, handler, value):
+            return f(handler, value)
+        self.check_attr = check_attr
+
+    def changed(self, f):
+        def attr_changed(self, handler, value):
+            f(handler, value)
+        self.attr_changed = attr_changed
+
+    def getter(self, f):
+        def get_attr(self, handler, default=None):
+            return f(handler)
+        self.get_attr = get_attr
 
 
 class MetaClassAttrHandler(ABCMeta):
