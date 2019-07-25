@@ -125,6 +125,13 @@ def if_not(v, default=None):
     return default if not v else v
 
 
+def stack(iters):
+    l = []
+    for _ in iters:
+        l += list(_)
+    return l
+
+
 ########################################################################################################################
 class PropertyAccessor:
     def __init__(self, list):

@@ -6,7 +6,7 @@ from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
 from ..j_utils.math import interval
-from ..j_utils.collections import if_else, if_none, OrderedDict
+from ..j_utils.collections import if_else, if_none, OrderedDict, stack
 
 
 ########################################################################################################################
@@ -50,7 +50,7 @@ def from_numpy(**data_dict):
 
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
-    def __init__(self, pytable, rows=None, name='PyTableDataset'):
+    def __init__(self, pytable, rows=None, hdf_file=None, name='PyTableDataset'):
         if pytable.description._v_is_nested:
             raise NotImplementedError('PyTable with nested columns are not supported.')
 
@@ -64,6 +64,7 @@ class PyTableDataSet(AbstractDataSet):
 
         super(PyTableDataSet, self).__init__(name=name, pk_type=if_none(pk_type, np.uint32))
         self.pytable = pytable
+        self.hdf_file = hdf_file
 
         for i in sorted(col_descr.keys()):
             col_name, col_shape, col_dtype = col_descr[i]
@@ -76,6 +77,11 @@ class PyTableDataSet(AbstractDataSet):
         self.where = None
         self._sorted_rows = None
         self._filtered_rows = None
+
+    def __del__(self):
+        if self.hdf_file is not None:
+            self.hdf_file.flush()
+            self.hdf_file.close()
 
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
@@ -261,7 +267,7 @@ def load_hdf(path, name=None):
 
 ########################################################################################################################
 class RandomVersionPyTableDataSet(AbstractDataSet):
-    def __init__(self, pytables, name='PyTableDataset'):
+    def __init__(self, pytables, hdf_file=None, name='PyTableDataset'):
 
         col_descr = {}
         pk_type = None
@@ -292,11 +298,17 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
 
         super(RandomVersionPyTableDataSet, self).__init__(name=name, pk_type=if_none(pk_type, np.uint32))
         self.pytables = pytables
+        self.hdf_file = hdf_file
 
         for i in sorted(col_descr.keys()):
             col_name, col_shape, col_dtype = col_descr[i]
             col_dtype = np.dtype(str(col_dtype).replace('S', 'U'))
             self.add_column(col_name, col_shape, col_dtype)
+
+    def __del__(self):
+        if self.hdf_file is not None:
+            self.hdf_file.flush()
+            self.hdf_file.close()
 
     @property
     def size(self):
@@ -1369,9 +1381,12 @@ class DataSetApply(AbstractDataSet):
                 c_own = self.col_sibling(unkown_col)
 
                 # Call the function
-                c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own)
+                if self._batchwise:
+                    c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own, cols_name=c_parent)
+                else:
+                    c_samples = self.compute_f(args=sample[0, c_parent], rkeys=c_own, cols_name=c_parent)
 
-                # Read format
+                    # Read format
                 for c_id, (c_name, c_sample) in enumerate(c_samples.items()):
                     parent_col = dataset.col[c_parent[c_id]] if len(c_parent) == len(c_samples) \
                                                              else dataset.col[c_parent[0]]
@@ -1456,9 +1471,16 @@ class DataSetApply(AbstractDataSet):
                         result = parent_gen.next(copy={c: r[i:i+parent_n, c] for c in copy_columns}, limit=parent_n, r=r)
                     else:
                         result = parent_gen.next(limit=parent_n, r=r)
-                    f_results = {}
+                    f_results = {c: [] for c in stack(columns_mapping.keys())}
                     for c_own, c_parent in columns_mapping.items():
-                        f_results.update(self.compute_f(args=result[c_parent], rkeys=c_own))
+                        if self._batchwise:
+                            f_results.update(self.compute_f(args=result[c_parent], rkeys=c_own, cols_name=c_parent))
+                        else:
+                            for j in range(len(result)):
+                                for k, v in self.compute_f(args=result[j, c_parent], rkeys=c_own, cols_name=c_parent).items():
+                                    f_results[k].append(v)
+
+                            f_results = {k: np.concatenate(v) for k, v in f_results.items()}
 
                 for c in r.columns_name():  # Store f results
                     if c in self._single_col_mapping:
@@ -1489,8 +1511,10 @@ class DataSetApply(AbstractDataSet):
     def size(self):
         return self._parent.size * self._n_factor
 
-    def col_parents(self, columns):
+    def col_parents(self, columns=None):
         r = set()
+        if columns is None:
+            columns = self._single_col_mapping.keys()
         for c in columns:
             if c in self._single_col_mapping:
                 r.update(self._single_col_mapping[c])
@@ -1504,46 +1528,46 @@ class DataSetApply(AbstractDataSet):
                 return c_own
         return None
 
-    def compute_f(self, args, rkeys):
-        args_n = args[0].shape[0]
+    def compute_f(self, args, rkeys, cols_name):
 
         if not self._batchwise:
-            r = {_: [] for _ in rkeys}
-            for i in range(args_n):
-                kwargs = {name: arg[i] for name, arg in zip(self.f_params, args)}
-                if self._before_apply:
-                    kwargs = self._before_apply(**kwargs)
-                f_result = self._f(**kwargs)
-                del kwargs
+            r = {_: None for _ in rkeys}
+            # for i in range(args_n):
+            kwargs = {name: arg for name, arg in zip(self.f_params, args)}
+            if self._before_apply:
+                kwargs = self._before_apply(**kwargs)
+            f_result = self._f(**kwargs)
+            del kwargs
 
-                if self._after_apply:
-                    f_result = self._after_apply(f_result)
+            if self._after_apply:
+                f_result = self._after_apply(f_result)
 
-                if not isinstance(f_result, list):
-                    if self._n_factor == 1 or self._n_factor is None:
-                        f_result = [f_result]
-                    else:
-                        raise ValueError('Function return a single row but %i was expected.' % self._n_factor)
+            if not isinstance(f_result, list):
+                if self._n_factor == 1 or self._n_factor is None:
+                    f_result = [f_result]
                 else:
-                    if self._n_factor is not None and len(f_result) != self._n_factor:
-                        raise ValueError('The function returned %i rows but %i was expected.'
-                                         % (len(f_result), self._n_factor))
-                if not isinstance(f_result[0], tuple):
-                    if len(rkeys) != 1:
-                        raise ValueError('The function returned a single column but %i was expected.'
-                                         % len(rkeys))
-                    else:
-                        r[rkeys[0]] += f_result                 # return [row1, row2, row3, ...]
+                    raise ValueError('Function return a single row but %i was expected.' % self._n_factor)
+            else:
+                if self._n_factor is not None and len(f_result) != self._n_factor:
+                    raise ValueError('The function returned %i rows but %i was expected.'
+                                     % (len(f_result), self._n_factor))
+            if not isinstance(f_result[0], tuple):
+                if len(rkeys) != 1:
+                    raise ValueError('The function returned a single column but %i was expected.'
+                                     % len(rkeys))
                 else:
-                    f_result = list(zip(*f_result))
-                    if len(f_result) != len(rkeys):
-                        raise ValueError('The function returned %i columns but %i was expected.'
-                                         % (len(f_result), len(rkeys)))
-                    for c_name, c_data in zip(rkeys, f_result):
-                        r[c_name] += c_data      # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
-
-            return {n: np.stack(d) for n, d in r.items()}
+                    r[rkeys[0]] = np.stack(f_result)                 # return [row1, row2, row3, ...]
+            else:
+                f_result = list(zip(*f_result))
+                if len(f_result) != len(rkeys):
+                    raise ValueError('The function returned %i columns but %i was expected.'
+                                     % (len(f_result), len(rkeys)))
+                for c_name, c_data in zip(rkeys, f_result):
+                    r[c_name] = np.stack(c_data)      # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+            # print({k: v.shape for k, v in r.items()})
+            return r
         else:
+            args_n = args[0].shape[0]
             kwargs = {arg: c for arg, c in zip(self.f_params, args)}
             if self._before_apply:
                 kwargs = self._before_apply(**kwargs)
@@ -1579,31 +1603,67 @@ class DataSetApply(AbstractDataSet):
 
 class DataSetApplyCV(DataSetApply):
     def __init__(self, dataset, function, columns=None, remove_parent_columns=True, format=None, n_factor=None,
-                 name='apply'):
+                 converted_cols=None, force_mono=False, name='apply'):
+        self.force_mono = force_mono
+        self.converted_cols = converted_cols
+
         super(DataSetApplyCV, self).__init__(dataset=dataset, function=function, columns=columns, batchwise=False,
                                              remove_parent_columns=remove_parent_columns, format=format,
                                              n_factor=n_factor, name=name)
 
-    def compute_f(self, args, rkeys):
-        args_n = args[0].shape[0]
-        r = {_: [] for _ in rkeys}
+    def compute_f(self, args, rkeys, cols_name):
+        if self.converted_cols is None:
+            col_parents = [self.parent_dataset.column_by_name(c) for c in self.col_parents()]
 
+            self.converted_cols = [c.name for c in col_parents if c.ndim in (2, 3)]
+
+        split_n = None
+        first_split_col_name = None
+        split_kwargs = []
         final_dtype = None
 
-        for i in range(args_n):
-            kwargs = {}
-            for name, a in zip(self.f_params, args):
-                a = a[i]
-                if isinstance(a, np.ndarray):
-                    if a.ndim == 3 and a.shape[0] in (1, 3):
-                        a = a.transpose((1, 2, 0))
-                    if 'float' in str(a.dtype) or 'bool' in str(a.dtype):
-                        final_dtype = a.dtype
-                        a = a.astype(np.float, copy=False)
-                        a = (a * 255.).astype(np.uint8)
-                kwargs[name] = a
-            f_result = self._f(**kwargs)
-            del kwargs
+        kwargs = {}
+        for name, col_name, a in zip(self.f_params, cols_name, args):
+            if col_name in self.converted_cols:
+                if 'float' in str(a.dtype) or 'bool' in str(a.dtype):
+                    final_dtype = a.dtype
+                    a = a.astype(np.float, copy=False)
+                    a = (a * 255.).astype(np.uint8)
+
+                if a.ndim == 3:
+                    a = a.transpose((1, 2, 0))
+                    n = a.shape[2]
+
+                    if not split_n:
+                        split_n = n
+                        first_split_col_name = col_name
+                    elif split_n != n:
+                        raise ValueError("Columns %s and %s don't have the same channel count "
+                                         "(respectively %s and %s)"
+                                         % (name, first_split_col_name, n, split_n))
+                    split_kwargs.append(name)
+
+                    if self.force_mono:
+                        a = [a[:, :, _] for _ in range(split_n)]
+                    else:
+                        N = split_n // 3
+                        split = [a[:, :, _ * 3:_ * 3 + 3] for _ in range(N)]
+                        a = split + [a[:, :, N * 3 + _:N * 3 + _ + 1] for _ in range(split_n % 3)]
+            kwargs[name] = a
+
+        if split_n is None:
+            split_n = 1
+        elif not self.force_mono:
+            split_n = split_n // 3 + split_n % 3
+
+        kwargs = {k: v if k in split_kwargs else [v]*split_n for k, v in kwargs.items()}
+
+        r = {_: [] for _ in rkeys}
+
+        for i in range(split_n):
+            f_kwargs = {k: v[i] for k, v in kwargs.items()}
+            f_result = self._f(**f_kwargs)
+            del f_kwargs
 
             if not isinstance(f_result, list):
                 if self._n_factor == 1 or self._n_factor is None:
@@ -1619,22 +1679,36 @@ class DataSetApplyCV(DataSetApply):
                     raise ValueError('The function returned a single column but %i was expected.'
                                      % len(rkeys))
                 else:
-                    r[rkeys[0]] += f_result  # return [row1, row2, row3, ...]
+                    r[rkeys[0]].append(np.stack(f_result))  # return [row1, row2, row3, ...]
             else:
                 f_result = list(zip(*f_result))
                 if len(f_result) != len(rkeys):
                     raise ValueError('The function returned %i columns but %i was expected.'
                                      % (len(f_result), len(rkeys)))
                 for c_name, c_data in zip(rkeys, f_result):
-                    r[c_name] += c_data  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
+                    r[c_name].append(np.stack(c_data))  # return [(r1c1, r1c2, ...), (r2c1, r2c2, ...)]
 
+        del kwargs
         f_result = {n: np.stack(d) for n, d in r.items()}
+        # At this point, the shape of cv cols is (split_n, row, h, w, c)
+        #       where row is usually 1 apart when f return several rows.
+        #       It should be converted to (row, split_n*c, h, w)
+        # The shape of not cv cols is (split_n, row, s1, s2, ...)
+        #       and should be converted to (row, split_n, s1, s2, ...)
+
         r = {}
         for k, a in f_result.items():
-            if isinstance(a, np.ndarray) and a.ndim == 4 and a.shape[3] in (1, 3):
-                a = a.transpose((0, 3, 1, 2))
-            if a.dtype == np.uint8 and final_dtype:
+            # Type conversion if a is an uint8 image
+            if a.dtype == np.uint8 and final_dtype and (a.ndim==4 or (a.ndim==5 and a.shape[4] in (1,3))):
                 a = (a.astype(np.float)/255).astype(final_dtype, copy=False)
+
+            if a.ndim == 5 and a.shape[4] in (1, 3):
+                a = np.concatenate(a, axis=-1).transpose((0, 3, 1, 2))
+            else:
+                a = a.swapaxes(0, 1)
+            if split_n == 1 and a.shape[1] == 1:
+                a.squeeze(1)
+
             r[k] = a
 
         return r

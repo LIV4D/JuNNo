@@ -153,22 +153,26 @@ def cartesian(arrays, out=None):
 
 
 def interval(size, start=None, stop=None, args=()):
-    if len(args)==1:
+    if len(args) == 1:
         stop = args[0]
         start = 0
-    elif len(args)==2:
+    elif len(args) == 2:
         start = args[0]
         stop = args[1]
 
     if start is None:
         start = 0
+    elif start < 0:
+        start += size
+    if start > size or start < 0:
+        raise ValueError('%i is not a valid index: size is %i' % (stop, size))
     if stop is None:
         stop = size
     elif stop < 0:
         stop += size
     elif stop < start:
         stop = start + 1
-    if stop > size:
+    if stop > size or stop < 0:
         raise ValueError('%i is not a valid index: size is %i' % (stop, size))
     return start, stop
 

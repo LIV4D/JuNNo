@@ -693,8 +693,8 @@ class DataSetSmartGenerator:
 
         if not intime:
             intime = False
-        elif isinstance(intime, bool):
-            intime = 'process'
+        elif intime is True:
+            intime = 'thread'
         elif intime not in ('process', 'thread'):
             raise ValueError('Invalid intime argument: %s \n(should be either "process" or "thread")'
                              % repr(intime))

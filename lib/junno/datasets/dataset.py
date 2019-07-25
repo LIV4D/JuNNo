@@ -948,9 +948,9 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         from .datasets_core import PyTableDataSet, RandomVersionPyTableDataSet
         if random_version:
-            hdfDataset = RandomVersionPyTableDataSet(hdf_tables, name=name)
+            hdfDataset = RandomVersionPyTableDataSet(hdf_tables, name=name, hdf_file=None if ondisk else hdf_f)
         else:
-            hdfDataset = PyTableDataSet(hdf_tables[0], name=name)
+            hdfDataset = PyTableDataSet(hdf_tables[0], name=name, hdf_file=None if ondisk else hdf_f)
         for c in columns:
             hdfDataset.col[c].format = self.col[c].format
             hdfDataset.col[c]._is_text = self.col[c].is_text     # Bof...
@@ -1322,13 +1322,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         """
         from .datasets_core import DataSetMap
         for a in args:
-            if isinstance(a, DSColumn):
-                if a.dataset is not self:
-                    raise ValueError('%s is not a column of %s.' % (a.name, self.dataset_name))
-                a = a.name
-            if not isinstance(a, str):
-                raise ValueError('Arguments of .map() should be column names, not %s.' % type(a))
-            kwargs[a] = a
+            self.interpret_columns(a)
+            for _ in a:
+                kwargs[a] = a
         return DataSetMap(self, kwargs, keep_all_columns=False)
 
     def shuffle(self, indices=None, subgen=0, rng=None, name='shuffle'):
@@ -1349,7 +1345,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         return DataSetApply(self, function=function, columns=columns, name=name, format=format, n_factor=n_factor,
                             remove_parent_columns=remove_parent_columns, batchwise=batchwise)
 
-    def apply_cv(self, columns, function, format=None, n_factor=1, keep_parent=None, name=None):
+    def apply_cv(self, columns, function, format=None, converted_cols=None, force_mono=False,
+                 n_factor=1, keep_parent=None, name=None):
         if name is None:
             name = getattr(function, '__name__', 'apply')
             if name == '<lambda>':
@@ -1357,6 +1354,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetApplyCV
         remove_parent_columns = None if keep_parent is None else not keep_parent
         return DataSetApplyCV(self, function=function, columns=columns, name=name, n_factor=n_factor,
+                              converted_cols=converted_cols, force_mono=force_mono,
                               format=format, remove_parent_columns=remove_parent_columns)
 
     def apply_torch(self, columns, f, format=None, device=None, eval=True, forward_hooks=None, backward_hooks=None,
@@ -1370,15 +1368,6 @@ class AbstractDataSet(metaclass=ABCMeta):
         if not requires_grad:
             requires_grad = []
 
-        def after_apply(r):
-            if isinstance(r, torch.Tensor):
-                return r.detach().cpu().numpy()
-            elif isinstance(r, tuple):
-                return tuple(after_apply(_) for _ in r)
-            elif isinstance(r, list):
-                return list(after_apply(_) for _ in r)
-            return r
-
         def before_apply(**kwargs):
             kwargs = {k: torch.tensor(np.array(v) * 1,
                   requires_grad=requires_grad if not isinstance(requires_grad, (list, tuple)) else k in requires_grad
@@ -1387,6 +1376,15 @@ class AbstractDataSet(metaclass=ABCMeta):
                 return {k: v.to(device) for k, v in kwargs.items()}
             else:
                 return kwargs
+
+        def after_apply(r):
+            if isinstance(r, torch.Tensor):
+                return r.detach().cpu().numpy()
+            elif isinstance(r, tuple):
+                return tuple(after_apply(_) for _ in r)
+            elif isinstance(r, list):
+                return list(after_apply(_) for _ in r)
+            return r
 
         if isinstance(f, torch.nn.Module):
             net = f
@@ -2032,7 +2030,7 @@ class DSColumnFormat:
             return 'Matrix(%s,%s,%s)' % (self.domain, self.range, self.clip)
 
         def check_type(self, dtype, shape):
-            if not np.issubdtype(dtype, np.number):
+            if not (np.issubdtype(dtype, np.number) or dtype == np.bool):
                 raise ValueError('Matrix format must be applied to number columns (not %s).' % repr(dtype))
             if not len(shape):
                 raise ValueError('Matrix format can only be applied to columns with a non empty shape.')
