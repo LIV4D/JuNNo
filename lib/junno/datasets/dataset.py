@@ -1334,7 +1334,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         """
         from .datasets_core import DataSetMap
         for a in args:
-            self.interpret_columns(a)
+            a = self.interpret_columns(a)
             for _ in a:
                 kwargs[a] = a
         return DataSetMap(self, kwargs, keep_all_columns=False)

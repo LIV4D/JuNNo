@@ -457,9 +457,9 @@ class DataSetMap(AbstractDataSet):
         mapped_cols = set()
         for column, real_columns in mapping.items():
             if isinstance(real_columns, str):
-                mapping[column] = [real_columns]
-                mapped_cols.add(real_columns)
-            elif isinstance(real_columns, (list, tuple)):
+                real_columns = self.interpret_columns(real_columns)
+                mapping[column] = real_columns
+            if isinstance(real_columns, (list, tuple)):
                 mapped_cols.update(real_columns)
             else:
                 raise ValueError('Invalid mapping value: %s.\n '
