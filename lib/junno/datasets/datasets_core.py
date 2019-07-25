@@ -455,26 +455,26 @@ class DataSetMap(AbstractDataSet):
         super(DataSetMap, self).__init__(name, dataset, pk_type=dataset.pk.dtype)
 
         mapped_cols = set()
-        for column, real_columns in mapping.items():
-            if isinstance(real_columns, str):
-                real_columns = self.interpret_columns(real_columns)
-                mapping[column] = real_columns
-            if isinstance(real_columns, (list, tuple)):
-                mapped_cols.update(real_columns)
+        for column, parent_columns in mapping.items():
+            if isinstance(parent_columns, str):
+                parent_columns = dataset.interpret_columns(parent_columns)
+                mapping[column] = parent_columns
+            if isinstance(parent_columns, (list, tuple)):
+                mapped_cols.update(parent_columns)
             else:
                 raise ValueError('Invalid mapping value: %s.\n '
                                  'Valid value are column name for mapping and list or tuple for concatenation.'
-                                 % real_columns)
+                                 % parent_columns)
 
         if keep_all_columns:
             for c in set(dataset.columns_name())-mapped_cols:
                 mapping[c] = [c]
 
         self.concatenation_map = mapping
-        for column, real_columns in mapping.items():
-            c = dataset.column_by_name(real_columns[0])
+        for column, parent_columns in mapping.items():
+            c = dataset.column_by_name(parent_columns[0])
             shape = c.shape
-            for real_column in real_columns[1:]:
+            for real_column in parent_columns[1:]:
                 s = dataset.column_by_name(real_column).shape
                 assert s[1:] == shape[1:]
                 shape = tuple([shape[0]+s[0]] + list(s[1:]))
