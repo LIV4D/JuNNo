@@ -881,12 +881,24 @@ class AbstractDataSet(metaclass=ABCMeta):
                     elif overwrite == 'auto':
                         if len(hdf_t) != self.size:
                             erase_table = True
+                            #print('Wrong size', len(hdf_t), self.size)
                         else:
+                            erase_table = True
                             for col_name, hdf_col in hdf_t.description._v_colobjects.items():
                                 col = self.column_by_name(col_name, raise_on_unknown=False)
-                                if col is None or hdf_col.dtype.shape != col.shape or hdf_col.dtype.base != col.dtype:
-                                    erase_table = True
+                                if col is None or hdf_col.dtype.shape != col.shape:
+                                    #print(col, 'Mismatch shape', hdf_col.dtype.shape, col.shape)
                                     break
+                                else:
+                                    if col.is_text or col.dtype in ('O', object):
+                                        if str(hdf_col.dtype.base)[1] != 'S':
+                                            #print(col, 'Not STR', str(hdf_col.dtype.base), str(hdf_col.dtype.base)[1])
+                                            break
+                                    elif hdf_col.dtype.base != col.dtype:
+                                        #print(col, 'Mismatch type', hdf_col.dtype.base, col.dtype)
+                                        break
+                            else:
+                                erase_table = False
                     if erase_table:
                         hdf_f.remove_node(table_path, table_name)
                         hdf_t = None
