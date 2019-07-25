@@ -1243,7 +1243,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         from .datasets_core import DataSetSubgen
         return DataSetSubgen(self, n=n, name=name)
 
-    def split_sets(self, **kwargs):
+    def split_sets(self, *args, **kwargs):
         """Split sets into a dictionary named after the parameters keys.
 
         :Example:
@@ -1268,6 +1268,9 @@ class AbstractDataSet(metaclass=ABCMeta):
         cummulative_ratio = 0
         eq_ratio = []
 
+        for i, arg in enumerate(args):
+            kwargs[i] = arg
+
         for name, ratio in kwargs.items():
             if ratio != -1:
                 if 0 < ratio < 1:
@@ -1277,7 +1280,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     ratio = l / self.size
                 else:
                     raise NotImplementedError('Datasets ratio must be a positive number')
-                d[name] = self.subset(offset, offset+l, name=name)
+                d[name] = self.subset(offset, offset+l, name='split%i'%name if isinstance(name, int) else name)
                 offset += l
                 cummulative_ratio += ratio
                 if cummulative_ratio > 1:
@@ -1289,9 +1292,14 @@ class AbstractDataSet(metaclass=ABCMeta):
             ratio = (1-cummulative_ratio)/len(eq_ratio)
             for name in eq_ratio:
                 l = round(self.size * ratio)
-                d[name] = self.subset(offset, offset + l)
+                d[name] = self.subset(offset, offset + l, name='split%i'%name if isinstance(name, int) else name)
                 offset += l
 
+        r_args = [d.pop(i) for i in range(len(args))]
+        if r_args:
+            if d:
+                return (*r_args, d)
+            return tuple(r_args)
         return d
 
     def repeat(self, n=None, rows=None, name="repeat"):
