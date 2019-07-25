@@ -203,7 +203,7 @@ class DataAugment:
 
         :param angle: Distribution from which the angle of rotation is sampled (in degrees) .
         :param scale: Distribution from which the factor of scale is sampled.
-        :param translate: Distribution from which the translation length is sampled (in pixel).
+        :param translate: Distribution from which the translation length is sampled (in pixel if >=1, in ratio of width otherwise).
         :param translate_direction: Distribution from which the translation direction is sampled (in degrees).
                     If 0, translate towards the right, if 90 translate towards the top.
         :param shear: Distribution from which the shear angle is sampled (in degrees).
@@ -216,9 +216,17 @@ class DataAugment:
         """
         rotate = _RD.constant(0) if rotate is None else _RD.auto(rotate, symetric=True)
         scale = _RD.constant(1) if scale is None else _RD.auto(scale, symetric=True)
+        shear = _RD.constant(0) if shear is None else _RD.auto(shear, symetric=True)
+
+        rescale_translate = False
+        if isinstance(translate, float):
+            if -1 < translate < 1:
+                rescale_translate = True
+        elif isinstance(translate, tuple):
+            if -1 < translate[0] < 1 and -1 < translate[1] < 1:
+                rescale_translate = True
         translate = _RD.constant(0) if translate is None else _RD.auto(translate, symetric=True)
         translate_direction = _RD.uniform(360) if translate_direction is None else _RD.auto(translate_direction)
-        shear = _RD.constant(0) if shear is None else _RD.auto(shear, symetric=True)
 
         deg2rad = np.pi/180
 
@@ -227,6 +235,8 @@ class DataAugment:
             theta = rotate(rng)
             gamma = scale(rng)
             t_r = translate(rng)
+            if rescale_translate:
+                t_r *= w
             t_theta = translate_direction(rng) * deg2rad
             alpha = shear(rng) * deg2rad
 
@@ -244,7 +254,7 @@ class DataAugment:
     def scale(self, scale=(0.9, 1.1), **kwargs):
         return self.warp_affine(scale=scale, **kwargs)
 
-    def translate(self, distance=15, direction=None, **kwargs):
+    def translate(self, distance=0.1, direction=None, **kwargs):
         if isinstance(direction, (int, float)):
             direction = _RD.constant(direction)
         return self.warp_affine(translate=distance, translate_direction=direction, **kwargs)
@@ -253,7 +263,7 @@ class DataAugment:
         return self.warp_affine(shear=shear, **kwargs)
 
     @augment_method('geometric', cv=True)
-    def elastic_distortion(self, dist=10, sigma=2, scale=1, mask=None,
+    def elastic_distortion(self, dist=10, sigma=2, scale=5, mask=None,
                            interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0.0):
         """Apply an elastic distortion on an image
 
@@ -275,7 +285,8 @@ class DataAugment:
             dist = _RD.auto(dist)
 
         def augment(x, rng):
-            h, w = x.shape[:2]
+            img = x
+            h, w = img.shape[:2]
             shape = (h, w)
             dist_shape = (h // scale, w // scale)
             # Random
@@ -309,9 +320,9 @@ class DataAugment:
                 dy = np.reshape(y + dy, shape).astype('float32')
 
             # Apply displacement map
-            dst = cv2.remap(x, map1=dx, map2=dy, interpolation=interpolation, borderMode=border_mode,
+            dst = cv2.remap(img, map1=dx, map2=dy, interpolation=interpolation, borderMode=border_mode,
                             borderValue=border_value)
-            return dst.reshape(x.shape)
+            return dst.reshape(img.shape)
         return augment
 
     @augment_method('color')
