@@ -767,16 +767,24 @@ class History:
         df.to_csv(path_or_buf=path)
 
     # ---  Timestamp Conversion ---
-    def epoch_to_iterid(self, epoch, iteration=1):
+    def epoch_to_iterid(self, epoch, iteration=None, reverse=False):
+        epoch = if_none(epoch, 0 if reverse else 1)
+        iteration = if_none(iteration, 0 if reverse else 1)
         # Check
         if epoch > self.epoch:
             raise IndexError('Invalid time stamp: %ie%i. (Current iteration is %ie%i)'
                              % (epoch, iteration, self.epoch, self.e_iter))
-        if iteration > self._epoch_info[epoch-1,1]:
-            raise IndexError('Invalid time stamp: %ie%i. (Epoch %i only has %i iterations)'
-                             % (epoch, iteration, epoch, self._epoch_info[epoch-1,1]))
         # Sum
-        return iteration + self._epoch_info[epoch-1,0] - 1
+        if not reverse:
+            if iteration > self._epoch_info[epoch - 1, 1]:
+                raise IndexError('Invalid time stamp: %ie%i. (Epoch %i only has %i iterations)'
+                                 % (epoch, iteration, epoch, self._epoch_info[epoch - 1, 1]))
+            return iteration + self._epoch_info[epoch-1, 0] - 1
+        else:
+            if iteration > self._epoch_info[self.epoch - epoch, 1]:
+                raise IndexError('Invalid time stamp: %ie%i. (Epoch %i only has %i iterations)'
+                                 % (epoch, iteration, epoch, self._epoch_info[self.epoch - epoch, 1]))
+            return self._epoch_info[self.epoch-epoch, 1] - iteration
 
     def iterid_to_timestamp(self, time_id):
         if not 0 <= time_id < len(self):
@@ -804,8 +812,14 @@ class History:
                 timestamp = length
             return timestamp
         else:
+            reverted = False
+            if isinstance(timestamp, str):
+                timestamp = timestamp.strip()
+                if timestamp.startswith('-'):
+                    reverted=True
+                    timestamp = timestamp[1:]
             timestamp = TimeStamp.interpret(timestamp)
-            return self.epoch_to_iterid(epoch=timestamp.epoch, iteration=timestamp.iteration)
+            return self.epoch_to_iterid(epoch=timestamp.epoch, iteration=timestamp.iteration, reverse=reverted)
 
     def interpret_timestamp(self, timestamp):
         return self.iterid_to_timestamp(self.interpret_iterid(timestamp))
@@ -832,8 +846,10 @@ class History:
         while i < stop:
             yield i
 
-            e += step.epoch
-            e_i += step.iteration
+            if step.epoch:
+                e += step.epoch
+            if step.iteration:
+                e_i += step.iteration
 
             while e < self.epoch and e_i > self._epoch_info[e,1]:
                 e_i -= self._epoch_info[e,1]
@@ -975,11 +991,11 @@ class TimeStamp:
                     if len(timestamp) not in (1, 2):
                         raise error
                     if len(timestamp) == 1:
-                        return TimeStamp(epoch=timestamp[0], iteration=0)
+                        return TimeStamp(epoch=timestamp[0], iteration=None)
                     else:
                         return TimeStamp(epoch=timestamp[0], iteration=timestamp[1])
                 elif timestamp.endswith('i'):
-                    return TimeStamp(epoch=0, iteration=int(timestamp[:-1]))
+                    return TimeStamp(epoch=None, iteration=int(timestamp[:-1]))
             except TypeError:
                 raise error from None
 
