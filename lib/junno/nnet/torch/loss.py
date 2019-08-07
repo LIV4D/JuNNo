@@ -6,7 +6,7 @@ import torch
 from torch.nn import functional as F
 
 
-def bce_loss(true, logits, weight=None, pos_weight=None):
+def bce_loss(logits, true, weight=None, pos_weight=None):
     """Computes the weighted binary cross-entropy loss.
 
     Args:
@@ -30,7 +30,7 @@ def bce_loss(true, logits, weight=None, pos_weight=None):
     return bce_loss
 
 
-def ce_loss(true, logits, weights, ignore=255):
+def ce_loss(logits, true, weights, ignore=255):
     """Computes the weighted multi-class cross-entropy loss.
 
     Args:
@@ -53,7 +53,7 @@ def ce_loss(true, logits, weights, ignore=255):
     return ce_loss
 
 
-def dice_loss(true, logits, weights=None, eps=1e-7):
+def dice_loss(logits, true, weights=None, eps=1e-7):
     """Computes the Sørensen–Dice loss.
 
     Note that PyTorch optimizers minimize a loss. In this
@@ -73,7 +73,7 @@ def dice_loss(true, logits, weights=None, eps=1e-7):
         weights = 1
     num_classes = logits.shape[1]
     if num_classes == 1:
-        true_1_hot = torch.eye(num_classes + 1)[true.squeeze(1)]
+        true_1_hot = torch.eye(num_classes + 1)[true.squeeze(1).long()]
         true_1_hot = true_1_hot.permute(0, 3, 1, 2).float()
         true_1_hot_f = true_1_hot[:, 0:1, :, :]
         true_1_hot_s = true_1_hot[:, 1:2, :, :]
@@ -82,7 +82,7 @@ def dice_loss(true, logits, weights=None, eps=1e-7):
         neg_prob = 1 - pos_prob
         probas = torch.cat([pos_prob, neg_prob], dim=1)
     else:
-        true_1_hot = torch.eye(num_classes)[true.squeeze(1)]
+        true_1_hot = torch.eye(num_classes)[true.squeeze(1).long()]
         true_1_hot = true_1_hot.permute(0, 3, 1, 2).float()
         probas = F.softmax(logits, dim=1)
     true_1_hot = true_1_hot.type(logits.type()) * weights
@@ -94,7 +94,7 @@ def dice_loss(true, logits, weights=None, eps=1e-7):
     return (1 - dice_loss)
 
 
-def jaccard_loss(true, logits, eps=1e-7):
+def jaccard_loss(logits, true, eps=1e-7):
     """Computes the Jaccard loss, a.k.a the IoU loss.
 
     Note that PyTorch optimizers minimize a loss. In this
@@ -133,7 +133,7 @@ def jaccard_loss(true, logits, eps=1e-7):
     return (1 - jacc_loss)
 
 
-def tversky_loss(true, logits, alpha, beta, eps=1e-7):
+def tversky_loss(logits, true, alpha, beta, eps=1e-7):
     """Computes the Tversky loss [1].
 
     Args:
