@@ -513,24 +513,36 @@ class DataSetAugment(AbstractDataSet):
 
 ########################################################################################################################
 class Noise(AbstractDataSet):
-    def __init__(self, N, columns, shapes=None, name='Noise', rng=None):
+    def __init__(self, N, columns, shapes=None, delayed_setup=None, name='Noise', rng=None):
         super(Noise, self).__init__(name=name, rng=rng)
 
         shapes = if_none(shapes, {})
         for c_name, c_dist in columns.items():
             self.add_column(c_name, shapes.get(c_name, ()), dtype=np.float32)
-        self.columns_distribution = columns
+
+        self.delayed_setup = delayed_setup
+        self.columns_distribution = columns if not self.delayed_setup else None
+
         self.N = N
+
+    def _setup_determinist(self):
+        if not self.columns_distribution:
+            self.columns_distribution = self.delayed_setup()
 
     def _generator(self, gen_context):
         columns = gen_context.columns
+
+        if gen_context.determinist:
+            cols_dist = self.columns_distribution
+        else:
+            cols_dist = self.delayed_setup() if callable(self.delayed_setup) else self.columns_distribution
 
         while not gen_context.ended():
             i_global, n, weakref = gen_context.create_result()
             r = weakref()
 
             for col in columns:
-                r[col] = self.columns_distribution[col](self.rng, shape=(n,)+self.col[col].shape)
+                r[col] = cols_dist[col](self.rng, shape=(n,)+self.col[col].shape)
 
             r = None
             yield weakref
@@ -552,6 +564,46 @@ class Noise(AbstractDataSet):
             name = col
         return Noise(columns={name: _RD.normal(mean=mean, std=std)},
                      shapes={name: shape}, name=name, N=N)
+
+    @staticmethod
+    def normal_like(columns, N=1, name=None):
+        from collections import OrderedDict
+        datasets_cols = {}
+        cols = OrderedDict()
+        cols_shape = {}
+
+        if isinstance(columns, DSColumn):
+            columns = (columns,)
+
+        for col in columns:
+            if not isinstance(col, DSColumn):
+                raise ValueError('cols parameter of Noise.normal_like() should be a list of DSColumn')
+
+            if col.name in cols:
+                raise NotImplementedError('Two columns have the same name: ' + col.name)
+            cols[col.name] = None
+            cols_shape[col.name] = col.shape
+
+            if col.dataset not in datasets_cols:
+                datasets_cols[col.dataset] = [col]
+            else:
+                l = datasets_cols[col.dataset]
+                if col not in l:
+                    l.append(col)
+
+        if name is None:
+            name = list(datasets_cols.keys())[0].dataset_name + 'Noise' if len(datasets_cols) == 1 else 'Noise'
+
+        def delayed_setup():
+            cols_dist = {}
+            for dataset, dataset_cols in datasets_cols.items():
+                moments = dataset.mean(dataset_cols, std=True)
+                for c in dataset_cols:
+                    cols_dist[c.name] = _RD.normal(mean=moments[0, c], std=moments[1, c])
+            return cols_dist
+
+        return Noise(columns=cols, delayed_setup=delayed_setup,
+                     shapes=cols_shape, name=name, N=N)
 
     @staticmethod
     def binary(p=0.5, N=1, shape=(), col='noise', name=None):
