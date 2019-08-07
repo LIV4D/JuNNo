@@ -1215,7 +1215,7 @@ class DataSetApply(AbstractDataSet):
                                 function to the first row of the dataset. If a column name is given instead of a tuple,
                                 the type, shape and format will be copied from the **dataset** column. If None is given,
                                 a similar behaviour will be attempted based on the column name.
-                            Finnally, this parameters could be set to 'same'. In this case, all column type, shape and
+                            Finally, this parameters could be set to 'same'. In this case, all column type, shape and
                             format will be copied from **dataset**.
 
         :param before_apply: A function called before **function** to apply a preprocessing on its arguments.
@@ -1595,8 +1595,11 @@ class DataSetApply(AbstractDataSet):
                     raise ValueError('The function was applied batchwise but returned an array with shape (). '
                                      '(Please note that even if the batchsize is 1, the array shape should be (1,))')
                 if self._n_factor is not None and c_data.shape[0] != self._n_factor*args_n:
-                    raise ValueError('The function returned %i rows for columns %s, but %i was expected.'
-                                     % (c_data.shape[0], c_name, self._n_factor*args_n))
+                    raise ValueError('The function returned %i rows for columns %s, but %i was expected.\n'
+                                     '(The function is currently applied batchwise thus the data shape: %s should be '
+                                     'match (batch_length, sample_dim1, sample_dim1, ...). If it\'s not the '
+                                     'case you might consider setting batchwise=False).'
+                                     % (c_data.shape[0], c_name, self._n_factor*args_n, c_data.shape))
                 else:
                     r[c_name] = c_data
             return r

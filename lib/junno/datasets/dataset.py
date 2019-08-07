@@ -440,10 +440,10 @@ class AbstractDataSet(metaclass=ABCMeta):
 
     #   ---   Representation functions   ---
     def __str__(self):
-        return self.__class__.__name__ +'(name="' + self._name + '")'
+        return self.dataset_fullname + ': ' + self.__class__.__name__ + '()'
 
     def __repr__(self):
-        s = 'Dataset: %s' % str(self)
+        s = str(self)
         for column in self._columns:
             s += '\n\t'+str(column)
         return s
@@ -1398,12 +1398,15 @@ class AbstractDataSet(metaclass=ABCMeta):
                 return kwargs
 
         def after_apply(r):
+            if isinstance(r, torch.Size):
+                return np.array(r)
             if isinstance(r, torch.Tensor):
                 return r.detach().cpu().numpy()
             elif isinstance(r, tuple):
                 return tuple(after_apply(_) for _ in r)
             elif isinstance(r, list):
                 return list(after_apply(_) for _ in r)
+
             return r
 
         if isinstance(f, torch.nn.Module):

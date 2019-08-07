@@ -33,7 +33,8 @@ class DataSetReshape(AbstractDataSet):
                             for k, s in zip(c_shape, column.shape[-2:]))
             cols_shape[c_new] = (c_parent, c_shape)
             if not keep_parent:
-                copy_columns.difference({c_parent})
+                copy_columns = copy_columns.difference({c_parent})
+        copy_columns = copy_columns.difference(cols_shape.keys())
         self.cols_reshaped = cols_shape
 
         # Initialize columns
