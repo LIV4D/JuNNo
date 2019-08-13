@@ -700,12 +700,12 @@ class DataSetShuffle(AbstractDataSet):
                                 s.seq_id = None
                                 waiting_seq -= 1
 
-                            if seq and s.seq_id is None:     # Ask next
+                            if len(seq) and s.seq_id is None:     # Ask next
                                 s.seq_id = n - len(seq)
                                 s.ask(seq.pop(0))
 
                         if waiting:
-                            time.sleep(1e-3)
+                            time.sleep(1e-6)
 
                 else:       # -- Single core, No subgen --
                     for i, seq_id in enumerate(seq):
