@@ -689,7 +689,7 @@ class DataSetShuffle(AbstractDataSet):
             r = weakref()
 
             if self.subgen <= 1:
-                seq = indices[i_global:i_global+n]
+                seq = list(indices[i_global:i_global+n])
                 if len(subgen) > 1:  # -- Mutliple core, No subgen --
                     waiting_seq = len(seq)
                     while waiting_seq:
@@ -700,7 +700,7 @@ class DataSetShuffle(AbstractDataSet):
                                 s.seq_id = None
                                 waiting_seq -= 1
 
-                            if len(seq) and s.seq_id is None:     # Ask next
+                            if seq and s.seq_id is None:     # Ask next
                                 s.seq_id = n - len(seq)
                                 s.ask(seq.pop(0))
 
