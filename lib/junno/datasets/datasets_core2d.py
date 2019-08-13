@@ -480,7 +480,7 @@ class DataSetUnPatch(AbstractDataSet):
                  n_patches=None):
         super(DataSetUnPatch, self).__init__(name='unpatch', parent_datasets=dataset, pk_type=str)
 
-        if columns_F is None:
+        if columns_shape is None:
             columns_shape = {}
         if n_patches is None:
             n_patches = 4
