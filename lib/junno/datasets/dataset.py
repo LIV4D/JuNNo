@@ -232,7 +232,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return r, gen
 
-    def read_one(self, row=0, columns=None, extract=False):
+    def read_one(self, row=0, columns=None, extract=False, determinist=True):
         """
         Read a specific element of a dataset. If extract is True, the result will depend on the form of columns.
         Thus, if columns is None, read_one(i) will return a dictionnary a the i-th value of all the dataset's columns,
@@ -242,7 +242,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param columns: Columns of the wanted elements (None mean all of them)
         :param extract: If true, the data is extracted from the DataSetResult.
         """
-        r = self.read(start=row, stop=row + 1, columns=columns, extract=False)
+        r = self.read(start=row, stop=row + 1, columns=columns, extract=False, determinist=determinist)
 
         if not extract:
             return r
@@ -275,8 +275,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                     return self.dataset.read(item[0].start, item[0].stop, columns=item[1], extract=False)
             raise NotImplementedError
 
-        def __call__(self, row, columns=None):
-            return self.dataset.read_one(row=row, columns=columns, extract=False)
+        def __call__(self, row, columns=None, determinist=True):
+            return self.dataset.read_one(row=row, columns=columns, extract=False, determinist=True)
 
     #   ---   Generators   ---
     def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0):
@@ -1344,7 +1344,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         for a in args:
             a = self.interpret_columns(a)
             for _ in a:
-                kwargs[a] = a
+                kwargs[_] = _
         return DataSetMap(self, kwargs, keep_all_columns=False)
 
     def shuffle(self, indices=None, subgen=0, rng=None, name='shuffle'):
