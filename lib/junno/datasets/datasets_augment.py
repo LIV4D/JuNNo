@@ -407,8 +407,8 @@ class DataAugment:
     def hue(self, hue=(-20, 20)):
         return self.hsv(hue=hue)
 
-    def staturation(self, staturation=(-20, 20)):
-        return self.hsv(staturation=staturation)
+    def saturation(self, saturation=(-20, 20)):
+        return self.hsv(saturation=saturation)
 
 
 ########################################################################################################################
