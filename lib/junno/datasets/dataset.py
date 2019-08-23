@@ -292,7 +292,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :return The generator which loops start at from_id and does n iterations.
         :rtype: generator
         """
-        self.clear_sample()
+        # self.clear_sample()
         from .dataset_generator import DataSetSmartGenerator
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, stop_id=stop, columns=columns,
                                      determinist=determinist, intime=intime, ncore=ncore)
