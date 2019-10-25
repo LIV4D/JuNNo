@@ -707,7 +707,7 @@ def metric(alias=None):
             if isinstance(self, ConfMatrix):
                 m = self.no_normed().view(np.ndarray)
             else:
-                m = np.ndarray(self)
+                m = np.asarray(self)
             params = bind_args(func, params, kwargs)
             return func(m=m, **params)
 
