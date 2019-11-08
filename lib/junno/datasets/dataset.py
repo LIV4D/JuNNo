@@ -1486,7 +1486,11 @@ class AbstractDataSet(metaclass=ABCMeta):
                     reset_to_train = True
                     net.eval()
 
-                y = net(x)
+                if not b_hooks and not requires_grad:
+                    with torch.no_grad():
+                        y = net(x)
+                else:
+                    y = net(x)
 
                 if reset_to_train:
                     net.train()
