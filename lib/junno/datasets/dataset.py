@@ -934,14 +934,14 @@ class AbstractDataSet(metaclass=ABCMeta):
                 chunck_size = min(stop - start, hdf_t.chunkshape[0])
 
                 if ncore > 1:
-                    with Process('Allocating %s' % label, stop - start + 1, verbose=False) as p:
+                    with Process('Allocating %s (%i)' % (label, i_table+1), stop - start + 1, verbose=False) as p:
                         empty_row = hdf_t.row
                         for i in range(0, stop - start):
                             empty_row.append()
                             p.step = i
                         hdf_t.flush()
 
-                    with Process('Caching %s' % label, stop - start, verbose=False) as p:
+                    with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
                         from .dataset_generator import DataSetResult
                         def write_back(r: DataSetResult):
                             hdf_t.modify_rows(start=r.start_id - start, stop=r.stop_id - start, rows=r.to_row_list())
@@ -950,7 +950,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                         self.export(write_back, n=chunck_size, start=start, stop=stop, columns=columns, ncore=ncore,
                                     determinist=not random_version)
                 else:
-                    with Process('Caching %s' % label, stop - start, verbose=False) as p:
+                    with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
                         for r in self.generator(n=chunck_size, start=start, stop=stop, determinist=not random_version,
                                                 columns=columns):
                             hdf_t.append(r.to_row_list())
