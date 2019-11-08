@@ -536,7 +536,7 @@ class DataSetShuffle(AbstractDataSet):
         super(DataSetShuffle, self).__init__(name=name, parent_datasets=dataset, pk_type=dataset.pk.dtype, rng=rng)
         self._columns = dataset.copy_columns(self)
 
-        self.indices = None if indices is None else np.asarray(indices, dtype=np.uint32)
+        self.indices = None if indices is None else np.asarray(indices, dtype=np.uint32) % dataset.size
         self.random_indices = indices is None
 
         self.subgen = max(subgen, 0) if isinstance(subgen, int) else 0

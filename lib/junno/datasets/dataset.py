@@ -1236,8 +1236,12 @@ class AbstractDataSet(metaclass=ABCMeta):
             raise AttributeError('%s method name already exist in AbstractDataset.' % func.__name__)
         setattr(cls, func.__name__, func)
 
-    def subset(self, *args, start=0, stop=None, name='subset'):
+    def subset(self, *args, start=0, stop=None, indices=None, name='subset'):
         from .datasets_core import DataSetSubset
+        if indices is None and len(args) == 1 and isinstance(args[0], (tuple, list, np.array)):
+            indices = args[0]
+        if indices:
+            return self.shuffle(indices=indices, name=name)
         start, stop = interval(self.size, start, stop, args)
         return DataSetSubset(self, start, stop, name=name)
 
