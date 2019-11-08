@@ -1039,7 +1039,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         result = self.mean(columns=columns, start=start, stop=stop, ncore=ncore, n=n, determinist=determinist, std=True)
         return result[1, columns[0]] if single_column else result.truncate(start=1)
 
-    def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False,
+    def confusion_matrix(self, pred, true, weight=None, label=None, rowwise=False, threshold=None,
                          start=0, stop=None, ncore=1, n=1, determinist=True):
         from ..j_utils.math import ConfMatrix
 
@@ -1109,7 +1109,8 @@ class AbstractDataSet(metaclass=ABCMeta):
         def conf_mat(pred, true, weight):
             if one_hot:
                 pred = np.argmax(pred, axis=0)
-            c = ConfMatrix.confusion_matrix(y_pred=pred, y_true=true, sample_weight=weight, labels=conf_labels)
+            c = ConfMatrix.confusion_matrix(y_pred=pred, y_true=true, sample_weight=weight, labels=conf_labels,
+                                            threshold=threshold)
             return c
 
         if isinstance(true, DSColumn):

@@ -731,9 +731,11 @@ class ConfMatrix(np.ndarray):
     """
 
     @staticmethod
-    def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None):
+    def confusion_matrix(y_true, y_pred, labels=None, sample_weight=None, threshold=None):
         if (labels == 2 or labels == [0,1]) and np.issubdtype(y_pred.dtype, np.floating):
-            y_pred = (y_pred > 0.5) * 1
+            if threshold is None:
+                threshold = 0.5
+            y_pred = (y_pred > threshold) * 1
         if isinstance(labels, int):
             labels = list(range(labels))
         if labels is None or len(labels) > 5:
