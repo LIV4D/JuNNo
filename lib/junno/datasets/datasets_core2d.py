@@ -345,13 +345,13 @@ class DataSetPatches(AbstractDataSet):
             gen = gen_context.generator(self._parent, n=1, columns=gen_columns,
                                         start=self._saved_patch_center[gen_context.start_id, 0])
 
-        if not self._cache_center:
+        if self.is_patch_invariant() or self._cache_center:
+            saved_centers = self._saved_patch_center
+        else:
             if gen_context.determinist:
                 saved_centers = self._saved_patch_center
             else:
                 saved_centers = [None] * self.parent_dataset.size
-        else:
-            saved_centers = self._saved_patch_center
 
         result = None
         if self._n is None:
