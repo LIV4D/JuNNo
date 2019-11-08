@@ -87,7 +87,7 @@ _last_map = None
 _last_lut = None
 
 
-def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
+def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None, keep_dims=True):
     assert isinstance(map, dict) and len(map)
 
     import numpy as np
@@ -160,29 +160,34 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
     if sampling is None:
         if 'float' in str(sources.dtype) and mins.min() >= 0 and maxs.max() <= 1:
             sampling = 1 / 255
-    elif sampling == 'nearest':
+    elif sampling == 'gcd':
         sampling = np.zeros(sources.shape[1:], dtype=np.float)
         for i in range(sources.shape[0]):
             sampling[i] = 1 / np.gcd.reduce(sources[i]) / 2
     if not sampling:
         sampling = 1
 
-    sources = (sources / sampling).astype(np.int32)
-    mins = sources.min(axis=0)
-    maxs = sources.max(axis=0)
-    stride = np.cumprod([1] + list((maxs - mins + 1)[1:][::-1]), dtype=np.uint32)[::-1]
+    if not isinstance(sampling, str):
+        sources = (sources / sampling).astype(np.int32)
+        mins = sources.min(axis=0)
+        maxs = sources.max(axis=0)
+        stride = np.cumprod([1] + list((maxs - mins + 1)[1:][::-1]), dtype=np.uint32)[::-1]
 
-    flatten_sources = np.sum((sources-mins) * stride, dtype=np.uint32, axis=1)
-    id_sorted = flatten_sources.argsort()
-    flatten_sources = flatten_sources[id_sorted]
-    lut_dests[1:] = lut_dests[1:][id_sorted]
+        flatten_sources = np.sum((sources-mins) * stride, dtype=np.uint32, axis=1)
+        id_sorted = flatten_sources.argsort()
+        flatten_sources = flatten_sources[id_sorted]
+        lut_dests[1:] = lut_dests[1:][id_sorted]
 
-    if np.all(flatten_sources == np.arange(len(flatten_sources))):
-        lut_sources = None
+        if np.all(flatten_sources == np.arange(len(flatten_sources))):
+            lut_sources = None
+        else:
+            lut_sources = np.zeros((int(np.prod(maxs - mins + 1)),), dtype=np.uint32)
+            for s_id, s in enumerate(flatten_sources):
+                lut_sources[s] = s_id + 1
     else:
-        lut_sources = np.zeros((int(np.prod(maxs - mins + 1)),), dtype=np.uint32)
-        for s_id, s in enumerate(flatten_sources):
-            lut_sources[s] = s_id + 1
+        lut_sources = 'nearest'
+        stride = 1
+        mins = 0
 
     def f_lut(array):
         if len(axis) > 1 and axis != np.arange(len(axis)):
@@ -204,21 +209,31 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
                              % (str(axis), str(source_shape), str(a_source_shape)))
 
         # Prepare table
-        if sampling == 1:
-            array = array.astype(np.int32)
-        else:
-            array = (array / sampling).astype(np.int32)
+        array = np.moveaxis(array.reshape(source_shape + (map_size,)), -1, 0).reshape((map_size, source_size))
 
-        a = np.moveaxis(array.reshape(source_shape + (map_size,)), -1, 0).reshape((map_size, source_size))
-        id_mapped = np.logical_not(np.any(np.logical_or(a > maxs, a < mins), axis=1))
-        array = np.sum((a - mins) * stride, axis=1).astype(np.uint32)
+        if isinstance(sampling, str):
+            id_mapped = None
+        else:
+            if sampling != 1:
+                array = (array / sampling).astype(np.int32)
+            id_mapped = np.logical_not(np.any(np.logical_or(array > maxs, array < mins), axis=1))
+            array = np.sum((array - mins) * stride, axis=1).astype(np.uint32)
 
         # Map values
-        a = np.zeros(shape=(map_size,), dtype=np.uint32)
-        if lut_sources is not None:
-            a[id_mapped] = lut_sources[array[id_mapped]]
+        if isinstance(lut_sources, str): # and lut_sources == 'nearest':
+            a = np.sum((array[np.newaxis, :, :]-sources[:, np.newaxis, :])**2, axis=-1)
+            a = np.argmin(a, axis=0)+1
+        elif lut_sources is not None:
+            a = np.zeros(shape=(map_size,), dtype=np.uint32)
+            if lut_sources is not None:
+                a[id_mapped] = lut_sources[array[id_mapped]]
+            else:
+                a[id_mapped] = array[id_mapped]+1
         else:
-            a[id_mapped] = array[id_mapped]+1
+            if lut_sources is not None:
+                a = lut_sources[array]
+            else:
+                a = array+1
         array = lut_dests[a]
 
         del a
@@ -227,17 +242,23 @@ def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None):
         # Reshape
         array = array.reshape(map_shape + dest_shape)
 
-        return np.moveaxis(array, np.arange(len(map_shape), array.ndim),
-                           np.arange(dest_axis, dest_axis + len(dest_shape)) if len(dest_shape) != len(axis) else axis)
+        array = np.moveaxis(array, np.arange(len(map_shape), array.ndim),
+                            np.arange(dest_axis, dest_axis + len(dest_shape)) if len(dest_shape) != len(axis) else axis)
+        if not keep_dims and dest_shape == (1,):
+            array = array.reshape(map_shape)
+
+        return array
 
     f_lut.sources = sources
     f_lut.lut_sources = lut_sources
-    f_lut.mins = mins
-    f_lut.maxs = maxs
-    f_lut.stride = stride
+    if isinstance(lut_sources, np.ndarray):
+        f_lut.mins = mins
+        f_lut.maxs = maxs
+        f_lut.stride = stride
     f_lut.lut_dests = lut_dests
     f_lut.sampling = sampling
     f_lut.source_dtype = source_dtype
+    f_lut.keep_dims = keep_dims
     return f_lut
 
 

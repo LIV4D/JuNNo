@@ -1549,7 +1549,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                 else:
                     map[v] = k
                     infered_format[k] = v
-            f_mapping = prepare_lut(map=map, sampling=sampling)
+            f_mapping = prepare_lut(map=map, sampling=sampling, keep_dims=False)
         elif callable(mapping):
             f_mapping = mapping
         else:
