@@ -194,6 +194,15 @@ class DataAugment:
     def flip_vertical(self, p=0.5):
         return self.flip(p_horizontal=0, p_vertical=p)
 
+    @augment_method('geometric')
+    def rot90(self):
+        rot90 = _RD.discrete_uniform(4)
+
+        def augment(x, rng):
+            k = rot90(rng)
+            return np.rot90(x, k=k, axes=(-1,-2))
+        return augment
+
     @augment_method('geometric', cv=True)
     def warp_affine(self, rotate=None, scale=None, translate=None, translate_direction=None, shear=None,
                     interpolation=cv2.INTER_LINEAR, border_mode=cv2.BORDER_CONSTANT, border_value=0):
@@ -655,6 +664,19 @@ class RandomDistribution:
         elif isinstance(info, RandomDistribution):
             return info
         raise ValueError('Not interpretable random distribution: %s.' % repr(info))
+
+    @staticmethod
+    def discrete_uniform(values):
+        if isinstance(values, (list, tuple, set, np.ndarray)):
+            values = np.array(values)
+            def f(rng: np.random.RandomState, shape, distribution):
+                return distribution[rng.randint(low=0, high=len(distribution), size=shape)]
+            return RandomDistribution(f, distribution=values)
+        elif isinstance(values, int):
+            def f(rng: np.random.RandomState, shape, distribution):
+                return rng.randint(low=0, high=distribution, size=shape)
+
+            return RandomDistribution(f, distribution=values)
 
     @staticmethod
     def uniform(high=1, low=0):
