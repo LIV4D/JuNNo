@@ -242,6 +242,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param columns: Columns of the wanted elements (None mean all of them)
         :param extract: If true, the data is extracted from the DataSetResult.
         """
+        row = row % self.size
         r = self.read(start=row, stop=row + 1, columns=columns, extract=False, determinist=determinist)
 
         if not extract:
