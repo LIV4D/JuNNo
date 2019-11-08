@@ -1373,7 +1373,7 @@ class DataSetApply(AbstractDataSet):
                 format[force_c] = f[2]     # Set the format to DSColumnFormat to be consistent with real unknown columns.
 
         if unknown_columns_format:
-            sample = dataset.read_one(0, columns=self.col_parents(unknown_columns_format), extract=False)
+            sample = dataset.sample
             while unknown_columns_format:
                 unkown_col = unknown_columns_format[0]
 

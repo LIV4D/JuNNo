@@ -207,7 +207,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         if n is not None:
             d = d.subgen(n)
 
-        gen = d.generator(stop - start, start=start, columns=columns, determinist=determinist)
+        gen = d.generator(stop - start, start=start, columns=columns, determinist=determinist, _clear_sample=False)
         r = next(gen)
 
         if not extract:
@@ -280,7 +280,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             return self.dataset.read_one(row=row, columns=columns, extract=False, determinist=True)
 
     #   ---   Generators   ---
-    def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0):
+    def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0, _clear_sample=True):
         """Creates a generator which iterate through data.
 
         :param n:  Number of element to return (maximum) by iteration
@@ -293,13 +293,14 @@ class AbstractDataSet(metaclass=ABCMeta):
         :return The generator which loops start at from_id and does n iterations.
         :rtype: generator
         """
-        # self.clear_sample()
+        if _clear_sample:
+            self.clear_sample()
         from .dataset_generator import DataSetSmartGenerator
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, stop_id=stop, columns=columns,
                                      determinist=determinist, intime=intime, ncore=ncore)
 
     def __iter__(self):
-        return self.generator(determinist=True, intime=False, ncore=0)
+        return self.generator(determinist=True, intime=False, ncore=0, _clear_sample=False)
 
     @abstractmethod
     def _generator(self, gen_context):
@@ -484,7 +485,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     context['gen_id'] += 1
                     context['result'] = next(context['generator'])
                 elif context['gen_id'] != row:
-                    context['generator'] = dataset.generator(start=row, determinist=True)
+                    context['generator'] = dataset.generator(start=row, determinist=True, _clear_sample=False)
                     context['gen_id'] = row
                     context['result'] = next(context['generator'])
 
@@ -509,12 +510,16 @@ class AbstractDataSet(metaclass=ABCMeta):
     @property
     def sample(self):
         if self._sample is None:
-            self._sample = self.read_one(extract=True)
+            self._sample = self.read_one(extract=False, determinist=False)
         return self._sample
 
-    def clear_sample(self):
+    def clear_sample(self, recursive=False):
         del self._sample
         self._sample = None
+
+        if recursive:
+            for d in self.walk_parents():
+                d.clear_sample(recursive=False)
 
     #   ---   Export   ---
     def export(self, cb, n=1, start=0, stop=None, columns=None, determinist=True, ncore=None):
