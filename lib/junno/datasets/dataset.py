@@ -2431,7 +2431,7 @@ class DSColumnFormat:
         def format_html(self, data, gen_result, fullscreen=None):
             import io
             THUMBNAIL_SIZE = (128, 128)
-            MAX_FULL_SIZE_INCHES = 100
+            MAX_FULL_SIZE_INCHES = 50
 
             c, _, h, w = data.shape
             ratio = h / w

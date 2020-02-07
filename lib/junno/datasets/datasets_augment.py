@@ -210,7 +210,7 @@ class DataAugment:
         (Transformations are always applied in this order: the translation length is scaled by scale and its direction
         is rotated by rotate).
 
-        :param angle: Distribution from which the angle of rotation is sampled (in degrees) .
+        :param rotate: Distribution from which the angle of rotation is sampled (in degrees) .
         :param scale: Distribution from which the factor of scale is sampled.
         :param translate: Distribution from which the translation length is sampled (in pixel if >=1, in ratio of width otherwise).
         :param translate_direction: Distribution from which the translation direction is sampled (in degrees).
