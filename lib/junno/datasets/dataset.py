@@ -191,7 +191,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         return fullname
 
     #   ---   Data direct access   ---
-    def read(self, start: int = None, stop: int = None, columns=None, extract=False, n=None, determinist=True):
+    def read(self, start: int = None, stop: int = None, columns=None, extract=False, n=None, determinist=True, pinmemory=False):
         if start is None:
             start = 0
         if stop is None:
@@ -207,7 +207,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         if n is not None:
             d = d.subgen(n)
 
-        gen = d.generator(stop - start, start=start, columns=columns, determinist=determinist, _clear_sample=False)
+        gen = d.generator(stop - start, start=start, columns=columns, determinist=determinist, _clear_sample=False, pinmemory=pinmemory)
         r = next(gen)
 
         if not extract:
@@ -219,11 +219,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         else:
             return r[columns]
 
-    def gen_read(self, id, n=1, columns=None, gen_context=None, clear_weakref=False):
+    def gen_read(self, id, n=1, columns=None, gen_context=None, clear_weakref=False, pinmemory=False):
         if gen_context is not None:
-            gen = gen_context.generator(self, start=id, stop=id+n, n=n, columns=columns)
+            gen = gen_context.generator(self, start=id, stop=id+n, n=n, columns=columns, pinmemory=pinmemory)
         else:
-            gen = self.generator(start=id, stop=id+n, n=n, columns=columns)
+            gen = self.generator(start=id, stop=id+n, n=n, columns=columns, pinmemory=pinmemory)
         r = gen.next()
         gen.clean()
         if clear_weakref:
@@ -232,7 +232,7 @@ class AbstractDataSet(metaclass=ABCMeta):
 
         return r, gen
 
-    def read_one(self, row=0, columns=None, extract=False, determinist=True):
+    def read_one(self, row=0, columns=None, extract=False, determinist=True, pinmemory=False):
         """
         Read a specific element of a dataset. If extract is True, the result will depend on the form of columns.
         Thus, if columns is None, read_one(i) will return a dictionnary a the i-th value of all the dataset's columns,
@@ -243,7 +243,7 @@ class AbstractDataSet(metaclass=ABCMeta):
         :param extract: If true, the data is extracted from the DataSetResult.
         """
         row = row % self.size
-        r = self.read(start=row, stop=row + 1, columns=columns, extract=False, determinist=determinist)
+        r = self.read(start=row, stop=row + 1, columns=columns, extract=False, determinist=determinist, pinmemory=pinmemory)
 
         if not extract:
             return r
@@ -280,7 +280,8 @@ class AbstractDataSet(metaclass=ABCMeta):
             return self.dataset.read_one(row=row, columns=columns, extract=False, determinist=True)
 
     #   ---   Generators   ---
-    def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0, _clear_sample=True):
+    def generator(self, n=1, start=None, stop=None, columns=None, determinist=False, intime=False, ncore=0, pinmemory=False,
+                  _clear_sample=True):
         """Creates a generator which iterate through data.
 
         :param n:  Number of element to return (maximum) by iteration
@@ -297,7 +298,7 @@ class AbstractDataSet(metaclass=ABCMeta):
             self.clear_sample()
         from .dataset_generator import DataSetSmartGenerator
         return DataSetSmartGenerator(dataset=self, n=n, start_id=start, stop_id=stop, columns=columns,
-                                     determinist=determinist, intime=intime, ncore=ncore)
+                                     determinist=determinist, intime=intime, ncore=ncore, pinmemory=pinmemory)
 
     def __iter__(self):
         return self.generator(determinist=True, intime=False, ncore=0, _clear_sample=False)

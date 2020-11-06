@@ -54,7 +54,7 @@ class DataSetResult:
         self._ipywidget = None
 
     @staticmethod
-    def create_empty(n, start_id=0, columns=None, dataset=None, assign=None):
+    def create_empty(n, start_id=0, columns=None, dataset=None, assign=None, pinmemory=False):
         """
 
         :param dataset:
@@ -98,7 +98,11 @@ class DataSetResult:
                                      % (c.name, repr(a.shape), repr((n,)+c.shape)))
                 data_dict[c.name] = a
             else:
-                data_dict[c.name] = np.zeros(tuple([n]+list(c.shape)), dtype=c.dtype)
+                if pinmemory:
+                    import pycuda
+                    data_dict[c.name] = pycuda.driver.pagelocked_zeros(tuple([n]+list(c.shape)), dtype=c.dtype, order='C', mem_flags=0)
+                else:
+                    data_dict[c.name] = np.zeros(tuple([n]+list(c.shape)), dtype=c.dtype)
 
         return DataSetResult(data_dict=data_dict, columns=columns, start_id=start_id, size=n, dataset=dataset)
 
@@ -596,7 +600,7 @@ class DataSetSmartGenerator:
     """
 
     class Context:
-        def __init__(self, start_id, stop_id, n, columns, dataset, determinist, ncore, parallelism):
+        def __init__(self, start_id, stop_id, n, columns, dataset, determinist, ncore, parallelism, pinmemory):
             self.start_n = n
             self.start_id = start_id
             self.stop_id = stop_id
@@ -605,6 +609,7 @@ class DataSetSmartGenerator:
             self.determinist = determinist
             self.ncore = ncore
             self.parallelism = parallelism
+            self.pinmemory = pinmemory
 
             self._copy = {}
             self._r = None
@@ -621,7 +626,7 @@ class DataSetSmartGenerator:
             self._copy = {}
             self._r = None
 
-        def generator(self, dataset, start=None, stop=None, n=None, columns=None, parallel=False, ncore=None):
+        def generator(self, dataset, start=None, stop=None, n=None, columns=None, parallel=False, ncore=None, pinmemory=False):
             if start is None:
                 start = self.id
             if stop is None:
@@ -634,7 +639,7 @@ class DataSetSmartGenerator:
                 ncore = self.ncore
 
             gen = dataset.generator(start=start, stop=stop, n=n, columns=columns,
-                                    determinist=self.determinist, intime=parallel, ncore=ncore)
+                                    determinist=self.determinist, intime=parallel, ncore=ncore, pinmemory=pinmemory)
 
             return gen
 
@@ -642,7 +647,7 @@ class DataSetSmartGenerator:
             n = min(self.n, self.dataset.size - self.id)
             c = if_none(self._copy, {})
             self._r = DataSetResult.create_empty(dataset=self.dataset, columns=self.columns,
-                                                 n=n, start_id=self.id, assign=c)
+                                                 n=n, start_id=self.id, assign=c, pinmemory=self.pinmemory)
             self._mem = self._r.mem_size
             self._mem_shared = self._r.total_mem_size - self._mem
             if as_weakref:
@@ -670,7 +675,7 @@ class DataSetSmartGenerator:
             return self.stop_id-self.start_id
 
     def __init__(self, dataset: AbstractDataSet, n, start_id, stop_id, columns=None, determinist=True,
-                 ncore=None, intime=False):
+                 ncore=None, intime=False, pinmemory=False):
         if columns is None:
             columns = dataset.columns_name()
         else:
@@ -700,7 +705,7 @@ class DataSetSmartGenerator:
                              % repr(intime))
 
         self._context = DataSetSmartGenerator.Context(start_id=int(start_id), stop_id=int(stop_id), n=int(n),
-                                                      columns=columns, dataset=dataset,
+                                                      columns=columns, dataset=dataset, pinmemory=pinmemory,
                                                       determinist=determinist, ncore=ncore, parallelism=intime)
 
         self._generator_setup = False
