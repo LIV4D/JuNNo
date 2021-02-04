@@ -152,7 +152,7 @@ class DataSetResult:
 
         def retreive_data(row, col, fullscreen_id=None):
             c = self.columns[col]
-            d = self[row, columns_name[col]]
+            d = self.subset(start=row, stop=row+1)
             if fullscreen_id is None:
                 return c.format.export_html(d), c.format.html_fullscreen
             else:
@@ -385,6 +385,19 @@ class DataSetResult:
             self._data_dict[_] = data[start:stop]
         self._size = stop-start
         return self
+
+    def subset(self, *args, start=None, stop=None, col=None):
+        from ..j_utils.math import interval
+        start, stop = interval(self.size, start, stop, args)
+        datadict = {}
+        if col is None:
+            col = tuple(self._data_dict.keys())
+        for _, data in self._data_dict.items():
+            if _ in col:
+                datadict[_] = data[start:stop]
+
+        return DataSetResult(data_dict=datadict, columns=[self.dataset.col[_] for _ in col if _!='pk'], start_id=self.start_id+start,
+                             size=stop-start, dataset=self.dataset)
 
     def __iter__(self):
         for i in range(self.size):

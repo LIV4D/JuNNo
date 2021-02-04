@@ -491,7 +491,7 @@ class AbstractDataSet(metaclass=ABCMeta):
                     context['result'] = next(context['generator'])
 
                 c = columns[col]
-                d = context['result'][0, c.name]
+                d = context['result']
                 if fullscreen_id is None:
                     return c.format.export_html(d), c.format.html_fullscreen
                 else:
@@ -1889,7 +1889,7 @@ class DSColumn:
         if self._dtype is None or self._shape is None:
             self._format = f
         else:
-            self._format = DSColumnFormat.auto_format(self.dtype, self.shape, f)
+            self._format = DSColumnFormat.auto_format(self, f)
 
     def __repr__(self):
         return '%s: %s %s' % (self.name, str(self.shape), str(self.dtype))
@@ -1921,11 +1921,10 @@ class DSColumn:
 
 class DSColumnFormat:
     class Base:
-        def __init__(self, dtype, shape, is_label=False):
-            self.__dtype = dtype
-            self.__shape = shape
+        def __init__(self, col: DSColumn, is_label=False):
+            self.__col = weakref.ref(col)
             self._is_label = is_label
-            self.check_type(dtype, shape)
+            self.check_type(col.dtype, col.shape)
             self.html_fullscreen = False
 
         def __repr__(self):
@@ -1934,17 +1933,20 @@ class DSColumnFormat:
         def check_type(self, dtype, shape):
             return True
 
-        def copy(self, dtype, shape):
+        def copy(self, col: DSColumn):
             from copy import deepcopy
-            self.check_type(dtype, shape)
+            self.check_type(col.dtype, col.shape)
             f = deepcopy(self)
-            f._dtype = dtype
-            f._shape = shape
+            f.__col = weakref.ref(col)
             return f
 
         @property
+        def col(self):
+            return self.__col()
+
+        @property
         def dtype(self):
-            return self.__dtype
+            return self.col.dtype
 
         @property
         def dtype_name(self):
@@ -1960,7 +1962,7 @@ class DSColumnFormat:
 
         @property
         def shape(self):
-            return self.__shape
+            return self.col.shape
 
         @property
         def format_name(self):
@@ -1982,7 +1984,7 @@ class DSColumnFormat:
         def _preformat(self, data):
             return data
 
-        def format_html(self, data, raw_data, fullscreen=None):
+        def format_html(self, data, gen_result, fullscreen=None):
             return "<p> %s </p>" % str(data)
 
         def format_data(self, data):
@@ -1991,8 +1993,9 @@ class DSColumnFormat:
         def write_file(self, data, path, filename, overwrite=True):
             return self.format_data(data)
 
-        def export_html(self, data, fullscreen=None):
-            html = self.format_html(self.preformat(data), data, fullscreen=fullscreen)
+        def export_html(self, gen_result, fullscreen=None):
+            data = gen_result[0, self.col.name]
+            html = self.format_html(self.preformat(data), gen_result, fullscreen=fullscreen)
             return html
 
         def export_data(self, data):
@@ -2002,8 +2005,8 @@ class DSColumnFormat:
             return self.write_file(self.preformat(data), path, filename, overwrite)
 
     class Number(Base):
-        def __init__(self, dtype=np.float, shape=()):
-            super(DSColumnFormat.Number, self).__init__(dtype, shape)
+        def __init__(self, col: DSColumn):
+            super(DSColumnFormat.Number, self).__init__(col)
 
         def __repr__(self):
             return "Number()"
@@ -2019,8 +2022,8 @@ class DSColumnFormat:
             return ("<p>%i</p>" if 'int' in str(self.dtype) else "<p>%.3f</p>") % data
 
     class Text(Base):
-        def __init__(self, dtype='O', shape=()):
-            super(DSColumnFormat.Text, self).__init__(dtype, shape)
+        def __init__(self, col: DSColumn):
+            super(DSColumnFormat.Text, self).__init__(col)
 
         def __repr__(self):
             if 'U' in str(self.dtype):
@@ -2037,8 +2040,8 @@ class DSColumnFormat:
             return True
 
     class Label(Base):
-        def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.Label, self).__init__(dtype, shape, is_label=True)
+        def __init__(self, col: DSColumn, mapping=None, default=None):
+            super(DSColumnFormat.Label, self).__init__(col, is_label=True)
             self.mapping = if_none(mapping, dict())
             self.default = if_none(default, mapping['default'] if 'default' in mapping else None)
 
@@ -2050,7 +2053,7 @@ class DSColumnFormat:
             json_mapping = dumps(m, indent=0).replace('\n', '')
             return 'Label(%s)' % json_mapping
 
-        def format_html(self, data, raw_data, fullscreen=None):
+        def format_html(self, data, gen_result, fullscreen=None):
             try:
                 d = self.mapping[data]
             except KeyError:
@@ -2058,8 +2061,8 @@ class DSColumnFormat:
             return "<p> <i> %s </i> </p>" % str(d)
 
     class Matrix(Base):
-        def __init__(self, dtype, shape, is_label=False):
-            super(DSColumnFormat.Matrix, self).__init__(dtype, shape, is_label=is_label)
+        def __init__(self, col: DSColumn, is_label=False):
+            super(DSColumnFormat.Matrix, self).__init__(col, is_label=is_label)
             self._domain = Interval()
             self._range = Interval()
             self._clip = Interval()
@@ -2113,8 +2116,8 @@ class DSColumnFormat:
             self._clip = Interval(d)
 
     class LabelMatrix(Matrix):
-        def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.LabelMatrix, self).__init__(dtype, shape, is_label=True)
+        def __init__(self, col: DSColumn, mapping=None, default=None):
+            super(DSColumnFormat.LabelMatrix, self).__init__(col, is_label=True)
             self.default = default
             self._lut = None
             self.mapping = if_none(mapping, dict())
@@ -2166,18 +2169,17 @@ class DSColumnFormat:
             self.no_scaling = True
 
     class ConfMatrix(Base):
-        def __init__(self, shape, dtype='int64'):
-            if isinstance(shape, int):
-                self.n_class = shape
-                shape = (shape, shape)
+        def __init__(self, col: DSColumn):
+            if isinstance(col.shape, int):
+                self.n_class = col.shape
             else:
-                self.n_class = shape[-1]
-            super(DSColumnFormat.ConfMatrix, self).__init__(dtype, shape)
+                self.n_class = col.shape[-1]
+            super(DSColumnFormat.ConfMatrix, self).__init__(col)
 
         def __repr__(self):
             return 'ConfMatrix()'
 
-        def format_html(self, data, raw_data, fullscreen=None):
+        def format_html(self, data, gen_result, fullscreen=None):
             table_tmp = """
             <table style="font-size: 10px;
                           text-align: center;
@@ -2211,22 +2213,22 @@ class DSColumnFormat:
             return table_tmp.format(table)
 
     class ROCCurve(Base):
-        def __init__(self, shape, dtype='int64'):
-            super(DSColumnFormat.ROCCurve, self).__init__(dtype, shape)
+        def __init__(self, col):
+            super(DSColumnFormat.ROCCurve, self).__init__(col)
 
         def __repr__(self):
             return 'ROCCurve()'
 
     class Image(Matrix):
-        def __init__(self, dtype, shape, is_label=False):
+        def __init__(self, col, is_label=False):
             from ..j_utils.math import dimensional_split
-            super(DSColumnFormat.Image, self).__init__(dtype, shape, is_label=is_label)
+            super(DSColumnFormat.Image, self).__init__(col, is_label=is_label)
             self.html_fullscreen = True
             self.clip = 0, 255
             self.range = 0, 255
-            if dtype == np.uint8:
+            if col.dtype == np.uint8:
                 self.domain = 0, 255
-            elif 'float' in str(dtype):
+            elif 'float' in str(col.dtype):
                 self.domain = 0, 1.0
             else:
                 self.domain = None, None
@@ -2254,7 +2256,7 @@ class DSColumnFormat:
                 return data.reshape((1,)+data.shape)
             return data
 
-        def format_html(self, data, raw_data, fullscreen=None):
+        def format_html(self, data, gen_result, fullscreen=None):
             THUMBNAIL_SIZE = (128, 128)
             MAX_FULL_SIZE = (1024, 1024)
 
@@ -2301,6 +2303,7 @@ class DSColumnFormat:
                 thumbnail = cv2.resize(d, thumbnail_size, interpolation=interp)
                 t_png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
 
+                raw_data = gen_result[0, self.col.name]
                 legend = '<p> min: %f<br/> max: %f<br /> mean: %f <br /> std: %f</p>' \
                           % (raw_data.min(), raw_data.max(), raw_data.mean(), raw_data.std())
                 # -- Send data --
@@ -2339,8 +2342,8 @@ class DSColumnFormat:
                     cv2.imwrite(f, d)
 
     class LabelImage(Image):
-        def __init__(self, dtype, shape, mapping=None, default=None):
-            super(DSColumnFormat.LabelImage, self).__init__(dtype, shape, is_label=True)
+        def __init__(self, col: DSColumn, mapping=None, default=None):
+            super(DSColumnFormat.LabelImage, self).__init__(col, is_label=True)
             self.default = default
             self._lut = None
             self.mapping = if_none(mapping, dict())
@@ -2390,12 +2393,180 @@ class DSColumnFormat:
             self._lut = prepare_lut(mapping, source_dtype=self.dtype, default=self.default)
             self.no_scaling = True
 
+    class Field2D(Matrix):
+        def __init__(self, col: DSColumn, is_label=False):
+            from ..j_utils.math import dimensional_split
+            super(DSColumnFormat.Field2D, self).__init__(col, is_label=is_label)
+            self.html_fullscreen = True
+            self.range = -1, 1
+            self.domain = None, None
+
+            self.mask = None
+            self.background = None
+
+            self.html_height = lambda h: int(np.round(256*(1-np.exp(-h*5/128))))
+            self.html_columns = lambda n: dimensional_split(n)[1]
+
+        def __repr__(self):
+            return 'Field2D()'
+
+        def check_type(self, dtype, shape):
+            if not (np.issubdtype(dtype, np.number)):
+                raise ValueError('Field2D format must be applied to number columns (not %s).' % repr(dtype))
+            if not ( (len(shape)==3 and shape[0]==2) or (len(shape)==4 and shape[1]==2) ):
+                raise ValueError('Field2D format can only be applied to columns with two channel matrix (either (2,h,w) or (b,2,h,w)).')
+
+        @property
+        def channels_count(self):
+            if len(self.shape) == 3:
+                return 1
+            else:
+                return self.shape[0]
+
+        def _preformat(self, data):
+            if data.ndim == 3:
+                return data.reshape((1,)+data.shape)
+            return data
+
+        def format_html(self, data, gen_result, fullscreen=None):
+            import io
+            THUMBNAIL_SIZE = (128, 128)
+            MAX_FULL_SIZE_INCHES = 100
+
+            c, _, h, w = data.shape
+            ratio = h / w
+
+            mask = None
+            if self.mask is not None and self.mask in gen_result:
+                mask = gen_result[0, self.mask]
+            background = None
+            if self.background is not None and self.background in gen_result:
+                background = gen_result[0, self.background]
+
+            if fullscreen is None:
+                n = data.shape[0]
+                nw = self.html_columns(n) if callable(self.html_columns) else self.html_columns
+                nh = int(np.ceil(n/nw))
+
+                r = []
+                for d in data:
+                    html_height = self.html_height(h) if callable(self.html_height) else self.html_height
+                    th = html_height // nh
+                    tw = int(np.round(th / ratio))
+
+                    thumbnail = io.BytesIO()
+                    DSColumnFormat.Field2D.plot_field(d[0], d[1], thumbnail, width_inches=5, axis=False,
+                                                      mask=mask, background=background)
+                    png = str(base64.b64encode(thumbnail.getvalue()))[2:-1]
+                    html = '<img src="data:image/png;base64, %s" style="height: %ipx; min-width: %ipx" />' % (png, th, tw)
+                    r.append(html)
+
+                return '#%i,%i|' % (nh, nw) + ' '.join(r)
+            else:
+                import cv2
+                d = data[fullscreen]
+
+                buffer = io.BytesIO()
+                DSColumnFormat.Field2D.plot_field(d[0], d[1], buffer, width_inches=MAX_FULL_SIZE_INCHES, axis=True,
+                                                  mask=mask, background=background)
+                png = str(base64.b64encode(buffer.getvalue()))[2:-1]
+
+                mindim = min(THUMBNAIL_SIZE[0] * ratio, THUMBNAIL_SIZE[1])
+                thumbnail_size = (round(mindim / ratio), round(mindim))
+
+                buffer = np.asarray(bytearray(buffer.getvalue()), dtype=np.uint8)
+                d_img = cv2.imdecode(buffer, cv2.IMREAD_UNCHANGED)
+                thumbnail = cv2.resize(d_img, thumbnail_size, interpolation=cv2.INTER_AREA)
+                t_png = str(base64.b64encode(cv2.imencode('.png', thumbnail)[1]))[2:-1]
+
+                raw_data = gen_result[0, self.col.name][fullscreen]
+                r = np.sqrt(np.square(raw_data[0]) + np.square(raw_data[1]))
+                legend = '<p> min r: %f<br/> max r: %f<br /> mean r: %f <br /> std r: %f</p>' \
+                          % (r.min(), r.max(), r.mean(), r.std())
+                # -- Send data --
+                # HACKISH: message interpreted by FullscreenView.js IPython.FullscreenView.setContent()
+                msg = 'I data:image/png;base64, %s||data:image/png;base64, %s||%s' % \
+                      (t_png, png, legend)
+                return msg
+
+        def format_data(self, data):
+            import cv2
+            return [cv2.imencode('png', d)[0] for d in data]
+
+        def write_file(self, data, path, filename, overwrite=True):
+            import cv2
+
+            split_data = []
+
+            for i in range(0, data.shape[0], 3):
+                d = data[i:i+3]
+                if d.shape[0] in (1, 3):
+                    split_data.append(d.transpose((1, 2, 0)))
+                elif d.shape[0] == 2:
+                    split_data.append(d[0])
+                    split_data.append(d[1])
+
+            if len(split_data) == 1:
+                f = join(path, filename + '.png')
+                if not overwrite and exists(f):
+                    return
+                cv2.imwrite(f, split_data[0])
+            else:
+                for i, d in enumerate(split_data):
+                    f = join(path, filename+str(i)+'.png')
+                    if not overwrite and exists(f):
+                        continue
+                    cv2.imwrite(f, d)
+
+        @staticmethod
+        def plot_field(vy, vx, file_out, mask=None, clip_norm=1, background=None, width_inches=None, axis=True):
+            import matplotlib.pyplot as plt
+
+            vr = np.sqrt(np.square(vx) + np.square(vy))
+            vr = np.clip(vr / vr.max(), 0.0000001, clip_norm)
+            vy = vy / vr
+            vx = vx / vr
+
+            vy = vy * np.log(1 + np.abs(vr)) ** .5 * 2
+            vx = vx * np.log(1 + np.abs(vr)) ** .5 * 2
+
+            fig, ax = plt.subplots()
+            if background is not None:
+                if background.ndim > 2:
+                    background = np.mean(background, axis=tuple(range(background.ndim-2)))
+                if mask is not None:
+                    back = np.zeros_like(background)
+                    mask = mask != 0
+                    back[mask] = background[mask]
+                    background = back
+                ax.imshow(background, cmap='gray', vmin=0)
+                if not axis:
+                    ax.axis('off')
+
+            if mask is not None:
+                r = vr[mask != 0]
+                v = vy[mask != 0]
+                u = vx[mask != 0]
+                y, x = mask.nonzero()
+                ax.quiver(x, y, u, -v, r, cmap='copper')
+                if not axis:
+                    ax.axis('off')
+            else:
+                ax.quiver(vx, -vy, vr, cmap='copper')
+                if not axis:
+                    ax.axis('off')
+            if width_inches is None:
+                width_inches = 18
+
+            fig.set_size_inches(width_inches, width_inches*vx.shape[0]/vx.shape[1])
+            fig.savefig(file_out, format='png', transparent=True, dpi=80)
+
     @staticmethod
-    def auto_format(dtype, shape, info=None):
+    def auto_format(col: DSColumn, info=None):
         if isinstance(info, DSColumnFormat.Base):
-            return info.copy(dtype, shape)
+            return info.copy(col)
         elif isinstance(info, DSColumn):
-            return info.format.copy(dtype, shape)
+            return info.format.copy(col)
         elif isinstance(info, str):
             # Parse
             info_split = info.split('(', 1)
@@ -2410,13 +2581,13 @@ class DSColumnFormat:
 
             # Return format
             if format_name == 'Number':
-                return DSColumnFormat.Number(dtype, shape)
+                return DSColumnFormat.Number(col)
             elif format_name == 'Text':
-                return DSColumnFormat.Text(dtype, shape)
+                return DSColumnFormat.Text(col)
             elif format_name == 'Label':
-                return DSColumnFormat.Label(dtype, shape, mapping=args[0] if args else None)
+                return DSColumnFormat.Label(col, mapping=args[0] if args else None)
             elif format_name == 'Matrix':
-                f = DSColumnFormat.Matrix(dtype, shape)
+                f = DSColumnFormat.Matrix(col)
                 if len(args) > 0:
                     f.domain = args[0]
                 if len(args) > 1:
@@ -2425,7 +2596,7 @@ class DSColumnFormat:
                     f.clip = args[2]
                 return f
             elif format_name == 'Matrix':
-                f = DSColumnFormat.LabelMatrix(dtype, shape, mapping=args[0] if args else None)
+                f = DSColumnFormat.LabelMatrix(col, mapping=args[0] if args else None)
                 if len(args) > 1:
                     f.domain = args[1]
                 if len(args) > 2:
@@ -2434,45 +2605,47 @@ class DSColumnFormat:
                     f.clip = args[3]
                 return f
             elif format_name == 'ConfMatrix':
-                return DSColumnFormat.ConfMatrix(shape[0])
+                return DSColumnFormat.ConfMatrix(col)
             elif format_name == 'Image':
-                return DSColumnFormat.Image(dtype, shape)
+                return DSColumnFormat.Image(col)
             elif format_name == 'ImageLabel':
-                return DSColumnFormat.LabelImage(dtype, shape, mapping=args[0] if args else None)
+                return DSColumnFormat.LabelImage(col, mapping=args[0] if args else None)
+            elif format_name == 'Field':
+                return DSColumnFormat.Field2D(col)
 
-        if shape == ():
-            if np.issubdtype(dtype, np.number):
+        if col.shape == ():
+            if np.issubdtype(col.dtype, np.number):
                 if isinstance(info, dict):
-                    return DSColumnFormat.Label(dtype, shape, mapping=info)
+                    return DSColumnFormat.Label(col, mapping=info)
                 else:
-                    return DSColumnFormat.Number(dtype, shape)
-            elif dtype == 'str' or 'str' in str(dtype) or 'S' in str(dtype) or 'U' in str(dtype):
-                return DSColumnFormat.Text(dtype, shape)
-        elif np.issubdtype(dtype, np.number) or dtype == np.bool:
+                    return DSColumnFormat.Number(col)
+            elif col.dtype == 'str' or 'str' in str(col.dtype) or 'S' in str(col.dtype) or 'U' in str(col.dtype):
+                return DSColumnFormat.Text(col)
+        elif np.issubdtype(col.dtype, np.number) or col.dtype == np.bool:
             if isinstance(info, str) and info.lower() == 'image':
                 is_img = True
             elif isinstance(info, str) and info.lower() == 'matrix':
                 is_img = False
             else:
-                is_img = len(shape) in (2, 3) and np.min(shape[-2:]) >= 3
+                is_img = len(col.shape) in (2, 3) and np.min(col.shape[-2:]) >= 3
 
             if isinstance(info, dict):
                 if is_img:
-                    return DSColumnFormat.LabelImage(dtype, shape, mapping=info)
+                    return DSColumnFormat.LabelImage(col, mapping=info)
                 else:
-                    return DSColumnFormat.LabelMatrix(dtype, shape, mapping=info)
+                    return DSColumnFormat.LabelMatrix(col, mapping=info)
             elif is_img and isinstance(info, tuple) and len(info) == 2:
-                f = DSColumnFormat.Image(dtype, shape)
+                f = DSColumnFormat.Image(col)
                 f.domain = info
                 return f
-            elif dtype == 'bool':
+            elif col.dtype == 'bool':
                 if is_img:
-                    return DSColumnFormat.LabelImage(dtype, shape)
+                    return DSColumnFormat.LabelImage(col)
                 else:
-                    return DSColumnFormat.LabelMatrix(dtype, shape)
+                    return DSColumnFormat.LabelMatrix(col)
             else:
                 if is_img:
-                    return DSColumnFormat.Image(dtype, shape)
+                    return DSColumnFormat.Image(col)
                 else:
-                    return DSColumnFormat.Matrix(dtype, shape)
-        return DSColumnFormat.Base(dtype, shape)
+                    return DSColumnFormat.Matrix(col)
+        return DSColumnFormat.Base(col)
