@@ -396,7 +396,7 @@ class DataSetResult:
             if _ in col:
                 datadict[_] = data[start:stop]
 
-        return DataSetResult(data_dict=datadict, columns=[self.dataset.col[_] for _ in col if _!='pk'], start_id=self.start_id+start,
+        return DataSetResult(data_dict=datadict, columns=[self.column_by_name(_) for _ in col if _ != 'pk'], start_id=self.start_id+start,
                              size=stop-start, dataset=self.dataset)
 
     def __iter__(self):
