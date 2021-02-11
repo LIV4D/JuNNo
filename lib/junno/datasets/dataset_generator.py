@@ -631,7 +631,7 @@ class DataSetSmartGenerator:
 
         def __getstate__(self):
             return self.start_n, self.start_id, self.stop_id, self.columns, self.dataset, self.determinist, \
-                   self.ncore, self.parallelism, self.n, self.id
+                   self.ncore, self.parallelism, self.n, self.id, self.pinmemory
 
         def __setstate__(self, state):
             self.start_n, self.start_id, self.stop_id, self.columns, self.dataset, self.determinist, \
