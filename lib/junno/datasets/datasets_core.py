@@ -1382,10 +1382,13 @@ class DataSetApply(AbstractDataSet):
                 c_own = self.col_sibling(unkown_col)
 
                 # Call the function
-                if self._batchwise:
-                    c_samples = self.compute_f(args=sample[c_parent], rkeys=c_own, cols_name=c_parent)
-                else:
-                    c_samples = self.compute_f(args=sample[0, c_parent], rkeys=c_own, cols_name=c_parent)
+                args = []
+                if c_parent:
+                    if self._batchwise:
+                        args = sample[c_parent]
+                    else:
+                        args = sample[0, c_parent]
+                c_samples = self.compute_f(args=args, rkeys=c_own, cols_name=c_parent)
 
                     # Read format
                 for c_id, (c_name, c_sample) in enumerate(c_samples.items()):
