@@ -2,6 +2,9 @@ import numpy as np
 import time
 
 from os.path import basename
+
+from urllib3.util import wait
+
 from .dataset import AbstractDataSet, DSColumn, DSColumnFormat
 from ..j_utils.j_log import log
 from ..j_utils.function import match_params, not_optional_args
@@ -50,21 +53,23 @@ def from_numpy(**data_dict):
 
 ########################################################################################################################
 class PyTableDataSet(AbstractDataSet):
-    def __init__(self, pytable, rows=None, hdf_file=None, name='PyTableDataset'):
-        if pytable.description._v_is_nested:
-            raise NotImplementedError('PyTable with nested columns are not supported.')
+    def __init__(self, hdf_path, table_name, rows=None, name='PyTableDataset'):
+        pytable = PyTableDataSet.PyTable(hdf_path, pytable_name)
+        self.pytable = pytable
 
-        col_descr = {}
-        pk_type = None
-        for col_name, col in pytable.description._v_colobjects.items():
-            if col_name=='pk':
-                pk_type = col.dtype.base
-            else:
-                col_descr[col._v_pos] = col_name, col.dtype.shape, col.dtype.base
+        with pytable as table:
+            if table.description._v_is_nested:
+                raise NotImplementedError('PyTable with nested columns are not supported.')
+
+            col_descr = {}
+            pk_type = None
+            for col_name, col in table.description._v_colobjects.items():
+                if col_name=='pk':
+                    pk_type = col.dtype.base
+                else:
+                    col_descr[col._v_pos] = col_name, col.dtype.shape, col.dtype.base
 
         super(PyTableDataSet, self).__init__(name=name, pk_type=if_none(pk_type, np.uint32))
-        self.pytable = pytable
-        self.hdf_file = hdf_file
 
         for i in sorted(col_descr.keys()):
             col_name, col_shape, col_dtype = col_descr[i]
@@ -78,25 +83,15 @@ class PyTableDataSet(AbstractDataSet):
         self._sorted_rows = None
         self._filtered_rows = None
 
-    def __del__(self):
-        if self.hdf_file is not None:
-            self.hdf_file.flush()
-            self.hdf_file.close()
-
     @staticmethod
     def from_file(path, table="dataset", name='PyTableDataset'):
-        from ..j_utils.threadsafe_pytables import open_pytable
-        f = open_pytable(path)
-        table_path, table_name = table.rsplit('/', 1)
-        if not table_path.startswith('/'):
-            table_path = '/'+table_path
-        table = f.get_node(table_path, table_name, classname='Table')
-        return PyTableDataSet(table, name=name)
+        return PyTableDataSet(path, table, name=name)
 
     @staticmethod
     def from_numpy(data_dict, cache_path=None, name='PyTableDataset'):
-        from ..j_utils.threadsafe_pytables import open_pytable, tables
+        import tables
         from ..j_utils.collections import is_dict
+        from ..j_utils.threadsafe_pytables import open_pytable
 
         if is_dict(data_dict):
             cols_data, cols_name = zip(data_dict.items())
@@ -108,21 +103,30 @@ class PyTableDataSet(AbstractDataSet):
             cache_path = cache_path.split(':')
             if len(cache_path) == 1:
                 path = cache_path[0]
-                table_name = 'dataset'
+                table_fullname = 'dataset'
             elif len(cache_path) == 2:
-                path, table_name = cache_path
+                path, table_fullname = cache_path
             else:
                 raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
-
-            f = open_pytable(path)
-            table_path, table_name = table_name.rsplit('/', maxsplit=1)
+            if not table_fullname.startswith('/'):
+                table_fullname = '/' + table_fullname
+            f = open_pytable(path, 'a')
+            table_path, table_name = table_fullname.rsplit('/', maxsplit=1)
             if not table_path.startswith('/'):
                 table_path = '/' + table_path
-            table = f.create_table(table_path, table_name, obj=data_dict, createparents=True)
+            f.create_table(table_path, table_name, obj=data_dict, createparents=True)
+            f.flush()
+            f.close()
+
+            return PyTableDataSet(path, table_fullname, name=name)
         else:
-            f = tables.open_file("/tmp/empty.h5", "a", driver="H5FD_CORE", driver_core_backing_store=0)
-            table = f.create_array(f.root, "dataset", obj=data_dict)
-        return PyTableDataSet(table, name=name)
+            path = "/tmp/empty.h5"
+            table_fullname = '/dataset'
+            f = tables.open_file(path, "a", driver="H5FD_CORE", driver_core_backing_store=0)
+            f.create_array(f.root, table_fullname[1:], obj=data_dict)
+            f.flush()
+            f.close()
+            return PyTableDataSet(path, table_fullname, name=name)
 
     @property
     def size(self):
@@ -191,6 +195,11 @@ class PyTableDataSet(AbstractDataSet):
             d.col[c_name].format = c.format
         return d
 
+    def has_custom_rows(self):
+        return self._rows is not None and self._filtered_rows is None and self._sorted_rows is None
+
+
+
     def _solve_where(self):
         if self.where is None:
             self._filtered_rows = None
@@ -217,11 +226,10 @@ class PyTableDataSet(AbstractDataSet):
         else:
             reversed_sort = self.sortby.startswith('!')
             sortby = self.sortby[1:] if reversed_sort else self.sortby
-            if not getattr(self.pytable.cols, sortby).is_indexed:
-                # Create a full index
-                getattr(self.pytable.cols, sortby).create_csindex()
+            # if not getattr(self.pytable.cols, sortby).is_indexed:
+            #     getattr(self.pytable.cols, sortby).create_csindex()
 
-            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=False).read_indices()
+            self._sorted_rows = self.pytable._check_sortby_csi(sortby=sortby, checkCSI=True).read_indices()
             if reversed_sort:
                 self._sorted_rows = self._sorted_rows[::-1]
             if self._filtered_rows is not None:
@@ -231,8 +239,6 @@ class PyTableDataSet(AbstractDataSet):
             else:
                 self._rows = self._sorted_rows
 
-    def has_custom_rows(self):
-        return self._rows is not None and self._filtered_rows is None and self._sorted_rows is None
 
 
 def load_hdf(path, name=None):
@@ -252,9 +258,10 @@ def load_hdf(path, name=None):
         name = table_name
 
     from ..j_utils.path import format_filepath
-    from ..j_utils.threadsafe_pytables import open_pytable
+    import tables
+    from os.path import abspath
     path = format_filepath(path, 'cache', exists=True)
-    hdf_f = open_pytable(path)
+    hdf_f = tables.open_file(abspath(path), 'r')
     if not table_name.startswith('/'):
         table_name = '/' + table_name
     table_path, table_name = table_name.rsplit('/', maxsplit=1)
@@ -307,7 +314,6 @@ class RandomVersionPyTableDataSet(AbstractDataSet):
 
     def __del__(self):
         if self.hdf_file is not None:
-            self.hdf_file.flush()
             self.hdf_file.close()
 
     @property

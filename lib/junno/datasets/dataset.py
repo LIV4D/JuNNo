@@ -822,10 +822,11 @@ class AbstractDataSet(metaclass=ABCMeta):
         return CustomDataLoader(self)
 
     def cache(self, start=0, stop=None, columns=None, ncore=1, ondisk=None, name=None, random_version=None,
-              overwrite='auto', compression='auto'):
+              overwrite='auto', compression='auto', sort_col=()):
         from collections import OrderedDict
         from ..j_utils.path import format_filepath
-        from ..j_utils.threadsafe_pytables import open_pytable, tables
+        from ..j_utils.pytables import open_h5
+        import tables
 
         start, stop = interval(self.size, start, stop)
         if columns is None:
@@ -864,7 +865,8 @@ class AbstractDataSet(metaclass=ABCMeta):
                     raise ValueError('cache_path should be formated as "PATH:TABLE_NAME"')
 
                 path = format_filepath(path, 'cache', exists=False)
-                hdf_f = open_pytable(path)
+                hdf_f = open_h5(path, 'a')
+
                 if not table_name.startswith('/'):
                     table_name = '/' + table_name
                 table_path, table_name = table_name.rsplit('/', maxsplit=1)
@@ -909,7 +911,9 @@ class AbstractDataSet(metaclass=ABCMeta):
                     if erase_table:
                         hdf_f.remove_node(table_path, table_name)
                         hdf_t = None
-                    hdf_tables[i] = hdf_t
+                        hdf_tables[i] = None
+                    else:
+                        hdf_tables[i] = (table_path, table_name)
                 except tables.NoSuchNodeError:
                     pass
         else:
@@ -936,34 +940,65 @@ class AbstractDataSet(metaclass=ABCMeta):
                             desc[col.name] = tables.Col.from_dtype(col.dtype, pos=i)
                     else:
                         desc[col.name] = tables.Col.from_sctype(col.dtype.type, col.shape, pos=i)
+                desc['ID'] = tables.UInt64Col()
+
                 hdf_t = hdf_f.create_table(table_path, table_name, description=desc, expectedrows=self.size,
-                                         createparents=True, track_times=False, filters=comp_filters)
+                                           createparents=True, track_times=False, filters=comp_filters)
+                hdf_t.autoindex = False
+                for c in sort_col + ('ID',):
+                    hdf_t.col(c).create_csindex()
                 chunck_size = min(stop - start, hdf_t.chunkshape[0])
 
-                if ncore > 1:
-                    with Process('Allocating %s (%i)' % (label, i_table+1), stop - start + 1, verbose=False) as p:
-                        empty_row = hdf_t.row
-                        for i in range(0, stop - start):
-                            empty_row.append()
-                            p.step = i
-                        hdf_t.flush()
+                with Process('Caching %s (%i)' % (label, i_table + 1), stop - start, verbose=False) as p:
+                    from .dataset_generator import DataSetResult
 
-                    with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
-                        from .dataset_generator import DataSetResult
-                        def write_back(r: DataSetResult):
-                            hdf_t.modify_rows(start=r.start_id - start, stop=r.stop_id - start, rows=r.to_row_list())
-                            p.update(r.size)
+                    def write_back(r: DataSetResult):
+                        hdf_t.append(start=r.start_id - start, stop=r.stop_id - start, rows=r.to_row_list(includesID=True))
+                        p.update(r.size)
 
-                        self.export(write_back, n=chunck_size, start=start, stop=stop, columns=columns, ncore=ncore,
-                                    determinist=not random_version)
+                    self.export(write_back, n=chunck_size, start=start, stop=stop, columns=columns, ncore=ncore,
+                                determinist=not random_version)
+
+                with Process('Creating Index'):
+                    hdf_f.flush()
+                    hdf_t.reindex()
+                    hdf_f.flush()
+
+                # if ncore > 1:
+                #     with Process('Allocating %s (%i)' % (label, i_table+1), stop - start + 1, verbose=False) as p:
+                #         empty_row = hdf_t.row
+                #         for i in range(0, stop - start):
+                #             empty_row.append()
+                #             p.step = i
+                #         hdf_t.flush()
+                #
+                #     with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
+                #         from .dataset_generator import DataSetResult
+                #         def write_back(r: DataSetResult):
+                #             hdf_t.modify_rows(start=r.start_id - start, stop=r.stop_id - start, rows=r.to_row_list())
+                #             p.update(r.size)
+                #
+                #         self.export(write_back, n=chunck_size, start=start, stop=stop, columns=columns, ncore=ncore,
+                #                     determinist=not random_version)
+                # else:
+                #     with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
+                #         for r in self.generator(n=chunck_size, start=start, stop=stop, determinist=not random_version,
+                #                                 columns=columns):
+                #             hdf_t.append(r.to_row_list())
+                #             p.update(r.size)
+
+                if ondisk:
+                    hdf_tables[i_table] = hdf_t
                 else:
-                    with Process('Caching %s (%i)' % (label, i_table+1), stop - start, verbose=False) as p:
-                        for r in self.generator(n=chunck_size, start=start, stop=stop, determinist=not random_version,
-                                                columns=columns):
-                            hdf_t.append(r.to_row_list())
-                            p.update(r.size)
-                hdf_f.flush()
-                hdf_tables[i_table] = hdf_t
+                    hdf_tables[i_table] = (table_path, table_name)
+                hdf_tables[i_table] = (table_path+'/' if len(table_path)>1 else '/') + table_name
+
+        if ondisk:
+            hdf_f.flush()
+            hdf_f.close()
+            hdf_f = open_h5(path, 'r')
+            hdf_tables = [hdf_f.get_node(table_path, table_name, classname='Table')
+                          for table_path, table_name in hdf_tables]
 
         from .datasets_core import PyTableDataSet, RandomVersionPyTableDataSet
         if random_version:

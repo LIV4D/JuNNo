@@ -57,18 +57,18 @@ _tables_file._open_files = ThreadsafeFileRegistry()
 _pytables_files = {}
 
 
-def open_pytable(path):
-    import os
-    from os.path import abspath, dirname
-    path = abspath(path)
-    f = _pytables_files.get(path, None)
-    if f is not None and f() is not None:
-        return f()
-
-    import weakref
-    os.makedirs(dirname(path), exist_ok=True)
-
-    f = tables.open_file(path, mode='a')
-    _pytables_files[path] = weakref.ref(f)
+def open_pytable(path, mode='r'):
+    from os.path import abspath
+    import time
+    from ..j_utils import log
+    try:
+        f = tables.open_file(abspath(path), mode)
+    except ValueError as e:
+        if mode == 'r':
+            log.error('File %s is already opened in write mode. Close it to proceed. (15s before retry...)' % path)
+        else:
+            log.error('File %s is already opened. Close it to proceed. (15s before retry...)' % path)
+        time.sleep(15)
+        f = tables.open_file(abspath(path), mode)
 
     return f

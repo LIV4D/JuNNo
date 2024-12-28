@@ -403,8 +403,12 @@ class DataSetResult:
         for i in range(self.size):
             yield tuple(np.array(self._data_dict[_][i]) for _ in self.keys())
 
-    def to_row_list(self):
-        return list(self)
+    def to_row_list(self, includesID=False):
+        l = list(self)
+        if includesID:
+            for ele, ID in zip(l, range(self.start_id, self.stop_id)):
+                ele['ID'] = ID
+        return l
 
     def to_array_rec(self, hdf_compatible=False):
         array_list = []

@@ -86,12 +86,13 @@ def compute_proba_patch_centers(proba_map, n, rng=None):
 _last_map = None
 _last_lut = None
 
+def if_none(v,o):
+    return o if v is None else v
 
 def prepare_lut(map, source_dtype=None, axis=None, sampling=None, default=None, keep_dims=True):
     assert isinstance(map, dict) and len(map)
 
     import numpy as np
-    from .collections import if_none
 
     # Prepare map
     source_list = []

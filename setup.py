@@ -23,5 +23,6 @@ setup(
               'psutil(>=5.4.8)',
               'ipython(>=7.2.0)',
               'scikit_learn(>=0.20.2)',
-              'tables(>=3.4.4)'],
+              'tables(>=3.4.4)',
+              'lazy-property(>=0.0.1)'],
 )

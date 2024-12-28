@@ -13,7 +13,7 @@ log
 # In[2]:
 
 
-from junno.vega.vega_graph import VegaGraph 
+from junno.ovega.vega_graph import VegaGraph
 import numpy as np
 import pandas as P
 

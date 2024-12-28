@@ -1,8 +1,9 @@
 import inspect
 from abc import ABCMeta
 from collections import OrderedDict
-
-from junno.j_utils.function import match_params
+import weakref
+from inspect import signature
+from ..j_utils.function import match_params
 
 
 _cls_attr_global_id = 0
@@ -28,7 +29,7 @@ def sort_by_global_id(cls_attr_list):
 class ClsAttribute:
     def __init__(self, read_only=False):
         self._name = None
-        self.handler_cls = None
+        self._handler_cls = None
         self.read_only = read_only
 
         global _cls_attr_global_id
@@ -41,8 +42,8 @@ class ClsAttribute:
     def __set_name__(self, owner, name):
         if self.name is None:
             self.name = name
-        if self.handler_cls is None:
-            self.handler_cls = owner
+        if self._handler_cls is None:
+            self._handler_cls = weakref.ref(owner)
 
     @property
     def name(self):
@@ -54,13 +55,17 @@ class ClsAttribute:
         self._name_changed(n)
 
     @property
+    def handler_cls(self):
+        return self._handler_cls() if self._handler_cls else None
+
+    @property
     def full_name(self):
         if self.handler_cls is None:
             if self.name is None:
                 return None
             return self.name
 
-        return self.handler_cls.__name__ + '.' + self.name
+        return type(self.handler_cls).__name__ + '.' + self.name
 
     def __str__(self):
         return self.full_name
@@ -73,7 +78,7 @@ class ClsAttribute:
         return None
 
     # --- GETTER / SETTER ---
-    def __set__(self, handler, value):
+    def set(self, handler, value):
         if handler is None:
             raise AttributeError('Read only')
         else:
@@ -81,8 +86,11 @@ class ClsAttribute:
             v = self.get_attr(handler=handler)
             if v != value:
                 self.set_attr(handler=handler, value=value)
-                handler._attr_changed(attr_name=self.name)
+                handler._attr_changed(attr_name=self.name, previous=v)
                 self.attr_changed(handler=handler, value=value)
+
+    def __set__(self, handler, value):
+        return self.set(handler, value)
 
     def check_attr(self, handler, value):
         return value
@@ -93,11 +101,14 @@ class ClsAttribute:
     def attr_changed(self, handler, value):
         pass
 
-    def __get__(self, instance, owner_type):
-        if instance is None:
+    def get(self, handler):
+        if handler is None:
             return self
         else:
-            return self.get_attr(handler=instance)
+            return self.get_attr(handler=handler)
+
+    def __get__(self, instance, owner_type):
+        return self.get(handler=instance)
 
     def get_attr(self, handler, default=None):
         return handler.__dict__.get(self.name, default)
@@ -109,8 +120,10 @@ class ClsAttribute:
         self.set_attr = set_attr
 
     def check(self, f):
+        legacy_check = self.check_attr
+
         def check_attr(self, handler, value):
-            return f(handler, value)
+            return match_params(f, args=(handler, value), legacy_check=legacy_check)
         self.check_attr = check_attr
 
     def changed(self, f):
@@ -119,8 +132,15 @@ class ClsAttribute:
         self.attr_changed = attr_changed
 
     def getter(self, f):
-        def get_attr(self, handler, default=None):
-            return f(handler)
+        param_count = len(signature(f).parameters)
+        if param_count==2:
+            def get_attr(self, handler, default=None):
+                value = handler.__dict__.get(self.name, default)
+                return f(handler, value)
+        else:
+            def get_attr(self, handler, default=None):
+                return f(handler, self.__get_attr(handler, default=default))
+            self.__get_attr = self.get_attr
         self.get_attr = get_attr
 
 
@@ -133,9 +153,12 @@ class MetaClassAttrHandler(ABCMeta):
             n, attr = attr
             if isinstance(attr, ClsAttribute):
                 attr.name = n
-                attr.handler_cls = cls
+                attr._handler_cls = cls
                 l.append(attr)
         cls._attributes_list = sort_by_global_id(l)
+
+        if hasattr(cls, "__register_subclass__"):
+            cls.__register_subclass__(name, bases)
 
     def __repr__(cls):
         s = cls.__name__
@@ -155,7 +178,7 @@ class ClassAttrHandler(metaclass=MetaClassAttrHandler):
 
         obj._change_listeners = {}
         obj.prepare_populate_attr()
-        match_params(obj.populate_attr, new_args=new_args, new_kwargs=new_kwargs)
+        obj.populate_attr(new_args=new_args, new_kwargs=new_kwargs)
         return obj
 
     def __init__(self, *args, **kwargs):
@@ -185,6 +208,9 @@ class ClassAttrHandler(metaclass=MetaClassAttrHandler):
         pass
 
     def populate_attr(self, new_args, new_kwargs):
+        alias = [_ for _ in new_kwargs if len(_) > 1 and _[-1] == '_' and _[-2] != '_']
+        for a in alias:
+            new_kwargs[a[:-1]] = new_kwargs[a]
         for name, attr in self.__class__.cls_attributes().items():
             try:
                 new_attr = new_kwargs[name]
@@ -192,31 +218,28 @@ class ClassAttrHandler(metaclass=MetaClassAttrHandler):
                 new_attr = attr.new_attr(self)
             attr.init_attr(self, new_attr)
 
-    # def __getattribute__(self, item):
-    #     getattribute = super(ClassAttrHandler, self).__getattribute__
-    #     attributes = getattribute('__class__').cls_attributes()
-    #
-    #     if item in attributes:
-    #         return attributes[item].get_attr(self)
-    #
-    #     return getattribute(item)
-    #
-    # def __setattr__(self, key, value):
-    #     attributes = self.__class__.cls_attributes()
-    #     attr = attributes.get(key, None)
-    #     if attr is not None:
-    #         if attr.read_only:
-    #             raise AttributeError('%s is a read-only attribute' % attr.name)
-    #         attr.set_attr(handler=self, value=value)
-    #     else:
-    #         super(ClassAttrHandler, self).__setattr__(key, value)
+    def __getattribute__(self, item):
+        getattribute = super(ClassAttrHandler, self).__getattribute__
+
+        attr = getattribute('__class__').cls_attributes().get(item, None)
+        if attr is not None:
+            return attr.get(self)
+
+        return getattribute(item)
+
+    def __setattr__(self, key, value):
+        attr = self.__class__.cls_attributes().get(key, None)
+        if attr is not None:
+            attr.set(handler=self, value=value)
+        else:
+            super(ClassAttrHandler, self).__setattr__(key, value)
 
     def on_changed(self, key, cb, call_now=False):
         if isinstance(key, tuple):
             for k in key:
                 self.on_changed(k, cb)
         else:
-            if not key in self.cls_attributes():
+            if key not in self.cls_attributes():
                 raise AttributeError('No attributes is named %s.' % key)
 
             listeners = self._change_listeners.get(key, None)
@@ -228,7 +251,17 @@ class ClassAttrHandler(metaclass=MetaClassAttrHandler):
         if call_now:
             cb()
 
-    def _attr_changed(self, attr_name):
+    def __attr_changed(self, attr_name, previous):
         callbacks = self._change_listeners.get(attr_name, [])
         for cb in callbacks:
             cb()
+
+    def _attr_changed(self, attr_name, previous):
+        # self.__attr_changed(attr_name)
+        called = []     # [self.__class__.__attr_changed]
+        for parent_class in inspect.getmro(self.__class__):
+            if parent_class.__attr_changed not in called:
+                parent_class.__attr_changed(self, attr_name, previous)
+                called.append(parent_class.__attr_changed)
+            if parent_class is ClassAttrHandler:
+                break

@@ -31,7 +31,7 @@ def augment_method(augment_type=None, cv=False):
 class DataAugment:
     def __init__(self, rng=None):
         self._augment_stack = []
-        self._rng_stack = [np.random.RandomState(1234)]
+        self._rng_stack = [None]
         self.rng = rng
 
     @property

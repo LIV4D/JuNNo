@@ -76,3 +76,24 @@ def to_json(json_dict):
 
     segmented_json.append(json_str[last_id:])
     return ''.join(segmented_json)
+
+
+def int_to_str(i, min_digit=None):
+    i_str = str(i)
+    if min_digit:
+        i_str = (" "*max(0, min_digit-len(i_str))) + i_str
+    return i_str
+
+
+def auto_increment(s, min_digit=3, increment=1):
+    number = 0
+    i = 0
+    for i in range(len(s)):
+        try:
+            number = int(s[-i:])
+        except ValueError:
+            break
+    number += increment
+    number = int_to_str(number, min_digit=min_digit)
+    return s[:-i] + number
+
